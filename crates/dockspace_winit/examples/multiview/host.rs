@@ -24,7 +24,10 @@ use dockspace_winit::{
         event_loop::{ActiveEventLoop, OwnedDisplayHandle},
         window::{Window, WindowId},
     },
-    native::{NativeWindows, observe_window, request_outer_bounds, window_attributes},
+    native::{
+        NativeWindows, WindowPlacementError, observe_window, request_outer_bounds,
+        window_attributes,
+    },
 };
 
 use super::{AppResult, workspace};
@@ -37,6 +40,7 @@ pub(super) struct WindowState {
     create: Option<NativeCreateEffectAcknowledgement>,
     child: bool,
     failure: Option<String>,
+    pending_placement: Option<PhysicalRect>,
 }
 
 impl WindowState {
@@ -55,6 +59,7 @@ impl WindowState {
             create: None,
             child,
             failure,
+            pending_placement: None,
         };
         state.prepare();
         state
@@ -87,6 +92,23 @@ impl WindowState {
         self.failure.as_deref()
     }
 
+    pub fn apply_initial_placement(&mut self) -> AppResult<()> {
+        let Some(bounds) = self.pending_placement else {
+            return Ok(());
+        };
+        if self.failure.is_some() || self.window.is_visible() != Some(true) {
+            return Ok(());
+        }
+        match request_outer_bounds(&self.window, bounds) {
+            Ok(_) => self.pending_placement = None,
+            Err(WindowPlacementError::GeometryChanged { .. }) => {
+                self.window.request_redraw();
+            }
+            Err(error) => return Err(error.into()),
+        }
+        Ok(())
+    }
+
     fn facts(&mut self) -> AppResult<NativeWindowFacts> {
         self.prepare();
         let mut facts =
@@ -95,7 +117,8 @@ impl WindowState {
             facts = facts.with_create_readiness(
                 if self.failure.is_some() {
                     NativeCreateReadiness::Failed
-                } else if self.prepared_size.is_some()
+                } else if self.pending_placement.is_none()
+                    && self.prepared_size.is_some()
                     && self.window.is_visible() == Some(true)
                     && self.window.is_minimized() == Some(false)
                 {
@@ -266,12 +289,14 @@ impl Host {
                             return Err(error.into());
                         }
                     };
-                    let placement_result = request_outer_bounds(&window, placement);
                     let id = window.id();
                     // Keep the successfully created window owned even if later
                     // renderer preparation fails, so compensation can destroy it.
                     let mut state =
                         WindowState::new(event_loop, window, role == NativeSurfaceRole::Child);
+                    // X11 decorations and client size can change during mapping.
+                    // Process initial window events before compensating their extents.
+                    state.pending_placement = Some(placement);
                     if std::mem::take(&mut self.fail_next_preparation) {
                         state.surface = None;
                         state.prepared_size = None;
@@ -287,7 +312,6 @@ impl Host {
                     state.window.request_redraw();
                     self.windows.insert(binding, id, state)?;
                     self.creations += 1;
-                    placement_result?;
                 }
                 NativeEffectOperation::ReleaseChild { binding }
                 | NativeEffectOperation::CompensatingClose { binding } => {

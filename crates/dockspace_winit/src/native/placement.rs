@@ -12,14 +12,32 @@ pub enum WindowPlacementError {
     #[error("window size exceeds the positive platform pixel range")]
     SizeOutOfRange,
     /// The requested outer size leaves no client area after observed decorations.
-    #[error("requested outer bounds cannot contain the observed window decorations")]
-    DecorationsExceedBounds,
+    #[error(
+        "requested outer size {requested:?} cannot contain decorations sampled from client {client:?} and outer {outer:?}"
+    )]
+    DecorationsExceedBounds {
+        /// Requested physical outer size.
+        requested: PhysicalSize<u32>,
+        /// Observed physical client size.
+        client: PhysicalSize<u32>,
+        /// Observed physical outer size.
+        outer: PhysicalSize<u32>,
+    },
+    /// The window changed size while its decoration extents were sampled.
+    #[error("window size changed while sampling decorations: {before:?} -> {after:?}")]
+    GeometryChanged {
+        /// Client size before reading the outer size.
+        before: PhysicalSize<u32>,
+        /// Client size after reading the outer size.
+        after: PhysicalSize<u32>,
+    },
 }
 
 /// Applies a core physical placement to initial winit window attributes.
 ///
 /// Winit creates a client size before decoration extents can be observed. After
-/// creation, call [`request_outer_bounds`] to compensate those actual extents.
+/// the first window events, call [`request_outer_bounds`] to compensate observed
+/// extents once the window manager has established its decorations.
 /// Fractional physical pixels round to the nearest integer. Other application
 /// attributes, including decorations, visibility and title, are preserved.
 ///
@@ -46,15 +64,33 @@ pub fn window_attributes(
 /// # Errors
 ///
 /// Returns an error before issuing either command if the requested placement is
-/// unrepresentable or the observed decorations leave no positive client area.
+/// unrepresentable, geometry changed during sampling, or observed decorations
+/// leave no positive client area. Retry `GeometryChanged` after processing the
+/// next window events; do not busy-loop inside the event callback. In particular,
+/// defer initial compensation until the window manager has handled creation.
 pub fn request_outer_bounds(
     window: &Window,
     bounds: PhysicalRect,
 ) -> Result<Option<PhysicalSize<u32>>, WindowPlacementError> {
     let (position, outer) = placement(bounds)?;
-    let client = client_size(outer, window.inner_size(), window.outer_size())?;
+    let before = window.inner_size();
+    let observed_outer = window.outer_size();
+    let after = window.inner_size();
+    let client = stable_client_size(outer, before, observed_outer, after)?;
     window.set_outer_position(position);
     Ok(window.request_inner_size(client))
+}
+
+fn stable_client_size(
+    requested: PhysicalSize<u32>,
+    before: PhysicalSize<u32>,
+    outer: PhysicalSize<u32>,
+    after: PhysicalSize<u32>,
+) -> Result<PhysicalSize<u32>, WindowPlacementError> {
+    if before != after {
+        return Err(WindowPlacementError::GeometryChanged { before, after });
+    }
+    client_size(requested, before, outer)
 }
 
 fn placement(
@@ -95,13 +131,41 @@ fn client_size(
         (Some(width), Some(height)) if width > 0 && height > 0 => {
             Ok(PhysicalSize::new(width, height))
         }
-        _ => Err(WindowPlacementError::DecorationsExceedBounds),
+        _ => Err(WindowPlacementError::DecorationsExceedBounds {
+            requested,
+            client,
+            outer,
+        }),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn asynchronous_resize_cannot_be_mistaken_for_window_decorations() {
+        let before = PhysicalSize::new(420, 300);
+        let after = PhysicalSize::new(960, 640);
+        assert_eq!(
+            stable_client_size(
+                PhysicalSize::new(420, 300),
+                before,
+                PhysicalSize::new(962, 665),
+                after
+            ),
+            Err(WindowPlacementError::GeometryChanged { before, after }),
+        );
+        assert_eq!(
+            stable_client_size(
+                PhysicalSize::new(420, 300),
+                after,
+                PhysicalSize::new(962, 665),
+                after
+            ),
+            Ok(PhysicalSize::new(418, 275)),
+        );
+    }
 
     #[test]
     fn outer_placement_compensates_real_physical_frame_extents() {
@@ -119,7 +183,11 @@ mod tests {
                 PhysicalSize::new(600, 400),
                 PhysicalSize::new(612, 436),
             ),
-            Err(WindowPlacementError::DecorationsExceedBounds)
+            Err(WindowPlacementError::DecorationsExceedBounds {
+                requested: PhysicalSize::new(10, 20),
+                client: PhysicalSize::new(600, 400),
+                outer: PhysicalSize::new(612, 436),
+            })
         );
     }
 

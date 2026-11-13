@@ -138,6 +138,9 @@ impl App {
         event_loop: &ActiveEventLoop,
         binding: NativeWindowBinding,
     ) -> AppResult<()> {
+        if let Some(state) = self.host.windows.get_mut(binding) {
+            state.apply_initial_placement()?;
+        }
         self.advance(event_loop)?;
         let child = self.host.child() == Some(binding);
         let Some(state) = self.host.windows.get_mut(binding) else {

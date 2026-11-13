@@ -46,7 +46,9 @@ dockspace_winit = { path = "../dockspace/crates/dockspace_winit", features = ["n
   visibility/minimization. Supply the renderer's separate presentation scale;
   unavailable positions and zero-sized drawable geometry stay unknown.
 - `window_attributes` and `request_outer_bounds` apply physical placements,
-  compensating observed decoration extents after creation. Requested placement
+  compensating observed decoration extents after initial window events. Retry
+  `WindowPlacementError::GeometryChanged` after processing subsequent events if
+  the client resized during sampling. Requested placement
   still needs a later observation; unsupported backends retain their limits.
 
 The registry accepts your resource type without `Clone` or `Send` bounds. It
