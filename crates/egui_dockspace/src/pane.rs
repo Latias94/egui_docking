@@ -4,7 +4,7 @@ use dockspace::model::ItemId;
 use egui::{Context, Id, Response, Ui, Vec2, WidgetText};
 
 use crate::tab::{Tab, TabBar, TabBarId, TabBarLayout, TabBarSlot, TabClose, TabVisuals};
-use crate::{DragPreview, DropPreview};
+use crate::{DragPreview, DropGuide, DropPreview};
 
 /// Ordinary application-content registrations produced by one pane callback.
 ///
@@ -155,6 +155,17 @@ pub trait PaneView {
         preview.paint(ui);
     }
 
+    /// Paints one directional docking-guide button without registering input.
+    ///
+    /// Use [`DropGuide::paint`] for defaults, customize its appearance, or draw
+    /// a replacement within its rectangle. Its stable ID can key egui color or
+    /// opacity animations. Core retains hit testing, eligibility and the active
+    /// destination; the adapter retains accessibility. Do not create widgets,
+    /// change layout or paint outside the supplied clip and layer.
+    fn drop_guide_ui(&mut self, ui: &Ui, guide: &DropGuide) {
+        guide.paint(ui);
+    }
+
     /// Paints the resulting docking area; target annotations are opt-in.
     ///
     /// Core supplies the resolved target; do not infer it from overlap with the
@@ -284,6 +295,10 @@ impl<T: PaneView + ?Sized> PaneView for Box<T> {
 
     fn drag_preview_ui(&mut self, ui: &Ui, preview: &DragPreview) {
         (**self).drag_preview_ui(ui, preview);
+    }
+
+    fn drop_guide_ui(&mut self, ui: &Ui, guide: &DropGuide) {
+        (**self).drop_guide_ui(ui, guide);
     }
 
     fn drop_preview_ui(&mut self, ui: &Ui, preview: &DropPreview) {

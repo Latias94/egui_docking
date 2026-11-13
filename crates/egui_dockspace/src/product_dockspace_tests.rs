@@ -28,6 +28,8 @@ const SIXTH: ItemId = ItemId::new(6);
 
 #[path = "product_edge_scroll_tests.rs"]
 mod edge_scroll;
+#[path = "product_guide_tests.rs"]
+mod guides;
 #[path = "product_tabs_actions_tests.rs"]
 mod tabs_actions;
 #[path = "product_touch_tests.rs"]
@@ -72,6 +74,7 @@ impl PaneView for MagneticPanes {
 struct FrameOutput {
     output: egui::FullOutput,
     drop_targets: Vec<RegisteredDropTargetObservation>,
+    presentation_capability: crate::DockspaceCapability,
 }
 
 fn magnetic_layout() -> DockspaceLayout {
@@ -120,14 +123,16 @@ fn pointer_button(position: Pos2, pressed: bool) -> Event {
 fn run_frame(
     context: &Context,
     dockspace: &mut Dockspace,
-    panes: &mut MagneticPanes,
+    panes: &mut dyn PaneView,
     events: Vec<Event>,
 ) -> FrameOutput {
     let mut drop_targets = Vec::new();
+    let mut presentation_capability = crate::DockspaceCapability::Supported;
     let output = crate::run_ui(context, input(events), |ui| {
-        dockspace
+        let response = dockspace
             .show_single_surface(SURFACE, ui, panes)
             .expect("the product frame advances");
+        presentation_capability = response.presentation_settlement_capability();
         let registered = dockspace.registered_drop_target_observations();
         if !registered.is_empty() {
             // Preserve the actual receivers used by the release pass even if
@@ -141,6 +146,7 @@ fn run_frame(
     FrameOutput {
         output,
         drop_targets,
+        presentation_capability,
     }
 }
 

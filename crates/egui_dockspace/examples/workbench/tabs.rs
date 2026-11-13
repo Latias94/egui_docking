@@ -1,7 +1,9 @@
 //! Optional application chrome. Dockspace still owns docking and close input.
 
 use egui::{Color32, CornerRadius, Rect, Stroke, Ui, pos2, vec2};
-use egui_dockspace::{DragPreview, Tab, TabBar, TabBarSlot, TabClose, TabVisuals};
+use egui_dockspace::{
+    DockspaceDropEligibility, DragPreview, DropGuide, Tab, TabBar, TabBarSlot, TabClose, TabVisuals,
+};
 
 use super::DemoPanes;
 
@@ -62,6 +64,36 @@ pub(super) fn drag_preview_ui(panes: &DemoPanes, ui: &Ui, preview: &DragPreview)
             preview.title_rect.max,
         ),
     );
+}
+
+pub(super) fn drop_guide_ui(panes: &DemoPanes, ui: &Ui, guide: &DropGuide) {
+    if !panes.custom_tabs || guide.eligibility == DockspaceDropEligibility::Rejected {
+        guide.paint(ui);
+        return;
+    }
+    let emphasis = ui.ctx().animate_bool_with_time_and_easing(
+        guide.id.with("accent"),
+        guide.active,
+        ui.style().animation_time.min(0.12),
+        egui::emath::easing::cubic_in_out,
+    );
+    let accent = ACCENTS[panes.tab_accent];
+    let mut appearance = *guide;
+    appearance.fill = ui
+        .visuals()
+        .window_fill()
+        .lerp_to_gamma(accent, 0.12 + 0.22 * emphasis);
+    // Selection feedback is immediate; only the decorative fill transitions.
+    appearance.stroke = Stroke::new(if guide.active { 2.0 } else { 1.0 }, accent);
+    appearance.cue_color = accent;
+    // The circular background replaces the default shape; hit geometry stays fixed.
+    ui.painter().circle(
+        guide.rect.center(),
+        guide.rect.width().min(guide.rect.height()) * 0.5 - 1.0,
+        appearance.fill,
+        appearance.stroke,
+    );
+    appearance.paint_cue(ui);
 }
 
 fn paint_icon(ui: &Ui, content: Rect, clip: Rect, color: Color32) {

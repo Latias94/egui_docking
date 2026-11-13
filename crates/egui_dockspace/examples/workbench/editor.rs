@@ -6,7 +6,7 @@ use egui::{Color32, Context, FontId, Frame, Margin, TextStyle, Theme, Vec2};
 use egui_dockspace::{
     CloseDecision, CloseItemDecisionState, DockStyle, Dockspace, DockspaceAxis,
     DockspaceContainedLayout, DockspaceError, DockspaceLayout, DockspaceNode, DockspaceOutput,
-    DockspaceResponse, DockspaceRootLayout, DockspaceSurfaceLayout, DragPreview,
+    DockspaceResponse, DockspaceRootLayout, DockspaceSurfaceLayout, DragPreview, DropGuide,
     FloatingPresentationId, ItemId, LogicalRect, PaneResponse, PaneView, RootId, SurfaceId, Tab,
     TabBar, TabBarId, TabBarLayout, TabBarSlot, TabClose, TabVisuals,
 };
@@ -256,6 +256,10 @@ impl PaneView for DemoPanes {
 
     fn drag_preview_ui(&mut self, ui: &egui::Ui, preview: &DragPreview) {
         tabs::drag_preview_ui(self, ui, preview);
+    }
+
+    fn drop_guide_ui(&mut self, ui: &egui::Ui, guide: &DropGuide) {
+        tabs::drop_guide_ui(self, ui, guide);
     }
 
     fn tab_bar_layout(&self, _bar: TabBarId, _ui: &egui::Ui) -> TabBarLayout {

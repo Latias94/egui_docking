@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 pub mod drag_preview;
+pub mod drop_guide;
 pub mod drop_preview;
 pub mod pane;
 pub mod style;
@@ -22,7 +23,6 @@ mod error;
 mod error_detail;
 #[path = "product_dockspace.rs"]
 mod facade;
-mod guide_paint;
 mod input;
 #[cfg(feature = "native-render-support")]
 #[doc(hidden)]
@@ -69,6 +69,9 @@ pub use dockspace::runtime::{
     DockspacePersistenceErrorKind,
 };
 pub use drag_preview::{DockspaceDragSourceKind, DragPreview};
+pub use drop_guide::{
+    DockspaceDropDirection, DockspaceDropEligibility, DockspaceGuideScope, DropGuide,
+};
 pub use drop_preview::{
     DockspaceDropAction, DockspaceDropTargetFeedback, DockspaceDropTargetScope, DropPreview,
     DropPreviewTab,

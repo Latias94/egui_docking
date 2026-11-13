@@ -53,8 +53,15 @@ fn semantic_rect(output: &egui::FullOutput, role: egui::accesskit::Role, label: 
 fn inspector_docks_through_stationary_guides_and_its_tab_can_float_again() {
     use egui::accesskit::Role;
 
-    for (custom_tabs, force_float) in [(false, false), (false, true), (true, false), (true, true)] {
+    for (custom_tabs, force_float, animation_time) in [
+        (false, false, 0.2),
+        (false, true, 0.2),
+        (true, false, 0.2),
+        (true, true, 0.2),
+        (true, false, 0.0),
+    ] {
         let context = editor::new_context();
+        context.all_styles_mut(|style| style.animation_time = animation_time);
         context.enable_accesskit();
         let mut dock = Dockspace::builder(
             ("workbench-redock-and-float", custom_tabs, force_float),

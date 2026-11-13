@@ -36,8 +36,10 @@ Derive geometry from the current egui style with `DockStyle::from_egui` or
 `from_egui_with_density(..., DockDensity::Compact)`, then apply overrides. Keep
 geometry, visuals and `DockInputConfig` bindings separate. For custom chrome,
 start with the workbench's `tabs.rs`: `tab_ui`, `tab_close_ui`, `tab_bar_ui`,
-`drag_preview_ui` and `drop_preview_ui` retain core targeting and adapter input
-behavior. Paint the supplied candidate preview, including its future tab order.
+`drag_preview_ui`, `drop_guide_ui` and `drop_preview_ui` retain core targeting and
+adapter input behavior. Guide callbacks expose a stable ID for color/opacity
+animation while core retains hit geometry. Paint the supplied candidate preview,
+including its future tab order.
 
 Use the facade's style update API so core geometry and adapter styling publish
 together. When mapping a style into an existing session, use

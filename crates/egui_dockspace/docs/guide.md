@@ -196,6 +196,15 @@ clipping; split targets and hidden bars do not invent a tab preview. Optional
 application-provided accessible hint. `drag_preview_ui` decorates the moving
 source ghost separately.
 
+`PaneView::drop_guide_ui` customizes the directional buttons independently.
+`DropGuide` includes the stable egui ID, root, inner/outer scope, direction,
+eligibility, active state and resolved default appearance. Core still owns
+the hit rectangles and docking decision; replacing the drawing leaves
+accessibility and input registration intact. Use its ID with egui's animation
+helpers for color or opacity transitions, and keep button positions aligned with
+the supplied geometry. The core does not require a frame loop or prescribe an
+animation system.
+
 The same finite continuation drives stationary overflow-edge scrolling during
 a local drag. `DockStyle::tab_strip_edge_scroll_band` defaults to 24 points and
 `tab_strip_edge_scroll_interval` to `Some(50ms)`; zero band or `None` disables it.
@@ -518,6 +527,10 @@ its recovery button entirely.
 - `drag_preview_ui(ui, preview)` paints the non-interactive drag ghost. Reuse
   its background/title helpers to add the same icons or badges as the tabs.
   The callback is skipped when core projects the actual floating source.
+- `drop_guide_ui(ui, guide)` paints one directional docking button, including
+  rejected targets. Call `guide.paint(ui)` for defaults, reuse `paint_background`
+  or `paint_cue`, or replace the shape with your own painter calls. The supplied
+  Ui clips drawing to the button. Do not add widgets or move hit geometry.
 - `drop_preview_ui(ui, preview)` paints the result highlight and future tabs. Its semantic target
   describes the currently presented layout; its result rectangle describes the
   pending layout. `DropPreview::tabs` exposes paint-only members; each
@@ -540,6 +553,29 @@ fn tab_ui(
     appearance.paint(ui)
 }
 ```
+
+Animate a guide's accent without changing its interaction or layout:
+
+```rust
+fn drop_guide_ui(&mut self, ui: &egui::Ui, guide: &egui_dockspace::DropGuide) {
+    let mut appearance = *guide;
+    if guide.eligibility == egui_dockspace::DockspaceDropEligibility::Eligible {
+        let t = ui.ctx().animate_bool_with_time_and_easing(
+            guide.id.with("accent"),
+            guide.active,
+            ui.style().animation_time.min(0.12),
+            egui::emath::easing::cubic_in_out,
+        );
+        appearance.fill = appearance.fill.lerp_to_gamma(egui::Color32::LIGHT_BLUE, t * 0.4);
+    }
+    appearance.paint(ui);
+}
+```
+
+This follows egui's animation-time setting, capped at 120 ms; setting
+`animation_time` to zero gives immediate feedback. Color-only transitions keep
+the visual target stationary. Hosts may map platform motion preferences to
+that setting; the core has no platform preference dependency.
 
 Application widgets belong inside `tab.content_rect`; keep the built-in close
 area free. They retain ordinary egui input and block docking over themselves,
@@ -586,7 +622,8 @@ under the existing geometry settings.
 
 The workbench's **Custom tabs** toggle demonstrates title icons, rounded
 backgrounds, coordinated drag previews, close-button hover feedback, group
-counts, a fixed **Tint** button and a scrolling help button. Its
+counts, a fixed **Tint** button, a scrolling help button and circular docking
+guides with an animated accent. Its
 [tab customization module](../examples/workbench/tabs.rs) is separate
 from the host and pane-content code.
 
