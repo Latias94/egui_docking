@@ -426,16 +426,18 @@ impl Host {
         for id in destroyed {
             let entry = self
                 .retiring
-                .remove(&id)
+                .get_mut(&id)
                 .ok_or("destroyed route is missing")?;
-            self.last_snapshot
-                .retain(|(binding, _)| *binding != entry.window);
             // All outputs were synchronously settled and the final OS event is
-            // consumed. Remove the last route before making quiescence permanent.
-            for binding in entry.placements {
+            // consumed. Retain the unrecorded suffix if ingress is full.
+            while let Some(binding) = entry.placements.last().copied() {
                 session.report_native_binding_quiescence(binding)?;
+                entry.placements.pop();
                 self.pending_records = true;
             }
+            self.last_snapshot
+                .retain(|(binding, _)| *binding != entry.window);
+            self.retiring.remove(&id);
         }
         Ok(())
     }
@@ -485,5 +487,135 @@ impl Host {
             420.0 * scale,
             300.0 * scale,
         )?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroUsize;
+
+    use dockspace::{
+        geometry::{LogicalSize, PhysicalPoint},
+        model::{
+            DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId,
+            RootId, SurfaceId,
+        },
+        policy::DockPolicy,
+        runtime::{
+            HostWindowToken, NativeHostCapabilities, NativeHostCapability, NativeInputStorageLimit,
+            NativePointerRoster, NativeReceiverAnswer, NativeSurfacePlacement,
+        },
+    };
+
+    use super::*;
+
+    #[test]
+    fn destroyed_retirement_keeps_the_unrecorded_suffix_after_input_capacity_failure() {
+        let layout = |ids: &[u64]| {
+            DockspaceLayout::new(ids.iter().map(|&id| {
+                DockspaceSurfaceLayout::new(
+                    SurfaceId::new(id),
+                    DockspaceRootLayout::new(
+                        RootId::new(id),
+                        DockspaceNode::tabs([ItemId::new(id)]),
+                    ),
+                )
+            }))
+            .unwrap()
+        };
+        let mut session =
+            DockspaceSession::from_layout(layout(&[1, 2]), DockPolicy::default()).unwrap();
+        session
+            .enable_managed_native_host_with_input_storage_limit(
+                NativePointerRoster::Unknown,
+                NativeInputStorageLimit::new(NonZeroUsize::MIN, 1 << 20),
+            )
+            .unwrap();
+        session
+            .configure_managed_native_capabilities(
+                NativeHostCapabilities::none_supported()
+                    .with(NativeHostCapability::AuthoritativeInventory),
+            )
+            .unwrap();
+        workspace::idle(&mut session).unwrap();
+        session
+            .register_native_root(SurfaceId::new(1), HostWindowToken::new(1))
+            .unwrap();
+        let report = workspace::idle(&mut session).unwrap();
+        let binding = report.native_bindings()[0].window();
+        session
+            .report_managed_native_snapshot(
+                [(
+                    binding,
+                    NativeWindowFacts::live()
+                        .with_content_bounds(PhysicalRect::new(0.0, 0.0, 800.0, 600.0).unwrap())
+                        .with_native_scale_factor(ScaleFactor::new(1.0).unwrap())
+                        .with_presentation_scale_factor(ScaleFactor::new(1.0).unwrap()),
+                )],
+                NativeWorkAreaRoster::Unknown,
+            )
+            .unwrap();
+        workspace::idle(&mut session).unwrap();
+        let mut frame = session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap();
+        let placements = [1_u32, 2].map(|id| {
+            let x = f64::from(id - 1) * 400.0;
+            NativeSurfacePlacement::new(
+                SurfaceId::new(u64::from(id)),
+                LogicalSize::new(400.0, 600.0).unwrap(),
+                PhysicalPoint::new(x, 0.0).unwrap(),
+                ScaleFactor::new(1.0).unwrap(),
+                PhysicalRect::new(x, 0.0, 400.0, 600.0).unwrap(),
+            )
+        });
+        frame
+            .set_native_surface_placements(binding, &placements)
+            .unwrap();
+        let retired: Vec<_> = frame.native_surface_bindings_for_window(binding).collect();
+        frame.commit().unwrap();
+        assert_eq!(retired.len(), 2);
+        let reset = session.prepare_layout_reset(layout(&[3])).unwrap();
+        session
+            .begin_native_layout_reset_frame(&reset, |_| NativeReceiverAnswer::Unknown)
+            .unwrap()
+            .commit()
+            .unwrap();
+        session
+            .report_managed_native_snapshot(
+                [(binding, NativeWindowFacts::destroyed())],
+                NativeWorkAreaRoster::Unknown,
+            )
+            .unwrap();
+        workspace::idle(&mut session).unwrap();
+        let mut host = Host::new();
+        let id = WindowId::from(41);
+        host.retiring.insert(
+            id,
+            Retirement {
+                window: binding,
+                placements: retired.clone(),
+                close: None,
+                destroyed: true,
+            },
+        );
+        host.last_snapshot = vec![(binding, NativeWindowFacts::destroyed())];
+
+        assert!(host.drain_destroyed(&mut session).is_err());
+        let pending = &host.retiring[&id].placements;
+        assert_eq!(pending.len(), 1);
+        assert!(host.pending_records);
+        assert_eq!(host.last_snapshot.len(), 1);
+        workspace::idle(&mut session).unwrap();
+        host.records_committed();
+        host.drain_destroyed(&mut session).unwrap();
+        assert!(host.retiring.is_empty());
+        assert!(host.last_snapshot.is_empty());
+        workspace::idle(&mut session).unwrap();
+        assert!(
+            retired
+                .iter()
+                .all(|&binding| !session.recognizes_native_binding(binding))
+        );
     }
 }
