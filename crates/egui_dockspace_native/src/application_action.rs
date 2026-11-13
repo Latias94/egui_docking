@@ -19,7 +19,7 @@ use egui_dockspace::{DockInputConfig, DockStyle};
 
 use crate::NativeRuntimeErrorKind;
 
-/// Failure to queue one application-owned command.
+/// Why one native application request could not be queued.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NativeActionRequestError {
@@ -672,14 +672,15 @@ impl Default for NativeApplicationActionState {
 }
 
 impl NativeApplicationActions {
-    pub(crate) fn enqueue(
+    pub(crate) fn enqueue<T>(
         &mut self,
-        action: impl Into<NativeApplicationAction>,
-    ) -> Result<(), NativeActionRequestError> {
+        command: T,
+        prepare: impl FnOnce(T) -> NativeApplicationAction,
+    ) -> Result<(), T> {
         if self.is_occupied() {
-            return Err(NativeActionRequestError::busy());
+            return Err(command);
         }
-        self.state = NativeApplicationActionState::Queued(action.into());
+        self.state = NativeApplicationActionState::Queued(prepare(command));
         Ok(())
     }
 

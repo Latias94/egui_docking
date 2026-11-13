@@ -156,7 +156,9 @@ fn queued_reset_is_stale_after_publication_and_repeated_resets_preserve_semantic
             NativeActionRequestError::Busy,
         );
         assert_eq!(
-            state.request_command(NativeCommand::SelectItem { item: FIRST }),
+            state
+                .request_command(NativeCommand::SelectItem { item: FIRST })
+                .map_err(|error| error.reason()),
             Err(NativeActionRequestError::Busy)
         );
         let report = commit_queued(&mut state, Some(if round == 0 { SECOND } else { FIRST }));
@@ -187,7 +189,9 @@ fn queued_reset_is_stale_after_publication_and_repeated_resets_preserve_semantic
                 .any(|input| matches!(input, HostInputOutcome::ProductActionApplied(_)))
         );
         assert_eq!(
-            state.request_command(NativeCommand::SelectItem { item: FIRST }),
+            state
+                .request_command(NativeCommand::SelectItem { item: FIRST })
+                .map_err(|error| error.reason()),
             Err(NativeActionRequestError::Busy)
         );
         assert_eq!(

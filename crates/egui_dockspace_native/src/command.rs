@@ -9,6 +9,45 @@ use dockspace::model::{
 };
 use dockspace::policy::DockPolicy;
 
+use crate::NativeActionRequestError;
+
+/// An unaccepted command together with its admission failure.
+///
+/// No action was queued. Use [`Self::into_command`] to retain the original
+/// value for a later retry without cloning its policy or captured tabs group.
+/// Retrying does not refresh a captured group's session or version.
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[error("{reason}")]
+pub struct NativeCommandRequestError {
+    #[source]
+    reason: NativeActionRequestError,
+    command: NativeCommand,
+}
+
+impl NativeCommandRequestError {
+    pub(crate) const fn new(reason: NativeActionRequestError, command: NativeCommand) -> Self {
+        Self { reason, command }
+    }
+
+    /// Returns why the command was not accepted.
+    #[must_use]
+    pub const fn reason(&self) -> NativeActionRequestError {
+        self.reason
+    }
+
+    /// Borrows the unchanged command that was not accepted.
+    #[must_use]
+    pub const fn command(&self) -> &NativeCommand {
+        &self.command
+    }
+
+    /// Returns ownership of the unchanged command for storage or retry.
+    #[must_use]
+    pub fn into_command(self) -> NativeCommand {
+        self.command
+    }
+}
+
 /// One application intent for [`NativeDockspaceApp::request_command`](crate::NativeDockspaceApp::request_command).
 ///
 /// Commands are ordinary values that menus and command palettes may
@@ -16,13 +55,14 @@ use dockspace::policy::DockPolicy;
 /// a stored command is not a prepared action or presentation authority.
 /// A captured tabs group retains its original session and version when stored
 /// or cloned; admission never resolves its former anchor again.
+/// Rejected admission returns this value in [`NativeCommandRequestError`].
 /// Consume [`NativeDockspaceApp::take_action_status`](crate::NativeDockspaceApp::take_action_status)
 /// before submitting another command. Pane state always stays in the application.
 ///
 /// ```
 /// use dockspace::model::ItemId;
-/// use egui_dockspace_native::{NativeActionRequestError, NativeCommand, NativeDockspaceApp};
-/// # fn raise<P: egui_dockspace::PaneView + Send + 'static>(app: &NativeDockspaceApp<P>) -> Result<(), NativeActionRequestError> {
+/// use egui_dockspace_native::{NativeCommand, NativeCommandRequestError, NativeDockspaceApp};
+/// # fn raise<P: egui_dockspace::PaneView + Send + 'static>(app: &NativeDockspaceApp<P>) -> Result<(), NativeCommandRequestError> {
 /// let command = NativeCommand::RaiseContained { item: ItemId::new(1) };
 /// app.request_command(command)?;
 /// // Consume take_action_status on a later application update before submitting more.

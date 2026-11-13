@@ -2706,7 +2706,8 @@ mod tests {
                     root: RootId::new(1),
                     placement
                 })
-                .expect_err("a second action cannot overtake the pending request"),
+                .expect_err("a second action cannot overtake the pending request")
+                .reason(),
             crate::NativeActionRequestError::Busy
         );
 
@@ -2760,7 +2761,8 @@ mod tests {
                     root: RootId::new(1),
                     placement
                 })
-                .expect_err("a stopped runtime rejects new application actions"),
+                .expect_err("a stopped runtime rejects new application actions")
+                .reason(),
             crate::NativeActionRequestError::Stopped
         );
     }
@@ -2952,7 +2954,8 @@ mod tests {
                 .request_command(NativeCommand::DockRootBack {
                     root: RootId::new(1)
                 })
-                .expect_err("fatal quarantine rejects semantic mutation"),
+                .expect_err("fatal quarantine rejects semantic mutation")
+                .reason(),
             crate::NativeActionRequestError::Stopped
         );
 

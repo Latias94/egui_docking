@@ -566,15 +566,18 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
     ///
     /// # Errors
     ///
-    /// Returns [`NativeActionRequestError::Busy`] while the previous command or
-    /// its result owns the slot, `Stopped` after fatal shutdown, or
+    /// Returns [`crate::NativeCommandRequestError`] with
+    /// [`NativeActionRequestError::Busy`] while the previous command or its
+    /// result owns the slot, `Stopped` after fatal shutdown, or
     /// `HostSurfaceRequired` when the operation would remove the fixed host.
+    /// The error retains the unchanged command for storage or retry; inspect
+    /// [`crate::NativeCommandRequestError::reason`] to distinguish failures.
     /// Policy and target rejections are committed action results. Close decisions
     /// remain explicit application choices, including for chrome-created plans.
     pub fn request_command(
         &self,
         command: crate::NativeCommand,
-    ) -> Result<(), NativeActionRequestError> {
+    ) -> Result<(), crate::NativeCommandRequestError> {
         lock_state(&self.state).request_command(command)
     }
 

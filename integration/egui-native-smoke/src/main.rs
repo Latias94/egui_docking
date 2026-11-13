@@ -22,7 +22,7 @@ use dockspace::runtime::{
 use eframe::egui::{self, ViewportCommand, ViewportId};
 use egui_dockspace::{DockStyle, DockspaceActionStatus, PaneView};
 use egui_dockspace_native::{
-    NativeActionRequestError, NativeActionStatus, NativeCloseProgress, NativeDockspaceApp,
+    NativeActionStatus, NativeCloseProgress, NativeCommandRequestError, NativeDockspaceApp,
     NativeStorageLimit, NativeWindowClosePolicy,
 };
 
@@ -762,7 +762,7 @@ fn unique_deferred_child(
     Ok(Some(*viewport))
 }
 
-fn action_request_message(error: NativeActionRequestError) -> String {
+fn action_request_message(error: NativeCommandRequestError) -> String {
     format!("native action request failed: {error}")
 }
 

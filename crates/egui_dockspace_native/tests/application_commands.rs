@@ -57,13 +57,16 @@ fn boxed_dynamic_provider_works_with_the_public_native_owner() {
     app.request_command(NativeCommand::SelectItem { item: SECOND })
         .unwrap();
     assert_eq!(
-        app.request_command(NativeCommand::SelectItem { item: FIRST }),
+        app.request_command(NativeCommand::SelectItem { item: FIRST })
+            .map_err(|error| error.reason()),
         Err(NativeActionRequestError::Busy)
     );
 }
 
 #[test]
 fn a_stored_command_shares_bounded_admission_without_mutating_application_data() {
+    use std::error::Error;
+
     let app = app();
     let command = NativeCommand::FloatItem {
         item: FIRST,
@@ -71,15 +74,22 @@ fn a_stored_command_shares_bounded_admission_without_mutating_application_data()
     };
 
     app.request_command(command.clone()).unwrap();
+    let error = app.request_command(command.clone()).unwrap_err();
+    assert_eq!(error.reason(), NativeActionRequestError::Busy);
     assert_eq!(
-        app.request_command(command),
-        Err(NativeActionRequestError::Busy)
+        error
+            .source()
+            .unwrap()
+            .downcast_ref::<NativeActionRequestError>(),
+        Some(&NativeActionRequestError::Busy)
     );
+    assert_eq!(error.into_command(), command);
     assert_eq!(
         app.request_command(NativeCommand::DockItem {
             item: FIRST,
             placement: DockPlacement::Center(DockAnchor::Item(SECOND)),
-        }),
+        })
+        .map_err(|error| error.reason()),
         Err(NativeActionRequestError::Busy)
     );
     assert!(app.take_action_status().is_none());
@@ -115,11 +125,12 @@ fn stored_native_payload_commands_and_group_capture_share_the_public_slot() {
         };
         app.request_command(command.clone()).unwrap();
         assert_eq!(
-            app.request_command(command),
+            app.request_command(command).map_err(|error| error.reason()),
             Err(NativeActionRequestError::Busy)
         );
         assert_eq!(
-            app.request_command(NativeCommand::SelectItem { item: FIRST }),
+            app.request_command(NativeCommand::SelectItem { item: FIRST })
+                .map_err(|error| error.reason()),
             Err(NativeActionRequestError::Busy)
         );
         assert_eq!(
@@ -158,7 +169,9 @@ fn another_apps_captured_group_uses_the_same_public_command_slot() {
         })
         .unwrap();
     assert_eq!(
-        destination.request_command(NativeCommand::SelectItem { item: SECOND }),
+        destination
+            .request_command(NativeCommand::SelectItem { item: SECOND })
+            .map_err(|error| error.reason()),
         Err(NativeActionRequestError::Busy)
     );
     assert_eq!(

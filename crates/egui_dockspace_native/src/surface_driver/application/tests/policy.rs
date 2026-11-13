@@ -14,16 +14,18 @@ fn policy_requests_share_the_slot_and_publish_only_after_commit() {
     let mut updated = original.clone();
     updated.set_allow_edge_split(false);
     updated.set_allow_native_surfaces(true);
-    let command = NativeCommand::SetPolicy {
-        policy: Box::new(updated.clone()),
-    };
+    let policy = Box::new(updated.clone());
+    let allocation = std::ptr::from_ref(policy.as_ref());
+    let command = NativeCommand::SetPolicy { policy };
     state.request_command(command.clone()).unwrap();
     assert_eq!(state.coordinator.session().policy(), &original);
     assert_eq!(state.coordinator.session().version(), before);
-    assert_eq!(
-        state.request_command(command.clone()),
-        Err(NativeActionRequestError::Busy)
-    );
+    let error = state.request_command(command).unwrap_err();
+    assert_eq!(error.reason(), NativeActionRequestError::Busy);
+    let NativeCommand::SetPolicy { policy } = error.command() else {
+        panic!("rejected admission must return the original policy command");
+    };
+    assert!(std::ptr::eq(policy.as_ref(), allocation));
     assert!(matches!(
         state.request_style(state.style.clone()),
         Err(crate::NativeStyleRequestError::Queue(
@@ -35,10 +37,8 @@ fn policy_requests_share_the_slot_and_publish_only_after_commit() {
     let report = commit_queued_report(&mut state);
     assert_eq!(state.coordinator.session().policy(), &updated);
     assert_ne!(report.after(), before);
-    assert_eq!(
-        state.request_command(NativeCommand::SelectItem { item: SECOND }),
-        Err(NativeActionRequestError::Busy)
-    );
+    let error = state.request_command(error.into_command()).unwrap_err();
+    assert_eq!(error.reason(), NativeActionRequestError::Busy);
     assert_eq!(
         take(&mut state),
         NativeActionStatus::PolicyChanged {
@@ -46,7 +46,7 @@ fn policy_requests_share_the_slot_and_publish_only_after_commit() {
             version: report.after(),
         }
     );
-    state.request_command(command).unwrap();
+    state.request_command(error.into_command()).unwrap();
     let unchanged = commit_queued_report(&mut state);
     assert_eq!(unchanged.after(), report.after());
     assert_eq!(
@@ -167,10 +167,8 @@ fn dropped_policy_frames_publish_nothing_and_retained_commands_retry_after_resta
         assert_eq!(state.coordinator.session().policy(), &original);
         assert_eq!(state.coordinator.session().version(), before);
         assert!(state.take_action_status().is_none());
-        assert_eq!(
-            state.request_command(command.clone()),
-            Err(NativeActionRequestError::Busy)
-        );
+        let error = state.request_command(command).unwrap_err();
+        assert_eq!(error.reason(), NativeActionRequestError::Busy);
         state.stop_current_output(
             crate::error::NativeHostProtocolError::OutputRouteAttachmentFailed.into(),
         );
@@ -180,13 +178,11 @@ fn dropped_policy_frames_publish_nothing_and_retained_commands_retry_after_resta
             failure.interruption(),
             crate::NativeActionInterruption::NotCommitted
         );
-        assert_eq!(
-            state.request_command(command.clone()),
-            Err(NativeActionRequestError::Stopped)
-        );
+        let error = state.request_command(error.into_command()).unwrap_err();
+        assert_eq!(error.reason(), NativeActionRequestError::Stopped);
 
         let mut restarted = super::state();
-        restarted.request_command(command).unwrap();
+        restarted.request_command(error.into_command()).unwrap();
         let report = commit_queued_report(&mut restarted);
         assert_eq!(restarted.coordinator.session().policy(), &updated);
         assert_eq!(

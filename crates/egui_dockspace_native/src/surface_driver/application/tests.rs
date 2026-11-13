@@ -148,10 +148,12 @@ fn moving_the_last_noncentral_host_item_to_another_surface_is_refused_before_adm
             surface: target_surface,
         },
     ] {
+        let error = state.request_command(command.clone()).unwrap_err();
         assert_eq!(
-            state.request_command(command),
-            Err(NativeActionRequestError::HostSurfaceRequired { surface: SURFACE })
+            error.reason(),
+            NativeActionRequestError::HostSurfaceRequired { surface: SURFACE }
         );
+        assert_eq!(error.into_command(), command);
         assert!(!state.application_actions.is_occupied());
         assert_eq!(state.coordinator.session().version(), before);
         assert!(
@@ -441,7 +443,9 @@ fn item_float_and_dock_use_the_existing_result_slot_and_preserve_application_dat
         .unwrap();
     commit_queued(&mut state);
     assert_eq!(
-        state.request_command(NativeCommand::SelectItem { item: SECOND }),
+        state
+            .request_command(NativeCommand::SelectItem { item: SECOND })
+            .map_err(|error| error.reason()),
         Err(NativeActionRequestError::Busy)
     );
     let NativeActionStatus::Dock(DockspaceActionStatus::Applied(DockspaceActionOutcome::Floated {
@@ -820,13 +824,17 @@ fn native_payload_commands_share_the_result_slot_and_exact_first_live_transfer()
         };
         state.request_command(command).unwrap();
         assert_eq!(
-            state.request_command(NativeCommand::SelectItem { item: FIRST }),
+            state
+                .request_command(NativeCommand::SelectItem { item: FIRST })
+                .map_err(|error| error.reason()),
             Err(NativeActionRequestError::Busy)
         );
         let mut report = commit_queued_report(&mut state);
         assert_eq!(state.coordinator.session().version(), before);
         assert_eq!(
-            state.request_command(NativeCommand::SelectItem { item: FIRST }),
+            state
+                .request_command(NativeCommand::SelectItem { item: FIRST })
+                .map_err(|error| error.reason()),
             Err(NativeActionRequestError::Busy)
         );
         let NativeActionStatus::Dock(DockspaceActionStatus::Applied(
@@ -1021,7 +1029,9 @@ fn return_complete_group_through_the_result_slot(
         assert!(state.take_action_status().is_none());
     }
     assert_eq!(
-        state.request_command(NativeCommand::SelectItem { item: FIRST }),
+        state
+            .request_command(NativeCommand::SelectItem { item: FIRST })
+            .map_err(|error| error.reason()),
         Err(NativeActionRequestError::Busy)
     );
 
@@ -1401,7 +1411,9 @@ fn foreign_native_groups_reject_without_staling_or_stopping_the_command_pipeline
             assert!(report.inputs().is_empty());
             assert!(report.take_native_effects().is_empty());
             assert_eq!(
-                destination.request_command(NativeCommand::SelectItem { item: SECOND }),
+                destination
+                    .request_command(NativeCommand::SelectItem { item: SECOND })
+                    .map_err(|error| error.reason()),
                 Err(NativeActionRequestError::Busy)
             );
             assert_eq!(
@@ -1504,7 +1516,9 @@ fn input_requests_share_the_command_slot_and_publish_only_after_commit() {
         Err(NativeActionRequestError::Busy)
     );
     assert_eq!(
-        state.request_command(NativeCommand::SelectItem { item: FIRST }),
+        state
+            .request_command(NativeCommand::SelectItem { item: FIRST })
+            .map_err(|error| error.reason()),
         Err(NativeActionRequestError::Busy)
     );
     commit_queued(&mut state);
@@ -1586,7 +1600,9 @@ fn style_requests_share_the_command_slot_and_publish_only_after_commit() {
         42.0
     );
     assert_eq!(
-        state.request_command(NativeCommand::SelectItem { item: FIRST }),
+        state
+            .request_command(NativeCommand::SelectItem { item: FIRST })
+            .map_err(|error| error.reason()),
         Err(NativeActionRequestError::Busy)
     );
     assert_eq!(
@@ -1864,15 +1880,19 @@ fn deferred_veto_and_close_reopen_keep_pane_data_and_the_single_result_slot() {
         })
         .unwrap();
     assert_eq!(
-        state.request_command(NativeCommand::OpenItem {
-            item: CLOSED,
-            placement: DockPlacement::Center(DockAnchor::Item(SECOND))
-        }),
+        state
+            .request_command(NativeCommand::OpenItem {
+                item: CLOSED,
+                placement: DockPlacement::Center(DockAnchor::Item(SECOND))
+            })
+            .map_err(|error| error.reason()),
         Err(NativeActionRequestError::Busy)
     );
     commit_queued(&mut state);
     assert_eq!(
-        state.request_command(NativeCommand::SetArrangementLocked { locked: true }),
+        state
+            .request_command(NativeCommand::SetArrangementLocked { locked: true })
+            .map_err(|error| error.reason()),
         Err(NativeActionRequestError::Busy)
     );
     let NativeActionStatus::CloseDecisionProcessed {
@@ -2050,7 +2070,9 @@ fn the_fixed_host_rejects_its_last_group_and_reopens_after_all_central_items_clo
     let mut state = state();
     let before = state.coordinator.session().version();
     assert_eq!(
-        state.request_command(NativeCommand::CloseRoot { root: ROOT }),
+        state
+            .request_command(NativeCommand::CloseRoot { root: ROOT })
+            .map_err(|error| error.reason()),
         Err(NativeActionRequestError::HostSurfaceRequired { surface: SURFACE })
     );
     assert!(!state.application_actions.is_occupied());
@@ -2125,7 +2147,9 @@ fn the_fixed_host_rejects_its_last_group_and_reopens_after_all_central_items_clo
 fn the_last_noncentral_item_cannot_remove_the_fixed_host_surface() {
     let mut state = state_with_content(DockspaceNode::tabs([FIRST]), false);
     assert_eq!(
-        state.request_command(NativeCommand::CloseItem { item: FIRST }),
+        state
+            .request_command(NativeCommand::CloseItem { item: FIRST })
+            .map_err(|error| error.reason()),
         Err(NativeActionRequestError::HostSurfaceRequired { surface: SURFACE })
     );
     assert!(!state.application_actions.is_occupied());
@@ -2133,7 +2157,9 @@ fn the_last_noncentral_item_cannot_remove_the_fixed_host_surface() {
         .request_command(NativeCommand::SelectItem { item: FIRST })
         .unwrap();
     assert_eq!(
-        state.request_command(NativeCommand::CloseItem { item: FIRST }),
+        state
+            .request_command(NativeCommand::CloseItem { item: FIRST })
+            .map_err(|error| error.reason()),
         Err(NativeActionRequestError::Busy)
     );
     commit_queued(&mut state);
@@ -2164,11 +2190,13 @@ fn chrome_group_decisions_keep_the_host_and_forward_inert_tokens_to_the_core() {
     frame.commit().unwrap();
     let plan = state.pending_content_close_plans().pop().unwrap();
     assert_eq!(
-        state.request_command(NativeCommand::DecideClose {
-            request: plan.request(),
-            token: plan.items()[0].token(),
-            decision: CloseDecision::Allow
-        }),
+        state
+            .request_command(NativeCommand::DecideClose {
+                request: plan.request(),
+                token: plan.items()[0].token(),
+                decision: CloseDecision::Allow
+            })
+            .map_err(|error| error.reason()),
         Err(NativeActionRequestError::HostSurfaceRequired { surface: SURFACE })
     );
     state
@@ -2187,11 +2215,13 @@ fn chrome_group_decisions_keep_the_host_and_forward_inert_tokens_to_the_core() {
         panic!("the core must issue the exact deferred continuation")
     };
     assert_eq!(
-        state.request_command(NativeCommand::ContinueClose {
-            request: plan.request(),
-            token: continuation,
-            decision: DeferredCloseDecision::Allow
-        }),
+        state
+            .request_command(NativeCommand::ContinueClose {
+                request: plan.request(),
+                token: continuation,
+                decision: DeferredCloseDecision::Allow
+            })
+            .map_err(|error| error.reason()),
         Err(NativeActionRequestError::HostSurfaceRequired { surface: SURFACE })
     );
     state

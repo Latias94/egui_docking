@@ -46,7 +46,7 @@ pub use application_action::{
     NativeActionFailure, NativeActionInterruption, NativeActionRequestError, NativeActionStatus,
 };
 pub use close_control::NativeWindowClosePolicy;
-pub use command::NativeCommand;
+pub use command::{NativeCommand, NativeCommandRequestError};
 pub use coordinator::NativeStorageLimit;
 pub use dockspace::runtime::{
     DockspaceEvent, DockspaceEventId, DockspaceEventKind, DockspaceLayoutChange,

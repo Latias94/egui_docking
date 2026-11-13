@@ -30,11 +30,12 @@ impl<P: PaneView> NativeNotificationContext<'_, P> {
     ///
     /// # Errors
     ///
-    /// Returns the same admission errors as [`crate::NativeDockspaceApp::request_command`].
+    /// Returns the same admission errors as [`crate::NativeDockspaceApp::request_command`],
+    /// retaining the unchanged command for storage or retry.
     pub fn request_command(
         &self,
         command: crate::NativeCommand,
-    ) -> Result<(), crate::NativeActionRequestError> {
+    ) -> Result<(), crate::NativeCommandRequestError> {
         lock_state(self.state).request_command(command)
     }
 
