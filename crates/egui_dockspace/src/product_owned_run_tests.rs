@@ -327,6 +327,60 @@ impl PaneView for EditablePanes {
 }
 
 #[test]
+fn discarded_focus_keeps_the_core_request_without_reapplying_framework_focus() {
+    let (context, mut dockspace, _, _) = presented_tabs("discarded-pane-focus");
+    let mut panes = EditablePanes(["first content".to_owned(), "second content".to_owned()]);
+    let target = panes.focus_target(SECOND).unwrap();
+    context.options_mut(|options| options.max_passes = 3.try_into().unwrap());
+    dockspace.select_item_current(SECOND).unwrap();
+    let request = dockspace.session.pane_focus_request(SURFACE).unwrap();
+    let (mut output, receipt) = crate::run_ui(&context, input(1.0, Vec::new()), |ui| {
+        if ui.ctx().current_pass_index() < 2 {
+            dockspace
+                .show_single_surface(SURFACE, ui, &mut panes)
+                .unwrap();
+            ui.ctx()
+                .request_discard("discard the pane focus observation");
+        } else {
+            ui.label("the accepted pass omits the docking surface");
+        }
+    })
+    .into_parts();
+    assert_eq!(output.platform_output.num_completed_passes, 3);
+    output.textures_delta.clear();
+    output.drop_without_applying_deltas();
+    receipt.report(SurfacePresentationResult::Presented);
+    assert_eq!(dockspace.session.pane_focus_request(SURFACE), Some(request));
+    context.memory_mut(|memory| memory.surrender_focus(target));
+
+    for time in [1.1, 1.2] {
+        let (output, _) = dockspace
+            .run_single_surface(&context, input(time, Vec::new()), SURFACE, &mut panes)
+            .unwrap();
+        let (mut output, receipt) = output.into_parts();
+        output.textures_delta.clear();
+        assert_eq!(dockspace.session.pane_focus_request(SURFACE), Some(request));
+        assert!(!context.memory(|memory| memory.has_focus(target)));
+        output.drop_without_applying_deltas();
+        receipt.report(SurfacePresentationResult::Presented);
+    }
+
+    dockspace.select_item_current(SECOND).unwrap();
+    assert_ne!(dockspace.session.pane_focus_request(SURFACE), Some(request));
+    for time in [1.3, 1.4] {
+        let (output, _) = dockspace
+            .run_single_surface(&context, input(time, Vec::new()), SURFACE, &mut panes)
+            .unwrap();
+        let (mut output, receipt) = output.into_parts();
+        output.textures_delta.clear();
+        assert!(context.memory(|memory| memory.has_focus(target)));
+        output.drop_without_applying_deltas();
+        receipt.report(SurfacePresentationResult::Presented);
+    }
+    assert!(dockspace.session.pane_focus_request(SURFACE).is_none());
+}
+
+#[test]
 fn owned_run_output_backpressure_preserves_text_paste_and_ime_commit() {
     #[derive(Default)]
     struct Document {

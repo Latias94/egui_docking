@@ -6,6 +6,7 @@ use egui::{Context, Id};
 pub(crate) struct DeferredTabFocus {
     target: Option<Id>,
     handled: bool,
+    applied: bool,
 }
 
 impl DeferredTabFocus {
@@ -13,6 +14,7 @@ impl DeferredTabFocus {
     pub(crate) fn observe_primary_press(&mut self, target: Option<Id>) {
         self.target = target;
         self.handled |= target.is_some();
+        self.applied = false;
     }
 
     /// Reports tab input handling even after later input supersedes its target.
@@ -22,11 +24,19 @@ impl DeferredTabFocus {
         self.handled
     }
 
+    /// Returns the last tab destination, or none after a later application press.
+    pub(crate) const fn target(&self) -> Option<Id> {
+        self.target
+    }
+
     /// Applies valid tab focus once, allowing a later pass to register its target.
     ///
-    /// Returns `true` when this pass satisfies and consumes the intent, including
+    /// Returns `true` when this pass satisfies the intent, including
     /// when its target already owns focus. Invalid registrations remain pending.
     pub(crate) fn apply(&mut self, context: &Context) -> bool {
+        if self.applied {
+            return false;
+        }
         let Some(id) = self.target else {
             return false;
         };
@@ -46,7 +56,7 @@ impl DeferredTabFocus {
             true
         });
         if applied {
-            self.target = None;
+            self.applied = true;
         }
         applied
     }
@@ -86,6 +96,7 @@ mod tests {
                         assert_eq!(intent.apply(ui.ctx()), enabled);
                         if enabled {
                             assert_eq!(ui.memory(egui::Memory::focused), Some(target));
+                            assert_eq!(intent.target(), Some(target));
                             external.request_focus();
                             assert!(!intent.apply(ui.ctx()));
                             assert_eq!(ui.memory(egui::Memory::focused), Some(external.id));

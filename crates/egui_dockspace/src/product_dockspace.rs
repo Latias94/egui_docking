@@ -1062,11 +1062,12 @@ impl Dockspace {
             && let Some(request) = self.session.pane_focus_request(surface)
             && Some(request) != focus_before_pointer
         {
-            crate::product_focus::mark_pane_focus_applied(
+            crate::product_focus::retain_tab_focus_order(
                 ui.ctx(),
                 self.id,
                 ui.ctx().viewport_id(),
                 request,
+                deferred_focus.target(),
             );
         }
         crate::product_pointer::schedule_pointer_continuation(

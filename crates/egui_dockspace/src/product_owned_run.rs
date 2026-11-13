@@ -584,10 +584,15 @@ impl Dockspace {
             && let Some(request) = self.session.pane_focus_request(surface)
             && Some(request) != focus_before_pointer
         {
-            // The original tab input has already participated in egui focus
-            // ordering. Its newly admitted core intent must not override later
-            // application focus on the next run while presentation is pending.
-            crate::product_focus::mark_pane_focus_applied(context, self.id, viewport, request);
+            // Hand tab focus to content on the next run only if no later input
+            // or application callback has taken focus in the matching viewport.
+            crate::product_focus::retain_tab_focus_order(
+                context,
+                self.id,
+                viewport,
+                request,
+                deferred_focus.target(),
+            );
         }
         self.ui_actions
             .publish(pending_actions, run_sequence.unwrap(), &report);

@@ -254,6 +254,45 @@ fn a_later_editor_click_replaces_the_same_packets_deferred_tab_focus() {
 }
 
 #[test]
+fn an_unsuperseded_tab_press_hands_focus_to_its_content_once() {
+    for owned in [true, false] {
+        let (context, mut dockspace, mut pane, tab) = presented_editor(owned);
+        let (mut output, receipt) = run(
+            owned,
+            &context,
+            &mut dockspace,
+            &mut pane,
+            1.0,
+            click(tab).into(),
+        )
+        .into_parts();
+        output.textures_delta.clear();
+        output.drop_without_applying_deltas();
+        receipt.report(SurfacePresentationResult::Presented);
+
+        for time in [1.1, 1.2] {
+            let (mut output, receipt) =
+                run(owned, &context, &mut dockspace, &mut pane, time, Vec::new()).into_parts();
+            output.textures_delta.clear();
+            assert_eq!(
+                context.memory(egui::Memory::focused),
+                Some(pane.target),
+                "the tab's core focus intent must reach its content, owned={owned}"
+            );
+            output.drop_without_applying_deltas();
+            receipt.report(SurfacePresentationResult::Presented);
+        }
+        context.memory_mut(|memory| memory.surrender_focus(pane.target));
+        let (mut output, receipt) =
+            run(owned, &context, &mut dockspace, &mut pane, 1.3, Vec::new()).into_parts();
+        output.textures_delta.clear();
+        assert!(!context.memory(|memory| memory.has_focus(pane.target)));
+        output.drop_without_applying_deltas();
+        receipt.report(SurfacePresentationResult::Presented);
+    }
+}
+
+#[test]
 fn pending_pane_focus_keeps_ime_composition_while_receipts_are_held() {
     for owned in [true, false] {
         let (context, mut dockspace, mut pane, _) = presented_editor(owned);

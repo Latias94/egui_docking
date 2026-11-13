@@ -3936,7 +3936,7 @@ fn unavailable_pane_focus_binding_terminates_without_guessing_a_target() {
 }
 
 #[test]
-fn discarded_pane_focus_observation_cannot_complete_the_request() {
+fn discarded_pane_focus_does_not_replay_over_later_application_focus() {
     let context = Context::default();
     context.enable_accesskit();
     context.options_mut(|options| {
@@ -3964,13 +3964,21 @@ fn discarded_pane_focus_observation_cannot_complete_the_request() {
     context.memory_mut(|memory| memory.surrender_focus(panes.target));
     assert!(!context.memory(|memory| memory.has_focus(panes.target)));
 
-    let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (_, capability) = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert_eq!(capability, DockspaceCapability::Supported);
     assert!(
-        context.memory(|memory| memory.has_focus(panes.target)),
-        "discarded Focused observations leave the request pending for the next legal encoding",
+        !context.memory(|memory| memory.has_focus(panes.target)),
+        "discarding output preserves the pending observation without replaying the framework focus side effect",
     );
     let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(!context.memory(|memory| memory.has_focus(panes.target)));
+
+    dockspace
+        .select_item_current(SECOND)
+        .expect("a new explicit selection requests focus again");
+    let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
     assert!(context.memory(|memory| memory.has_focus(panes.target)));
+    let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
     context.memory_mut(|memory| memory.surrender_focus(panes.target));
     assert!(!context.memory(|memory| memory.has_focus(panes.target)));
     let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());

@@ -26,6 +26,7 @@ use crate::pane::{PaneFocusState, PaneView};
 struct FrameworkFocusRequest {
     request: DockspacePaneFocusRequest,
     applied: bool,
+    tab_target: Option<Id>,
     observation: Option<DockspacePaneFocusObservation>,
     wake_frame: Option<u64>,
 }
@@ -42,6 +43,7 @@ fn with_framework_focus<T>(
         let state = data.get_temp_mut_or_insert_with(key, || FrameworkFocusRequest {
             request,
             applied: false,
+            tab_target: None,
             observation: None,
             wake_frame: None,
         });
@@ -49,6 +51,7 @@ fn with_framework_focus<T>(
             *state = FrameworkFocusRequest {
                 request,
                 applied: false,
+                tab_target: None,
                 observation: None,
                 wake_frame: None,
             };
@@ -65,11 +68,15 @@ pub(crate) fn apply_pane_focus_request(
     request: DockspacePaneFocusRequest,
     target: Id,
 ) {
-    let applied =
-        with_framework_focus(context, instance, context.viewport_id(), request, |state| {
-            std::mem::replace(&mut state.applied, true)
-        });
-    if !applied {
+    let focused = context.memory(egui::Memory::focused);
+    let apply = with_framework_focus(context, instance, context.viewport_id(), request, |state| {
+        !std::mem::replace(&mut state.applied, true)
+            && state
+                .tab_target
+                .take()
+                .is_none_or(|tab| focused == Some(tab))
+    });
+    if apply {
         context.memory_mut(|memory| {
             if !memory.has_focus(target) {
                 memory.request_focus(target);
@@ -78,16 +85,19 @@ pub(crate) fn apply_pane_focus_request(
     }
 }
 
-/// Associates an already handled tab press with its newly published core intent.
+/// Preserves input order when a tab press publishes a new pane-focus intent.
+/// Content can take focus only while the original tab still owns framework focus.
 /// This records no renderer presentation or focus-observation acknowledgement.
-pub(crate) fn mark_pane_focus_applied(
+pub(crate) fn retain_tab_focus_order(
     context: &Context,
     instance: Id,
     viewport: egui::ViewportId,
     request: DockspacePaneFocusRequest,
+    tab_target: Option<Id>,
 ) {
     with_framework_focus(context, instance, viewport, request, |state| {
-        state.applied = true
+        state.applied = tab_target.is_none();
+        state.tab_target = tab_target;
     });
 }
 
