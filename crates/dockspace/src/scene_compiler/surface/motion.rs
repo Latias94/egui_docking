@@ -8,8 +8,8 @@ use crate::scene::{
 
 /// Rebuilds leaf content and chrome at their sampled sizes, retaining target constraints.
 ///
-/// An active popup settles immediately to the target so its complete popup plane and
-/// exact receiver roster stay available. Structural motion resumes after it closes.
+/// A popup on this surface settles immediately to the target so its complete popup
+/// plane and exact receiver roster stay available. Other surfaces keep their motion.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn materialize_presentation_sample(
     workspace: &Workspace,
@@ -20,7 +20,8 @@ pub(crate) fn materialize_presentation_sample(
     rects: &BTreeMap<PaneSceneId, LogicalRect>,
     ranks: &BTreeMap<PaneSceneId, usize>,
 ) -> Result<PresentationPlan, PresentationCompilationError> {
-    if !matches!(target.popup(), PopupPlaneRequirement::Inactive { .. }) {
+    let surface = target.surface();
+    if target.popup().visual_for_surface(surface).is_some() {
         return Ok(target.clone());
     }
     let moving_roots = target
@@ -37,7 +38,6 @@ pub(crate) fn materialize_presentation_sample(
         return Ok(target.clone());
     }
 
-    let surface = target.surface();
     let requirements = manifest
         .surface(surface)
         .ok_or(PresentationCompilationError::RequirementsVanished { surface })?;
