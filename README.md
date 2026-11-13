@@ -75,8 +75,11 @@ dockspace = { path = "../dockspace/crates/dockspace" }
 egui_dockspace = { path = "../dockspace/crates/egui_dockspace" }
 ```
 
-Enable `serde` on the crate you use for layout persistence. Pane data and file
-storage stay in your application.
+Motion is enabled by default in the egui adapter. Use `MotionMode::Off` at
+runtime or `default-features = false` to omit it;
+[configuration examples](crates/egui_dockspace/README.md#configure-motion) cover
+per-effect duration, curves and reduced motion. Enable `serde` for layout
+persistence. Pane data and file storage stay in your application.
 
 ## Learn more
 

@@ -99,7 +99,6 @@ impl DropSourceSuppression {
 }
 
 #[cfg(test)]
-#[path = "drop_target/ordering_tests.rs"]
 mod ordering_tests;
 
 /// Stable front-to-back presentation layer key validated by the core.

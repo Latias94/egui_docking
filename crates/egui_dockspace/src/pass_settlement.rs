@@ -750,5 +750,4 @@ fn context_identity(context: &Context) -> Arc<ContextIdentity> {
 }
 
 #[cfg(test)]
-#[path = "pass_settlement_tests.rs"]
 mod tests;

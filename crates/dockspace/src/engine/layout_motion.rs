@@ -12,6 +12,7 @@ use crate::scene::{ContainedLayoutProjection, SurfacePlanScene};
 pub(super) struct LayoutMotionState {
     pub(super) frame: Option<MotionFrame>,
     pub(super) surfaces: BTreeMap<SurfaceId, Arc<SurfaceMotionState>>,
+    immediate_resizes: BTreeMap<SurfaceId, SurfaceMeasurementTicket>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -31,8 +32,29 @@ struct PaneMotion {
 }
 
 impl DockEngine {
+    pub(super) fn settle_semantic_resize_motion(&mut self, surface: SurfaceId) {
+        if let Some(requirements) = self.presentation_requirements().surface(surface) {
+            let ticket = requirements.ticket();
+            // Keep the target immediate across dropped outputs and preparation
+            // retries, until this surface's requirements actually change.
+            self.presentation_authority
+                .motion
+                .immediate_resizes
+                .insert(surface, ticket);
+        }
+    }
+
     pub(crate) fn set_motion_frame(&mut self, frame: MotionFrame) {
         self.presentation_authority.motion.frame = Some(frame);
+        let requirements = &self.presentation_authority.presentation_requirements;
+        self.presentation_authority
+            .motion
+            .immediate_resizes
+            .retain(|surface, ticket| {
+                requirements
+                    .surface(*surface)
+                    .is_some_and(|current| current.ticket() == *ticket)
+            });
         let epoch = self.version.epoch();
         let workspace = &self.workspace;
         self.presentation_authority
@@ -130,7 +152,13 @@ impl DockEngine {
             .and_then(SurfaceScene::confirmed_presentation)
             .filter(|scene| scene.coordinate_capture() == coordinates)
             .filter(|scene| scene.plan().bounds() == target.bounds());
-        let transition = if self.interaction.active_surface() == Some(surface)
+        let transition = if self
+            .presentation_authority
+            .motion
+            .immediate_resizes
+            .get(&surface)
+            == Some(&contribution.token.ticket())
+            || self.interaction.active_surface() == Some(surface)
             || target.popup().visual_for_surface(surface).is_some()
             || target.contained_projection().is_some()
             || !target.resize_projection().is_empty()

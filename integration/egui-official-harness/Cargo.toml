@@ -15,7 +15,7 @@ publish = false
 
 [features]
 default = []
-demo = ["egui_dockspace/wgpu"]
+demo = ["egui_dockspace/wgpu", "egui_dockspace/x11", "egui_dockspace/wayland"]
 motion = ["egui_dockspace/motion"]
 
 [dependencies]

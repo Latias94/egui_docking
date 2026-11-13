@@ -19,22 +19,18 @@ pub mod winit;
 
 mod builder;
 mod error;
-#[path = "product_error_detail.rs"]
 mod error_detail;
-#[path = "product_dockspace.rs"]
 mod facade;
+mod focus;
 mod input;
 #[cfg(feature = "native-render-support")]
 #[doc(hidden)]
 pub mod native_support;
 mod output_proof;
 mod pass_settlement;
-mod product_focus;
-mod product_pointer;
-mod product_render;
-#[path = "product_response.rs"]
+mod pointer;
+mod render;
 mod response;
-#[path = "product_render/touch_menu.rs"]
 mod touch_menu;
 
 pub use builder::DockspaceBuilder;
@@ -97,5 +93,4 @@ pub use style::{
 pub use tab::{Tab, TabBar, TabBarId, TabBarLayout, TabBarSlot, TabClose, TabVisuals};
 
 #[cfg(test)]
-#[path = "product_events_tests.rs"]
-mod product_events_tests;
+mod events_tests;

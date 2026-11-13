@@ -18,11 +18,11 @@ use egui::{Id, Ui};
 
 use crate::error::DockspaceError;
 use crate::pane::PaneView;
-use crate::product_render;
+use crate::render;
 use crate::style::DockStyle;
 
-pub use crate::product_focus::{retain_skipped_pane_focus, sample_host_focus};
-pub use crate::product_render::EguiSurfaceAction;
+pub use crate::focus::{retain_skipped_pane_focus, sample_host_focus};
+pub use crate::render::EguiSurfaceAction;
 
 /// Validates every surface's exact encoded spans after all renderer output hooks.
 ///
@@ -515,17 +515,17 @@ pub fn paint_surface(
     };
 
     let semantic_output = plan.semantic_output();
-    product_render::prepare_menu_layer(ui, instance_id, surface);
+    render::prepare_menu_layer(ui, instance_id, surface);
     let capture = crate::output_proof::SurfaceOutputCapture::begin_multilayer(ui.painter());
-    let painted = product_render::paint_surface(
+    let painted = render::paint_surface(
         ui,
         instance_id,
         plan,
         panes,
         style,
         input,
-        product_render::PaintResources::default(),
-        product_render::PointerActionAuthority::ExternalJournal,
+        render::PaintResources::default(),
+        render::PointerActionAuthority::ExternalJournal,
         Some(scroll_registrar),
     )
     .map_err(DockspaceError::from_detail)?;
@@ -583,7 +583,7 @@ pub fn measure_surface(
     panes: &dyn PaneView,
     style: &DockStyle,
 ) -> Result<BTreeSet<ItemId>, DockspaceError> {
-    product_render::measure_surface(
+    render::measure_surface(
         frame, surface, ui, dock_rect, popup_rect, panes, style, None,
     )
 }

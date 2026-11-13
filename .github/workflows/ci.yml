@@ -36,10 +36,10 @@ jobs:
         run: cargo fmt --all --check
       - name: Check core dependency boundary
         run: python3 scripts/check_core_dependencies.py
-      - name: Check renderer-independent winit integration
-        run: >-
-          cargo check --package egui_dockspace --no-default-features
-          --features winit --lib --locked
+      - name: Check selectable egui host backends
+        run: |
+          cargo check --package egui_dockspace --no-default-features --features winit,x11 --lib --locked
+          cargo check --package egui_dockspace --no-default-features --features winit,wayland --lib --locked
       - name: Check selectable winit native helpers and backends
         run: |
           cargo check --package dockspace_winit --no-default-features --features x11,native-windows --lib --locked

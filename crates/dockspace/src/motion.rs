@@ -51,10 +51,10 @@ pub enum MotionMode {
 
 /// Runtime settings frozen by the host for one outer update.
 ///
-/// Defaults use a 200 ms response for layout, a 125 ms response for drop preview,
-/// and immediate pointer focus. These responses are tuning seeds, not exact
-/// settling deadlines. Unknown system preferences default to reduced motion;
-/// applications can explicitly opt into full motion for that case.
+/// Defaults use a 200 ms tween for layout, a 125 ms tween for drop preview, and
+/// immediate pointer focus. Unknown system preferences allow motion by default;
+/// applications can choose a conservative fallback or disable motion entirely.
+/// An explicit reduced-motion preference always takes priority.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MotionSettings {
     /// Global motion policy.
@@ -73,12 +73,14 @@ impl Default for MotionSettings {
     fn default() -> Self {
         Self {
             mode: MotionMode::System,
-            unknown_prefers_reduced_motion: true,
-            layout: Transition::CriticalSpring {
-                response: Duration::from_millis(200),
+            unknown_prefers_reduced_motion: false,
+            layout: Transition::Tween {
+                duration: Duration::from_millis(200),
+                curve: Curve::EaseInOut,
             },
-            drop_preview: Transition::CriticalSpring {
-                response: Duration::from_millis(125),
+            drop_preview: Transition::Tween {
+                duration: Duration::from_millis(125),
+                curve: Curve::EaseOut,
             },
             pointer_focus: Transition::Instant,
         }

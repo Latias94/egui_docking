@@ -26,6 +26,14 @@ Keep the renderer-neutral core independent of egui, an async executor and an OS
 event loop. Pane data belongs to the application. Add behavior behind existing
 owners before introducing another state owner or protocol.
 
+Keep physical paths aligned with Rust module names. Public-interface tests go in
+`tests/` and use Cargo's automatic discovery; private protocol regressions go in
+`src/<owner>/tests.rs` or core `src/behavior_tests/`. The egui adapter's `facade/`
+owns construction, application actions, persistence and host-frame coordination;
+`render/` owns widgets and painting, while `focus/` and `pointer/` bridge input.
+Split modules at these responsibilities rather than introducing wrapper state
+or an additional trait only to reduce file length.
+
 ## Local checks
 
 Reuse the existing target directories. Run build/test commands sequentially and

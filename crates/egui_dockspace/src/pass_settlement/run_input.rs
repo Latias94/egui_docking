@@ -5,7 +5,7 @@ use std::sync::{Arc, PoisonError};
 
 use egui::{Context, RawInput, Ui, ViewportId};
 
-use crate::product_pointer::ProductPointerInputSnapshot;
+use crate::pointer::ProductPointerInputSnapshot;
 
 use super::{RunIdentity, active_run_portal};
 

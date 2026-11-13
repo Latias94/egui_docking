@@ -92,16 +92,34 @@ fn render(
 fn main() {
     println!("panes,mode,target_prepare_us,mean_tick_prepare_us,mean_program_walk_us");
     for count in [16, 64] {
-        for mode in [MotionMode::Off, MotionMode::System] {
-            let settings = MotionSettings {
-                mode,
-                // Keep the cost probe active for every sample; this is not UI tuning.
-                layout: Transition::Tween {
-                    duration: Duration::from_secs(10),
-                    curve: Curve::Linear,
+        let linear = MotionSettings {
+            // Retain the original linear workload for comparisons across revisions.
+            layout: Transition::Tween {
+                duration: Duration::from_secs(10),
+                curve: Curve::Linear,
+            },
+            ..Default::default()
+        };
+        for (label, settings) in [
+            (
+                "Off",
+                MotionSettings {
+                    mode: MotionMode::Off,
+                    ..linear
                 },
-                ..Default::default()
-            };
+            ),
+            ("LinearTween", linear),
+            ("DefaultTween", MotionSettings::default()),
+            (
+                "CriticalSpring",
+                MotionSettings {
+                    layout: Transition::CriticalSpring {
+                        response: Duration::from_millis(200),
+                    },
+                    ..Default::default()
+                },
+            ),
+        ] {
             let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
                 SURFACE,
                 DockspaceRootLayout::new(RootId::new(1), tree(1, count, DockspaceAxis::Horizontal)),
@@ -133,7 +151,7 @@ fn main() {
                 walk += sample_walk;
             }
             println!(
-                "{count},{mode:?},{:.3},{:.3},{:.3}",
+                "{count},{label},{:.3},{:.3},{:.3}",
                 target.as_secs_f64() * 1e6,
                 tick.as_secs_f64() * 1e6 / f64::from(SAMPLES),
                 walk.as_secs_f64() * 1e6 / f64::from(SAMPLES)

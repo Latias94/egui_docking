@@ -27,26 +27,36 @@ Drag tabs onto a pane to merge or split it. To float a tab, hold **Shift** while
 dragging and release inside the window. Shift temporarily disables docking. Drag a
 floating group's dotted title grip onto a docking guide to dock the group again.
 
-To try interruptible layout and drop-preview motion:
-
-```sh
-cargo run -p egui_dockspace --example workbench --features wgpu,motion --locked
-```
-
-The toolbar lets you disable motion, request reduced motion, or tune a spring
-response or tween duration and curve. Dividers and drag proxies follow the
+Layout and drop-preview motion are enabled by default. The toolbar lets you
+disable motion, request reduced motion, or tune a spring response or tween
+duration and curve. Dividers and drag proxies follow the
 pointer directly. New panes appear at their destination; surviving panes in
 the same root move from their previous geometry. Native OS window movement and
 cross-window content flights are outside this first delivery.
 
 ## Configure motion
 
-The optional `motion` feature is off by default. Its settings are independent
-of `DockStyle` and do not invalidate layout measurements:
+The default `motion` feature adds interruptible layout and drop-preview motion.
+Layout changes finish in 200 ms; drop previews finish in 125 ms. Its settings
+are independent of `DockStyle` and do not invalidate layout measurements.
+To disable all geometry motion at runtime:
+
+```rust,ignore
+use egui_dockspace::motion::{MotionMode, MotionSettings};
+
+dockspace.set_motion_settings(MotionSettings {
+    mode: MotionMode::Off,
+    ..Default::default()
+});
+```
+
+To omit motion support entirely, set `default-features = false` on your dependency.
+Add only the integrations and Linux backends you need, for example
+`features = ["wgpu", "x11"]`. Or keep motion and customize each effect:
 
 ```rust,ignore
 use std::time::Duration;
-use egui_dockspace::motion::{Curve, MotionPreference, MotionSettings, Transition};
+use egui_dockspace::motion::{Curve, MotionSettings, Transition};
 
 dockspace.set_motion_settings(MotionSettings {
     layout: Transition::Tween {
@@ -55,20 +65,21 @@ dockspace.set_motion_settings(MotionSettings {
     },
     ..Default::default()
 });
-dockspace.set_motion_preference(MotionPreference::Full);
 ```
 
 Supply your application's observed system preference. egui has no portable OS
-reduced-motion fact, so the adapter starts with `Unknown`; the default settings
-treat that as reduced motion. Set `unknown_prefers_reduced_motion = false` only
-when your application deliberately chooses that fallback, as the workbench does.
-An egui `animation_time` of zero also disables geometry motion.
+reduced-motion fact, so the adapter starts with `Unknown`, which allows motion.
+Call `set_motion_preference(MotionPreference::Reduced)` when your host observes
+that preference, or set `unknown_prefers_reduced_motion = true` for a conservative
+fallback. An egui `animation_time` of zero also disables geometry motion,
+including when the application supplies `Full`.
 
 `MotionMode::Off`, `Transition::Instant`, and zero timing settle immediately.
 `CriticalSpring { response }` preserves position and velocity on unconstrained
 retargeting; response is its natural period, not an exact completion deadline.
 `Tween { duration, curve }` has a finite duration and preserves position when
-retargeted. `Curve::Bezier(CubicBezier::new(...)?)` accepts validated custom curves.
+retargeted. `Curve::Bezier(CubicBezier::new(...)?)` accepts validated custom curves;
+`control_points()` reads them back for a settings editor or application storage.
 `drop_preview` and `pointer_focus` are separately configurable; spatial focus
 motion defaults to off, and keyboard focus remains immediate.
 
@@ -88,7 +99,9 @@ For a small runnable editor with full drag docking:
 cargo run -p egui_dockspace --example winit --features wgpu --locked
 ```
 
-Enable only the integration your application needs; platform features are off by default:
+Enable only the integration your application needs. Winit, WGPU and eframe stay
+optional. The default Linux backend selection takes effect when one of those
+integrations is enabled:
 
 ```toml
 [dependencies]
@@ -108,6 +121,19 @@ egui = "=0.37.0"
   automatically; an existing event loop calls `init_accesskit` and forwards its
   user events through `on_accesskit_event`. Create the window hidden, initialize
   the adapter, then show it for the first time.
+
+The default backend features support X11 and Wayland. To build only one Linux
+backend, disable defaults and select it explicitly:
+
+```toml
+egui_dockspace = { path = "../dockspace/crates/egui_dockspace", default-features = false, features = ["motion", "wgpu", "x11"] }
+```
+
+Replace `x11` with `wayland` for Wayland-only support. Add
+`wayland-csd-adwaita` for the winit runner's Adwaita client decorations. The same
+backend features apply to `winit` and the `example-app` eframe examples. On
+Windows and macOS, no Linux backend feature is required. These feature selectors
+do not enable a window integration on their own.
 
 The [small editor](examples/winit.rs) shows this setup without custom event-loop
 code. Configure window attributes through `NativeOptions::window`, and configure
@@ -248,11 +274,15 @@ in memory for the current process.
 
 | Feature | Purpose |
 | --- | --- |
+| `motion` (default) | Interruptible geometry with per-effect timing, curves and runtime disable/reduced-motion controls |
 | `serde` | Layout document save/restore; pane data and file storage remain application-owned |
 | `example-app` | Build the packaged eframe examples |
 | `winit` | Input and platform-output bridge for an existing winit event loop and renderer |
 | `wgpu` | Complete-output single-window runner and renderer using official WGPU |
 | `accesskit` | System accessibility delivery and action input for the winit integration |
+| `x11` | X11 backend for enabled winit, WGPU or eframe integrations; on by default |
+| `wayland` | Wayland backend for enabled winit, WGPU or eframe integrations; on by default |
+| `wayland-csd-adwaita` | Adwaita client decorations for the winit runner; includes `wayland` and is on by default |
 | `native-render-support` | Internal seam for the unpublished native adapter |
 
 ## License

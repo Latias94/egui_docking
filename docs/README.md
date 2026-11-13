@@ -37,4 +37,4 @@
 - [Atomic frames and presentation authority](adr/0002-atomic-frames-and-presentation.md)
 - [Native window composition](adr/0003-native-window-composition.md)
 - [Separate official and fork workspaces](adr/0004-isolate-native-forks.md)
-- [Motion and presentation geometry (proposed)](adr/0005-motion-and-presentation-geometry.md)
+- [Motion and presentation geometry](adr/0005-motion-and-presentation-geometry.md)

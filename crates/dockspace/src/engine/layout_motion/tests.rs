@@ -397,3 +397,124 @@ fn changing_surface_bounds_discards_trajectories_in_the_previous_coordinate_spac
         present(&mut session, output);
     }
 }
+
+fn semantic_resize_action(
+    session: &mut DockspaceSession,
+    junction: bool,
+) -> crate::runtime::PreparedSurfaceAction {
+    use crate::runtime::SurfaceSplitterAdjustment;
+
+    let mut frame = session.begin_host_frame().unwrap();
+    let plan = frame.paint_plan(SURFACE).unwrap().unwrap();
+    let mut action = None;
+    plan.visit_surface_program(|step| {
+        if action.is_none()
+            && let Step::Operation { operation, .. } = step
+        {
+            action = match operation {
+                Operation::Splitter(record) if !junction => plan.prepare_splitter_adjustment(
+                    record.visual_id(),
+                    SurfaceSplitterAdjustment::Increment,
+                ),
+                Operation::SplitterJunction(record) if junction => plan
+                    .prepare_splitter_junction_adjustment(
+                        record.visual_id(),
+                        DockspaceAxis::Vertical,
+                        SurfaceSplitterAdjustment::Increment,
+                    ),
+                _ => None,
+            };
+        }
+        Ok::<(), ()>(())
+    })
+    .unwrap();
+    action.expect("the static partition must retain an operable resize control")
+}
+
+#[test]
+fn semantic_splitter_and_junction_resize_stay_immediate_after_dropped_outputs() {
+    for junction in [false, true] {
+        for deferred in [false, true] {
+            let column = |first, second| {
+                DockspaceNode::equal_split(
+                    DockspaceAxis::Vertical,
+                    [first, second].map(|item| DockspaceNode::tabs([item])),
+                )
+                .unwrap()
+            };
+            let content = DockspaceNode::equal_split(
+                DockspaceAxis::Horizontal,
+                [column(A, B), column(C, ItemId::new(4))],
+            )
+            .unwrap();
+            let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+                SURFACE,
+                DockspaceRootLayout::new(ROOT, content),
+            )])
+            .unwrap();
+            let mut session = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
+            let (before, output) = paint(&mut session, motion(0));
+            present(&mut session, output);
+            assert_eq!(before.splitters, 3);
+
+            let action = semantic_resize_action(&mut session, junction);
+            let mut frame = session.begin_host_frame().unwrap();
+            if deferred {
+                frame
+                    .submit_deferred_surface_action(action.into_deferred())
+                    .unwrap();
+            } else {
+                frame.submit_surface_action(action).unwrap();
+            }
+            frame
+                .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+                .unwrap();
+            assert!(frame.commit().unwrap().workspace_changed());
+
+            let (resized, dropped) = paint(&mut session, motion(1000));
+            assert_ne!(resized.panes, before.panes);
+            assert!(resized.partition);
+            assert_eq!(resized.splitters, 3);
+            assert!(!session.surface_motion_is_active(SURFACE));
+            session
+                .report_surface_presentation(dropped, SurfacePresentationResult::Dropped)
+                .unwrap();
+            settle(&mut session);
+
+            let (retried, output) = paint(&mut session, motion(1010));
+            assert_eq!(retried.panes, resized.panes);
+            assert!(retried.partition);
+            assert_eq!(retried.splitters, 3);
+            assert!(!session.surface_motion_is_active(SURFACE));
+            present(&mut session, output);
+            drop(semantic_resize_action(&mut session, junction));
+
+            dock(&mut session, C, A);
+            let (_, output) = paint(&mut session, motion(1020));
+            assert!(session.surface_motion_is_active(SURFACE));
+            present(&mut session, output);
+        }
+    }
+}
+
+#[test]
+fn aborted_semantic_resize_does_not_disable_later_docking_motion() {
+    let (mut session, before) = fixture();
+    let version = session.version();
+    let action = semantic_resize_action(&mut session, false);
+    {
+        let mut aborted = session.begin_host_frame().unwrap();
+        aborted.submit_surface_action(action).unwrap();
+    }
+    assert_eq!(session.version(), version);
+    let (unchanged, output) = paint(&mut session, motion(10));
+    assert_eq!(unchanged.panes, before.panes);
+    present(&mut session, output);
+
+    dock(&mut session, C, A);
+    let (moving, output) = paint(&mut session, motion(1000));
+    assert!(session.surface_motion_is_active(SURFACE));
+    assert!(!moving.partition);
+    assert_eq!(moving.splitters, 0);
+    present(&mut session, output);
+}

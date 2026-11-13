@@ -371,7 +371,6 @@ mod tests {
 }
 
 #[cfg(feature = "wgpu")]
-#[path = "winit/native.rs"]
 mod native;
 #[cfg(feature = "wgpu")]
 pub use native::{

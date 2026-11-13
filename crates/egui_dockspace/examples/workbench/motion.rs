@@ -18,9 +18,6 @@ pub(super) fn controls(
             } else {
                 MotionMode::Off
             };
-            // This demo makes an explicit fallback choice because egui cannot
-            // report every platform's reduced-motion setting.
-            settings.unknown_prefers_reduced_motion = false;
             let mut reduced = *preference == MotionPreference::Reduced;
             ui.checkbox(&mut reduced, "Reduce motion");
             *preference = if reduced {

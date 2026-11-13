@@ -3,7 +3,6 @@
 use super::*;
 
 #[cfg(test)]
-#[path = "program/scratch_tests.rs"]
 mod scratch_tests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

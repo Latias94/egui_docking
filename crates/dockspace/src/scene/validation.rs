@@ -22,11 +22,9 @@ struct SemanticRecordOrder {
 }
 
 #[cfg(test)]
-#[path = "validation/cost_tests.rs"]
 mod cost_tests;
 
 #[cfg(test)]
-#[path = "validation/guide_tests.rs"]
 mod guide_tests;
 
 #[cfg(test)]

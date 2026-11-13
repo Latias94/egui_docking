@@ -425,9 +425,17 @@ fn register(
 Resolve a framework ID with `binding(id)` at synchronous event delivery. Retain
 that exact binding through deferred work and use `get(binding)` on completion,
 so an old callback cannot address a replacement window that reused its ID.
+The ID must include a framework generation, or the host must drain the old event
+lane before reusing it. Looking up a bare reused ID after queuing cannot establish
+which native lifetime originally produced that event. Keep retiring IDs reserved
+until their original event lane is drained.
 Rejected registrations return the original resource through `into_value()`.
 Apply `continue_root(pair)` only for continuations in a committed host report.
 The registry stores one physical window independently of its logical surfaces.
+Several continuation pairs can share that physical window. `Ok(false)` means
+that its resource entry did not move on this call; each distinct predecessor
+surface still needs its own output and callback retirement. Keep those obligations
+when the old window lookup has already moved to its successor.
 
 Removing resources does not prove native destruction or callback quiescence.
 Effects, window observations, renderer preparation, output settlement and
@@ -1082,13 +1090,13 @@ the frame borrow ends, exact Presented/Dropped settlement, application focus,
 complete root-close approval and feedback deduplication. The recording renderer
 is one possible host-owned format, not a core renderer or a GPU-present claim.
 The companion public-contract tests use the same API from an independent Cargo
-workspace, with default features and optional persistence.
+workspace, with minimal features and optional persistence/motion.
 
 ## Motion
 
-Enable the optional `motion` feature to separate the target layout from its
-rendered geometry. The feature is disabled by default and adds no platform,
-renderer or async dependency. Without it, target and presentation rectangles
+The default `motion` feature separates the target layout from its
+rendered geometry. It adds no platform, renderer or async dependency. Without
+the feature, target and presentation rectangles
 are identical.
 
 Before encoding, set one monotonic timestamp and policy for the entire update:
@@ -1109,10 +1117,15 @@ frame.set_motion(MotionFrame {
 ```
 
 Keep the timestamp fixed across rendering passes and surfaces in that update.
+Set `MotionSettings::mode` to `MotionMode::Off` to disable motion at runtime.
+Omitting `set_motion` keeps a custom host static. To remove the implementation,
+disable the default feature with `default-features = false` on the dependency.
+Default layout and preview tweens finish in 200 ms and 125 ms respectively.
+
 Changing motion settings does not invalidate measurements. `System` resolves
-the supplied preference; `Unknown` defaults to reduced motion, with an explicit
-application fallback setting. Off, reduced motion and zero timing use immediate
-geometry and request no motion frames.
+the supplied preference; `Unknown` permits motion by default. Set
+`unknown_prefers_reduced_motion = true` for a conservative fallback. Off, reduced
+motion and zero timing use immediate geometry and request no motion frames.
 
 Render content, chrome and clips at the rectangles in `SurfacePaintPlan`.
 Retained frameworks should key content views with `content_identity(item)` and

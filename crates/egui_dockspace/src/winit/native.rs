@@ -17,9 +17,7 @@ use winit::{
 use super::{ActionRequested, WinitIntegration};
 use crate::{DockspaceOutput, SurfacePresentationResult};
 
-#[path = "renderer.rs"]
 mod renderer;
-#[path = "repaint.rs"]
 mod repaint;
 use renderer::WgpuRenderer;
 use repaint::{Repaint, RepaintRequest};

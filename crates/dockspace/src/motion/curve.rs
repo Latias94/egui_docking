@@ -115,6 +115,12 @@ pub struct CubicBezier {
 }
 
 impl CubicBezier {
+    /// Returns the validated `[x1, y1, x2, y2]` controls for editing or storage.
+    #[must_use]
+    pub const fn control_points(self) -> [f64; 4] {
+        [self.x1, self.y1, self.x2, self.y2]
+    }
+
     /// Constructs a bounded monotone geometry curve with finite slopes.
     ///
     /// # Errors

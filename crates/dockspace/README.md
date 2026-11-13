@@ -77,11 +77,14 @@ close decisions and persistence contracts, and the
 - Resolve close requests immediately or retain a deferred token while saving.
 - Enable `serde` to save and restore a complete layout document with stable pane
   keys. The application chooses storage and serializes its own pane data.
-- Enable `motion` for interruptible presentation geometry. Supply a monotonic
-  `MotionFrame` once per host update, render the sampled surface program, and
-  schedule another visible frame while `surface_motion_is_active` is true and
+- The default `motion` feature provides interruptible presentation geometry.
+  A custom host opts in by supplying a monotonic `MotionFrame` once per host
+  update, rendering the sampled surface program, and
+  scheduling another visible frame while `surface_motion_is_active` is true and
   output capacity permits. [The host guide](docs/guide.md#motion) explains timing,
   reduced motion, input authority and integration with retained UI frameworks.
+  Use `MotionMode::Off` for immediate geometry, omit `set_motion` for a static
+  host, or set `default-features = false` to compile without motion support.
 
 [Examples](../../docs/EXAMPLES.md) · [Platform support](../../docs/PLATFORM_SUPPORT.md)
 · [Repository](../../README.md)

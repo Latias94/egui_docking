@@ -34,7 +34,6 @@ mod region_order;
 mod touch;
 
 #[cfg(test)]
-#[path = "presentation_hit/row_tests.rs"]
 mod row_tests;
 
 /// Stable semantic identity of one core-compiled hit region.

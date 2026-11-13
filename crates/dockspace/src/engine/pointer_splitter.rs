@@ -593,6 +593,8 @@ impl DockEngine {
                         InteractionCancelReason::WorkspaceChanged,
                         interaction_events,
                     )?;
+                    #[cfg(feature = "motion")]
+                    self.settle_semantic_resize_motion(surface);
                 }
                 Ok(InteractionOutcome::SplitterAdjusted { outcome, changed })
             }
@@ -734,6 +736,8 @@ impl DockEngine {
                         InteractionCancelReason::WorkspaceChanged,
                         interaction_events,
                     )?;
+                    #[cfg(feature = "motion")]
+                    self.settle_semantic_resize_motion(painted.stamp().surface());
                 }
                 Ok(InteractionOutcome::SplitterAdjusted { outcome, changed })
             }

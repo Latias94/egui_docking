@@ -41,6 +41,30 @@ fn bezier_solves_input_x_before_evaluating_y() {
 }
 
 #[test]
+fn custom_bezier_controls_can_be_stored_and_edited_without_duplicate_state() {
+    let original = CubicBezier::new(0.1, 0.7, 0.9, 1.0).unwrap();
+    let [x1, y1, x2, y2] = original.control_points();
+    let restored = CubicBezier::new(x1, y1, x2, y2).unwrap();
+    assert_eq!(original, restored);
+
+    let mut controls = original.control_points();
+    controls[1] = 0.2;
+    let [x1, y1, x2, y2] = controls;
+    let edited = CubicBezier::new(x1, y1, x2, y2).unwrap();
+    assert!(Curve::Bezier(edited).sample(0.4) < Curve::Bezier(original).sample(0.4));
+
+    controls[1] = 1.5;
+    let [x1, y1, x2, y2] = controls;
+    assert!(matches!(
+        CubicBezier::new(x1, y1, x2, y2),
+        Err(CurveError::OutOfRange {
+            component: "y1",
+            ..
+        })
+    ));
+}
+
+#[test]
 fn geometry_curves_are_bounded_monotone_and_validated_once() {
     let curves = [
         Curve::Linear,
@@ -196,11 +220,87 @@ fn equal_timestamps_are_independent_of_frame_rate_and_long_pauses_settle() {
 }
 
 #[test]
+fn default_motion_allows_unknown_preferences_but_off_and_reduced_take_priority() {
+    let mut settings = MotionSettings::default();
+    assert!(settings.enabled(MotionPreference::Unknown));
+    assert!(settings.enabled(MotionPreference::Full));
+    assert!(!settings.enabled(MotionPreference::Reduced));
+    assert_eq!(
+        settings.pointer_focus_transition(MotionPreference::Unknown),
+        Transition::Instant
+    );
+    for resolve in [
+        MotionSettings::layout_transition,
+        MotionSettings::drop_preview_transition,
+    ] {
+        assert_ne!(
+            resolve(&settings, MotionPreference::Unknown),
+            Transition::Instant
+        );
+        assert_eq!(
+            resolve(&settings, MotionPreference::Unknown),
+            resolve(&settings, MotionPreference::Full)
+        );
+        assert_eq!(
+            resolve(&settings, MotionPreference::Reduced),
+            Transition::Instant
+        );
+    }
+    settings.mode = MotionMode::Off;
+    for preference in [
+        MotionPreference::Unknown,
+        MotionPreference::Full,
+        MotionPreference::Reduced,
+    ] {
+        assert!(!settings.enabled(preference));
+        assert_eq!(settings.layout_transition(preference), Transition::Instant);
+        assert_eq!(
+            settings.drop_preview_transition(preference),
+            Transition::Instant
+        );
+    }
+}
+
+#[test]
+fn default_layout_and_drop_motion_finish_at_their_documented_deadlines() {
+    let settings = MotionSettings::default();
+    let start = rect(0.0, 0.0, 800.0, 600.0);
+    let target = rect(400.0, 100.0, 400.0, 500.0);
+    let started = Duration::from_secs(3);
+    for (transition, duration) in [
+        (
+            settings.layout_transition(MotionPreference::Unknown),
+            Duration::from_millis(200),
+        ),
+        (
+            settings.drop_preview_transition(MotionPreference::Unknown),
+            Duration::from_millis(125),
+        ),
+    ] {
+        let mut motion = RectMotion::new(start);
+        motion.retarget(target, transition, started);
+        assert_eq!(motion.sample(started).rect(), start);
+        let before_deadline = started + duration - Duration::from_millis(1);
+        motion.retarget(target, transition, before_deadline);
+        let before = motion.sample(before_deadline);
+        assert!(before.is_active());
+        assert_ne!(before.rect(), target);
+        for now in [started + duration, Duration::MAX] {
+            let completed = motion.sample(now);
+            assert_eq!(completed.rect(), target);
+            assert_eq!(completed.velocity(), RectVelocity::ZERO);
+            assert!(!completed.is_active());
+        }
+    }
+}
+
+#[test]
 fn zero_timing_and_accessibility_policy_take_the_immediate_path() {
     let spring = Transition::CriticalSpring {
         response: Duration::from_millis(200),
     };
     let mut settings = MotionSettings {
+        unknown_prefers_reduced_motion: true,
         layout: spring,
         drop_preview: spring,
         pointer_focus: spring,

@@ -3,7 +3,6 @@
 use super::*;
 
 #[cfg(test)]
-#[path = "geometry_reuse_tests.rs"]
 mod tests;
 
 #[derive(Debug)]

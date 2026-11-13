@@ -808,11 +808,9 @@ mod tests {
 }
 
 mod authority;
-#[path = "canonical.rs"]
 pub(crate) mod canonical;
 #[cfg(test)]
 mod copy_tests;
-#[path = "operation.rs"]
 pub(crate) mod operation;
 pub(crate) mod root_structure;
 mod shared_storage;

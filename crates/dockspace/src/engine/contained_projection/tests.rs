@@ -15,13 +15,10 @@ use crate::runtime::{
 };
 use crate::scene_compiler::{reset_surface_compilation_count, surface_compilation_count};
 
-#[path = "authority_tests.rs"]
 mod authority_tests;
 
-#[path = "measurement_tests.rs"]
 mod measurement_tests;
 
-#[path = "selection_cost_tests.rs"]
 mod selection_cost_tests;
 
 const SURFACE: SurfaceId = SurfaceId::new(1);

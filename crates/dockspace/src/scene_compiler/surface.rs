@@ -29,15 +29,12 @@ pub(super) use tabs::{operable_tab_chrome, tab_strip_optional_chrome_layout};
 pub(super) use tabs::{reveal_tab_range, tab_strip_control_layout};
 
 #[cfg(test)]
-#[path = "surface/junction_compile_tests.rs"]
 mod junction_compile_tests;
 
 #[cfg(test)]
-#[path = "surface/shared_splitter_tests.rs"]
 mod shared_splitter_tests;
 
 #[cfg(test)]
-#[path = "surface/finalize_tests.rs"]
 mod finalize_tests;
 
 #[cfg(test)]

@@ -72,7 +72,7 @@ Full docking, with official crates.io dependencies:
 ```sh
 cargo run -p egui_dockspace --example winit --features wgpu --locked
 cargo run -p egui_dockspace --example workbench --features wgpu --locked
-cargo run -p egui_dockspace --example workbench --features wgpu,motion --locked
+cargo run -p egui_dockspace --example workbench --features wgpu --locked
 ```
 
 Try editing text, dragging a tab into another group, resizing a split, moving the
@@ -85,7 +85,7 @@ official harness compiles the same example against its own locked dependencies.
 Enable **Custom tabs** to try per-tab icons and rounded backgrounds, fixed group
 counts and **Tint** buttons. The [tab callbacks](../crates/egui_dockspace/examples/workbench/tabs.rs)
 show how to customize chrome while retaining docking input and accessibility.
-With `motion`, a second toolbar controls layout transitions, timing and easing,
+Motion is on by default; a second toolbar controls layout transitions, timing and easing,
 and reduced motion. The [motion settings guide](../crates/egui_dockspace/README.md#configure-motion)
 covers application preferences and custom drop-preview decoration.
 

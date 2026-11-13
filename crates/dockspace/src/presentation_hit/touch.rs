@@ -13,7 +13,6 @@ use super::geometry_reuse::rect_bits;
 use super::{PresentationHitRegion, PresentationHitRegionKind};
 
 #[cfg(test)]
-#[path = "touch_tests.rs"]
 mod tests;
 
 #[cfg(test)]

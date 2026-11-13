@@ -131,7 +131,6 @@ mod pointer_journal;
 pub mod pointer_receiver;
 #[cfg(not(test))]
 mod pointer_receiver;
-#[path = "policy.rs"]
 mod policy_impl;
 /// Declarative product policy for docking operations and presentation.
 pub mod policy {

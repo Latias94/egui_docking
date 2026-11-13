@@ -1,7 +1,6 @@
 [package]
 name = "dockspace"
 description = "Renderer-neutral docking workspace, layout, interaction, and viewport state engine"
-autotests = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,7 +10,7 @@ repository.workspace = true
 readme = "README.md"
 
 [features]
-default = []
+default = ["motion"]
 motion = []
 serde = ["dep:blake3", "dep:serde", "dep:serde_json"]
 
@@ -29,19 +28,3 @@ serde_json.workspace = true
 
 [lints]
 workspace = true
-
-[[test]]
-name = "managed_native_lifecycle"
-path = "tests/managed_native_lifecycle.rs"
-
-[[test]]
-name = "native_input_budget"
-path = "tests/native_input_budget.rs"
-
-[[test]]
-name = "native_input_overload"
-path = "tests/overload.rs"
-
-[[test]]
-name = "native_window_resources"
-path = "tests/native_window_resources.rs"
