@@ -19,6 +19,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1.0"
 dockspace = { path = "../../crates/dockspace", default-features = false }
+env_logger = { version = "0.11", default-features = false }
 open_gpui = { package = "open-gpui", path = "../../../open-gpui/crates/gpui", default-features = false }
 open_gpui_platform = { package = "open-gpui-platform", path = "../../../open-gpui/crates/gpui_platform", default-features = false }
 

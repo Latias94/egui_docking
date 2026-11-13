@@ -21,6 +21,12 @@ From this repository:
 cargo run --manifest-path integration/gpui-harness/Cargo.toml --bin gpui-workbench --locked
 ```
 
+The workbench reports backend warnings and errors to stderr. To inspect native
+display-topology or window-creation failures, retain that output; the platform's
+specific collection error precedes any higher-level window-open error. Set
+`RUST_LOG=open_gpui_macos=debug` for additional macOS backend logging. The library
+leaves logging configuration to its embedding application.
+
 The standalone workspace includes its own `Cargo.lock`. If you already build
 Open GPUI locally, reuse its target directory with
 `CARGO_TARGET_DIR=../open-gpui/target`.
