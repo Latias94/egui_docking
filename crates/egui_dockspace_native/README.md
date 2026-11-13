@@ -72,13 +72,20 @@ gesture-cancel shortcut; default bindings are Shift and Escape. Queue runtime
 changes through `request_input` and consume their result through
 `take_action_status`, like other application commands.
 
-Use `with_event_handler` to observe the same committed `DockspaceEvent` batches
-as headless hosts and the single-surface egui adapter. The optional synchronous
+Use `with_notification_handler` to observe the same `DockspaceNotification`
+as headless hosts and the single-surface egui adapter. Each notification combines
+a layout-change summary with detailed lifecycle events, so split resizing can
+trigger debounced persistence even without a separate event. The optional synchronous
 callback receives only future nonempty publications, including native service
 work and final UI passes. Pending transfers, discarded passes and rejected
 actions do not produce completion notifications. The adapter retains no event
-history. The runtime lock remains held: keep the handler short, queue work for
-the application, and call runtime methods only after the handler returns.
+history. Callbacks run in commit order after internal settlement releases the
+runtime lock. Shared runtime queries and queued commands are safe; keep handlers
+short and schedule file I/O through application-owned workers. OS-window geometry
+remains a separate host observation, outside the docking-layout version.
+The callback's second argument, `NativeNotificationContext`, provides scoped
+`with_view`, `request_command` and, with `serde`, `save_document_json` access.
+Commands and saves follow the application's existing single-slot busy rules.
 
 `with_child_window_options` and `set_child_window_options` configure managed
 Child window decorations, Windows taskbar presence, stacking level and icon.

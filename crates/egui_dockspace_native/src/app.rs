@@ -1,7 +1,7 @@
 //! Thin eframe application over one shared native runtime state.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::sync::{Arc, Mutex, Weak};
 
 use dockspace::model::{
     DockAnchor, DockspaceActionRejection, DockspaceLayout, DockspaceView, PreparedTabsGroup,
@@ -23,6 +23,7 @@ use crate::deferred_viewport::{
 use crate::error::{NativeHostProtocolError, NativeRuntimeError, NativeRuntimeErrorKind};
 use crate::lifecycle_progress::{NativeCloseProgress, NativeOutputBacklog};
 use crate::mailbox::DeferredViewportPaint;
+use crate::notification::{lock_state, with_state};
 use crate::surface_driver::{NativeErrorPresentation, NativeRuntimeState, NativeSurfaceUpdate};
 use crate::window_options::DeclaredWindowIcons;
 use crate::{
@@ -276,23 +277,54 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
         self.child_window_overrides.remove(&surface)
     }
 
-    /// Handles future committed product events without retaining an event history.
+    /// Handles future committed layout changes and detailed lifecycle events.
     ///
     /// The callback runs once for each nonempty core publication, including
     /// final UI passes, native service work and shutdown. Repeated encoding
     /// passes and pending native transfers do not emit completion events.
     /// Installing or replacing a handler never replays earlier publications.
     ///
-    /// The runtime lock remains held. Keep the callback short and do not call
-    /// this application's runtime methods from it. Queue application work and
-    /// commands for a later update; the callback may run outside an egui UI
-    /// pass. Clone events only when the application needs to retain them.
+    /// Notifications arrive in commit order after internal settlement releases
+    /// the runtime lock. The callback may query shared runtime state and queue
+    /// commands for a later update. It can run outside an egui UI pass; keep it
+    /// short and move file I/O or background work to application-owned workers.
+    /// Split resizing is included in the layout-change summary, even when no
+    /// detailed event is emitted. The adapter retains no notification history.
+    /// The second argument provides scoped view, persistence and command access
+    /// without capturing the application itself. Queries see the current state,
+    /// which can include later commits from the same native service operation.
+    ///
+    /// ```
+    /// use egui_dockspace::PaneView;
+    /// use egui_dockspace_native::NativeDockspaceApp;
+    ///
+    /// fn observe<P: PaneView + Send + 'static>(app: NativeDockspaceApp<P>) -> NativeDockspaceApp<P> {
+    ///     app.with_notification_handler(|notification, runtime| {
+    ///         if notification.layout_change().is_some() {
+    ///             let surfaces = runtime.with_view(|view| view.surfaces().count());
+    ///             println!("Layout changed across {surfaces} surfaces");
+    ///         }
+    ///     })
+    /// }
+    /// ```
     #[must_use]
-    pub fn with_event_handler(
+    pub fn with_notification_handler(
         self,
-        handler: impl FnMut(&[crate::DockspaceEvent]) + Send + 'static,
+        mut handler: impl FnMut(&crate::DockspaceNotification, crate::NativeNotificationContext<'_, P>)
+        + Send
+        + 'static,
     ) -> Self {
-        lock_state(&self.state).set_event_handler(handler);
+        let shared = Arc::downgrade(&self.state);
+        lock_state(&self.state)
+            .notifications()
+            .set_handler(move |notification| {
+                if let Some(state) = shared.upgrade() {
+                    handler(
+                        notification,
+                        crate::NativeNotificationContext { state: &state },
+                    );
+                }
+            });
         self
     }
 
@@ -483,7 +515,7 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
     ///
     /// Excludes allocator/BTree node metadata, Arc control blocks, opaque host
     /// callbacks/clock closures, core workspace/authority, renderer/receiver
-    /// data, application action/transition queues, diagnostic errors and
+    /// data, application action/transition/notification queues, diagnostic errors and
     /// caller-owned buffers. This
     /// measures current data at a locked host boundary; it does not reserve
     /// future terminal data or certify the complete 4 MiB admission limit.
@@ -738,14 +770,13 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
     ) {
         let context = ui.ctx().clone();
         let token = eframe::current_native_output_token();
-        let (specs, request_repaint) = {
-            let mut state = lock_state(&self.state);
+        let (specs, request_repaint) = with_state(&self.state, |state| {
             let mut request_repaint = if state.error().is_some() {
                 let (progress, cleanup_errors) = state.advance_shutdown(ui);
                 for error in cleanup_errors {
                     state.record_cleanup_error(error);
                 }
-                render_native_error(&mut state, token, ui);
+                render_native_error(state, token, ui);
                 progress
             } else {
                 let root_surface = state.root_surface();
@@ -761,7 +792,7 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
                     }
                     Err(error) => {
                         state.stop_current_output(error);
-                        render_native_error(&mut state, token, ui);
+                        render_native_error(state, token, ui);
                         true
                     }
                 }
@@ -770,13 +801,13 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
                 Ok(specs) => specs,
                 Err(error) => {
                     state.stop_current_output(error);
-                    render_native_error(&mut state, token, ui);
+                    render_native_error(state, token, ui);
                     request_repaint = true;
                     Vec::new()
                 }
             };
             (specs, request_repaint)
-        };
+        });
         if request_repaint {
             context.request_repaint_once_of(ViewportId::ROOT);
         }
@@ -819,8 +850,18 @@ fn render_deferred_viewport<P: PaneView + Send + 'static>(
     ui: &mut egui::Ui,
     class: ViewportClass,
 ) {
+    with_state(shared, |state| {
+        render_deferred_viewport_locked(state, spec, ui, class)
+    });
+}
+
+fn render_deferred_viewport_locked<P: PaneView + Send + 'static>(
+    state: &mut NativeRuntimeState<P>,
+    spec: DeferredViewportSpec,
+    ui: &mut egui::Ui,
+    class: ViewportClass,
+) {
     let token = eframe::current_native_output_token();
-    let mut state = lock_state(shared);
     if state.error().is_some() {
         let (progress, cleanup_errors) = state.advance_shutdown(ui);
         for error in cleanup_errors {
@@ -829,7 +870,7 @@ fn render_deferred_viewport<P: PaneView + Send + 'static>(
         if progress {
             ui.ctx().request_repaint_once_of(ViewportId::ROOT);
         }
-        render_native_error(&mut state, token, ui);
+        render_native_error(state, token, ui);
         return;
     }
     if class != ViewportClass::Deferred {
@@ -867,14 +908,14 @@ fn render_deferred_viewport<P: PaneView + Send + 'static>(
                 Err(error) => {
                     state.stop_current_output(error);
                     ui.ctx().request_repaint_once_of(ViewportId::ROOT);
-                    render_native_error(&mut state, Some(token), ui);
+                    render_native_error(state, Some(token), ui);
                 }
             }
         }
         DeferredViewportPaint::Semantic(_binding) => {
             state.stop_current_output(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
             ui.ctx().request_repaint_once_of(ViewportId::ROOT);
-            render_native_error(&mut state, Some(token), ui);
+            render_native_error(state, Some(token), ui);
         }
         DeferredViewportPaint::Created | DeferredViewportPaint::Staging(_) => {
             paint_placeholder(ui, class, Some(disposition));
@@ -918,10 +959,6 @@ fn request_retained_error_overlay() -> bool {
     eframe::retain_current_native_output_with_overlay()
 }
 
-fn lock_state<P>(state: &Arc<Mutex<P>>) -> MutexGuard<'_, P> {
-    state.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
 struct NativePassFinalizer<P> {
     state: Weak<Mutex<NativeRuntimeState<P>>>,
 }
@@ -931,14 +968,13 @@ impl<P: PaneView + Send + 'static> NativeOutputPassFinalizer for NativePassFinal
         let Some(state) = self.state.upgrade() else {
             return NativeHostWake::Wait;
         };
-        let mut state = lock_state(&state);
-        match state.service_native_events(context) {
+        with_state(&state, |state| match state.service_native_events(context) {
             Ok(wake) => wake,
             Err(error) => {
                 state.stop_current_output(error);
                 NativeHostWake::RepaintRootAfterCurrent
             }
-        }
+        })
     }
 
     fn before_output_input(
@@ -950,14 +986,15 @@ impl<P: PaneView + Send + 'static> NativeOutputPassFinalizer for NativePassFinal
         let Some(state) = self.state.upgrade() else {
             return eframe::NativeOutputInputAdmission::Defer(NativeHostWake::Wait);
         };
-        let mut state = lock_state(&state);
-        match state.prepare_output_input(context, token, has_input) {
-            Ok(admission) => admission,
-            Err(error) => {
-                state.stop_current_output(error);
-                eframe::NativeOutputInputAdmission::Proceed
+        with_state(&state, |state| {
+            match state.prepare_output_input(context, token, has_input) {
+                Ok(admission) => admission,
+                Err(error) => {
+                    state.stop_current_output(error);
+                    eframe::NativeOutputInputAdmission::Proceed
+                }
             }
-        }
+        })
     }
 
     fn finalize(&self, finalization: NativeOutputPassFinalization<'_>) -> NativeHostWake {
@@ -965,26 +1002,27 @@ impl<P: PaneView + Send + 'static> NativeOutputPassFinalizer for NativePassFinal
             return NativeHostWake::Wait;
         };
         let (context, token, ended_viewport, disposition, output) = finalization.into_parts();
-        let mut state = lock_state(&state);
-        let result = if token.viewport_id() == ended_viewport {
-            state.settle_egui_pass(
-                context,
-                output,
-                token,
-                disposition == egui::OutputPassDisposition::Repeat,
-            )
-        } else {
-            Err(NativeHostProtocolError::MultipassOutputChanged.into())
-        };
-        if let Err(error) = result {
-            if state.error().is_some() {
-                state.record_cleanup_error(error);
+        with_state(&state, |state| {
+            let result = if token.viewport_id() == ended_viewport {
+                state.settle_egui_pass(
+                    context,
+                    output,
+                    token,
+                    disposition == egui::OutputPassDisposition::Repeat,
+                )
             } else {
-                state.stop_current_output(error);
-                return NativeHostWake::RepaintRoot;
+                Err(NativeHostProtocolError::MultipassOutputChanged.into())
+            };
+            if let Err(error) = result {
+                if state.error().is_some() {
+                    state.record_cleanup_error(error);
+                } else {
+                    state.stop_current_output(error);
+                    return NativeHostWake::RepaintRoot;
+                }
             }
-        }
-        NativeHostWake::Wait
+            NativeHostWake::Wait
+        })
     }
 }
 
@@ -1002,6 +1040,10 @@ fn paint_root_waiting(ui: &mut egui::Ui) {
 mod retained_focus_tests;
 
 #[cfg(test)]
+#[path = "app/notification_tests.rs"]
+mod notification_tests;
+
+#[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex, PoisonError};
 
@@ -1012,7 +1054,7 @@ mod tests {
     use eframe::egui;
     use egui_dockspace::{DockInputConfig, DockStyle, DockingActivation, PaneView};
 
-    struct Pane;
+    pub(super) struct Pane;
 
     impl PaneView for Pane {
         fn title(&self, _: ItemId) -> Option<egui::WidgetText> {
@@ -1024,7 +1066,7 @@ mod tests {
         }
     }
 
-    fn app() -> super::NativeDockspaceApp<Pane> {
+    pub(super) fn app() -> super::NativeDockspaceApp<Pane> {
         let surface = SurfaceId::new(1);
         let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
             surface,

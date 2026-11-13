@@ -24,6 +24,7 @@ mod input_control;
 mod layout_management;
 mod lifecycle_progress;
 mod mailbox;
+mod notification;
 mod pass_actions;
 mod pointer_capture;
 mod pointer_event;
@@ -47,10 +48,12 @@ pub use close_control::NativeWindowClosePolicy;
 pub use command::NativeCommand;
 pub use coordinator::NativeStorageLimit;
 pub use dockspace::runtime::{
-    DockspaceEvent, DockspaceEventId, DockspaceEventKind, NativeSurfacePlacement,
+    DockspaceEvent, DockspaceEventId, DockspaceEventKind, DockspaceLayoutChange,
+    DockspaceNotification, NativeSurfacePlacement,
 };
 pub use error::{NativeRuntimeError, NativeRuntimeErrorKind};
 pub use layout_management::NativeLayoutRequestError;
 pub use lifecycle_progress::{NativeCloseProgress, NativeOutputBacklog};
+pub use notification::NativeNotificationContext;
 pub use style_management::NativeStyleRequestError;
 pub use window_options::NativeChildWindowOptions;

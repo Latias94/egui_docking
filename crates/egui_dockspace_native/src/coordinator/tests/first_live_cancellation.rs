@@ -408,11 +408,14 @@ fn native_lifecycle_events_wait_for_first_live_ownership_and_do_not_repeat() {
 
     let (mut native, _, source, child) = content_ready_child();
     let (sender, receiver) = std::sync::mpsc::channel();
-    native.set_event_handler(move |events| sender.send(events.to_vec()).unwrap());
+    native
+        .notifications
+        .set_handler(move |notification| sender.send(notification.events().to_vec()).unwrap());
     let output = paint_child_output(&mut native, child);
     let pending = commit_model_frame(&mut native);
     assert!(pending.events().is_empty());
     native.settle_host_frame_report(&pending).unwrap();
+    super::lifecycle_events::deliver_notifications(&mut native);
     assert_source_retained(&native, source, child);
     assert!(receiver.try_recv().is_err());
 
@@ -444,11 +447,13 @@ fn native_lifecycle_events_wait_for_first_live_ownership_and_do_not_repeat() {
         1
     );
     native.settle_host_frame_report(&report).unwrap();
+    super::lifecycle_events::deliver_notifications(&mut native);
     assert_eq!(receiver.try_recv().unwrap(), report.events());
 
     let settled = commit_model_frame(&mut native);
     assert!(settled.events().is_empty());
     native.settle_host_frame_report(&settled).unwrap();
+    super::lifecycle_events::deliver_notifications(&mut native);
     assert!(receiver.try_recv().is_err());
 }
 
@@ -456,9 +461,12 @@ fn native_lifecycle_events_wait_for_first_live_ownership_and_do_not_repeat() {
 fn shutdown_cancellation_does_not_notify_a_native_move_as_completed() {
     let (mut native, _, source, child) = content_ready_child();
     let (sender, receiver) = std::sync::mpsc::channel();
-    native.set_event_handler(move |events| sender.send(events.to_vec()).unwrap());
+    native
+        .notifications
+        .set_handler(move |notification| sender.send(notification.events().to_vec()).unwrap());
     quarantine_without_source_measurement(&mut native);
     let cancelled = native.advance_shutdown_boundary(&egui::Context::default(), &mut test_budget());
+    super::lifecycle_events::deliver_notifications(&mut native);
     assert!(cancelled.errors.is_empty(), "{cancelled:#?}");
     assert!(!native.session.has_pending_native_create());
     assert_source_retained(&native, source, child);

@@ -271,7 +271,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         )
     }
 
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(test)]
     pub(crate) fn boundary_coordinator(&mut self) -> &mut NativeCoordinator {
         &mut self.coordinator
     }
@@ -640,11 +640,8 @@ impl<P: PaneView> NativeRuntimeState<P> {
         self.coordinator.native_host_handler()
     }
 
-    pub(crate) fn set_event_handler(
-        &mut self,
-        handler: impl FnMut(&[crate::DockspaceEvent]) + Send + 'static,
-    ) {
-        self.coordinator.set_event_handler(handler);
+    pub(crate) fn notifications(&mut self) -> &mut crate::notification::NativeNotifications {
+        &mut self.coordinator.notifications
     }
 
     pub(crate) fn input_storage_reserved_bytes(&self) -> Option<usize> {

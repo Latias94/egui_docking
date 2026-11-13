@@ -7,6 +7,13 @@ use dockspace::runtime::{DockspaceCloseOutcome, DockspaceEvent, DockspaceEventKi
 
 use super::*;
 
+pub(super) fn deliver_notifications(native: &mut NativeCoordinator) {
+    while let Some(mut delivery) = native.notifications.take_delivery() {
+        delivery.deliver();
+        native.notifications.finish_delivery(delivery);
+    }
+}
+
 fn publish(
     native: &mut NativeCoordinator,
     action: impl FnOnce(&mut dockspace::runtime::DockspaceHostFrame<'_>),
@@ -28,6 +35,7 @@ fn publish(
     } else {
         native.settle_host_frame_report(&report).unwrap();
     }
+    deliver_notifications(native);
     events
 }
 
@@ -39,9 +47,12 @@ fn native_handlers_observe_committed_selection_and_internal_close_once() {
     let added = ItemId::new(3);
     let (sender, receiver) = mpsc::channel();
     let mut batch = 0;
-    native.set_event_handler(move |events| {
+    native.notifications.set_handler(move |notification| {
         batch += 1;
-        sender.send((batch, events.to_vec())).unwrap();
+        assert!(notification.layout_change().is_some());
+        sender
+            .send((batch, notification.events().to_vec()))
+            .unwrap();
     });
 
     {
@@ -143,7 +154,7 @@ fn native_handlers_observe_committed_selection_and_internal_close_once() {
 fn installing_a_native_handler_does_not_replay_earlier_publications() {
     let mut native = coordinator();
     register_roots(&mut native);
-    assert!(native.event_handler.is_none());
+    assert!(native.notifications.take_delivery().is_none());
     let first = ItemId::new(1);
     let added = ItemId::new(3);
     assert!(
@@ -160,7 +171,9 @@ fn installing_a_native_handler_does_not_replay_earlier_publications() {
     );
 
     let (sender, receiver) = mpsc::channel();
-    native.set_event_handler(move |events| sender.send(events.to_vec()).unwrap());
+    native
+        .notifications
+        .set_handler(move |notification| sender.send(notification.events().to_vec()).unwrap());
     publish(&mut native, |_| {}, true);
     assert!(receiver.try_recv().is_err());
 
