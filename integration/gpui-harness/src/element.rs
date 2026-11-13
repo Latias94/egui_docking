@@ -306,6 +306,7 @@ impl DockspaceElement {
             let mut host = self.host.borrow_mut();
             presentation::abandon_unaccepted(&mut host, window);
             let publication = host.publication;
+            host.dirty |= host.bounds != Some(logical);
             if let Some(pending) = &host.pending {
                 (pending.packet.clone(), pending.serial, publication)
             } else if !host.dirty && host.inputs.is_empty() && host.bounds == Some(logical) {
@@ -695,11 +696,15 @@ fn build_candidate(
     bounds: LogicalRect,
     window: &Window,
 ) -> Result<(Rc<Packet>, DockspaceUpdate)> {
+    #[cfg(feature = "motion")]
+    let motion = host.motion_frame();
     let panels = &host.panels;
     let config = &host.config;
     let surface = host.surface;
     let pointer = host.pointer;
     let mut frame = host.session.begin_host_frame()?;
+    #[cfg(feature = "motion")]
+    frame.set_motion(motion)?;
     for input in inputs {
         input.submit(&mut frame)?;
     }

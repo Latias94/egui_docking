@@ -105,6 +105,12 @@ pub(super) fn observe(
         if result == SurfacePresentationResult::Dropped {
             host.dirty = true;
         }
+        #[cfg(feature = "motion")]
+        {
+            // Presentation releases the sole pending output. Request the next
+            // sample here so renderer backpressure never becomes a redraw loop.
+            host.dirty |= host.session.surface_motion_is_active(host.surface);
+        }
         if host.dirty || !host.inputs.is_empty() {
             window.refresh();
         }

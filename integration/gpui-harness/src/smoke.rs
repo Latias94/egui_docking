@@ -26,6 +26,7 @@ pub(super) type ButtonProbe = crate::host::BoundsProbe;
 pub(super) struct Smoke {
     complete: Rc<Cell<bool>>,
     state: Rc<RefCell<State>>,
+    close_window: bool,
 }
 
 #[derive(Default)]
@@ -83,6 +84,13 @@ impl FloatProbe {
 }
 
 impl Smoke {
+    pub(super) fn close_window() -> Self {
+        Self {
+            close_window: true,
+            ..Default::default()
+        }
+    }
+
     pub(super) fn install(&self, host: &SharedHost, window: &Window, cx: &mut App) {
         if cx.is_test() {
             self.fail("--smoke requires the real platform, not GPUI's CPU test platform");
@@ -165,10 +173,19 @@ impl Smoke {
             };
             if smoke.advance(&shared, window, cx) {
                 smoke.complete.set(true);
+                let exit_action = if smoke.close_window {
+                    "requesting native window close"
+                } else {
+                    "requesting native application quit"
+                };
                 println!(
-                    "SMOKE OK: native window visible; exact Submitted/core artifacts accepted; retained buttons and tabs verified; splitter and continuous floating drag completed; requesting native quit"
+                    "SMOKE OK: native window visible; exact Submitted/core artifacts accepted; retained buttons and tabs verified; splitter and continuous floating drag completed; {exit_action}"
                 );
-                cx.quit();
+                if smoke.close_window {
+                    window.remove_window(cx);
+                } else {
+                    cx.quit();
+                }
             } else {
                 smoke.observe(weak, window);
             }

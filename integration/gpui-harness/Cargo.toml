@@ -8,6 +8,10 @@ edition = "2024"
 rust-version = "1.95"
 publish = false
 
+[features]
+default = ["motion"]
+motion = ["dockspace/motion"]
+
 [[bin]]
 name = "gpui-workbench"
 path = "src/main.rs"

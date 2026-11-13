@@ -21,6 +21,9 @@ use open_gpui::{
 
 use crate::{GpuiDockspaceConfig, continuation, element, input, presentation};
 
+#[cfg(feature = "motion")]
+mod motion;
+
 pub(crate) type SharedHost = Rc<RefCell<HostState>>;
 pub(crate) type BoundsProbe = Rc<Cell<Option<Bounds<Pixels>>>>;
 

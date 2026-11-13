@@ -16,6 +16,13 @@ pub struct GpuiDockspaceConfig {
     pub colors: DockspaceColors,
     /// Keyboard bindings observed during pointer gestures.
     pub input: DockspaceInputBindings,
+    /// Layout motion policy, independent of layout measurements.
+    /// Preview and focus decorations currently remain immediate.
+    #[cfg(feature = "motion")]
+    pub motion: dockspace::motion::MotionSettings,
+    /// Host-observed accessibility preference; Unknown allows motion by default.
+    #[cfg(feature = "motion")]
+    pub motion_preference: dockspace::motion::MotionPreference,
 }
 
 impl Default for GpuiDockspaceConfig {
@@ -25,6 +32,10 @@ impl Default for GpuiDockspaceConfig {
             text_size: px(13.0),
             colors: DockspaceColors::default(),
             input: DockspaceInputBindings::default(),
+            #[cfg(feature = "motion")]
+            motion: dockspace::motion::MotionSettings::default(),
+            #[cfg(feature = "motion")]
+            motion_preference: dockspace::motion::MotionPreference::Unknown,
         }
     }
 }

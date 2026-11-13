@@ -16,7 +16,7 @@ mod workbench;
 
 pub use config::{DockspaceColors, DockspaceInputBindings, GpuiDockspaceConfig};
 pub use host::{DockPane, GpuiDockspace};
-pub use workbench::{Workbench, run, run_smoke};
+pub use workbench::{Workbench, run, run_smoke, run_smoke_close};
 
 pub(crate) use dockspace::model::ItemId;
 pub(crate) use host::{HostState, SharedHost};

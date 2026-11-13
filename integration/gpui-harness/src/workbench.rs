@@ -308,6 +308,11 @@ pub fn run_smoke() {
     run_application(Some(smoke::Smoke::default()));
 }
 
+/// Checks presentation and interaction before closing through the native window.
+pub fn run_smoke_close() {
+    run_application(Some(smoke::Smoke::close_window()));
+}
+
 fn run_application(smoke: Option<smoke::Smoke>) {
     let completion = smoke.clone();
     open_gpui_platform::application().run(move |cx| {

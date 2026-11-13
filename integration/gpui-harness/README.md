@@ -72,11 +72,61 @@ Removing its subtree cancels gestures, timers and unpublished input; reinserting
 in that window establishes a fresh presentation without recreating pane views.
 Application startup, window closing and process exit remain application decisions.
 
+## Layout motion
+
+The default `motion` feature enables structural layout transitions. The adapter
+uses the existing GPUI host clock and requests the next sample only after the
+exact pending output reaches a terminal submission result. Deferred submissions
+retain their original packet and coordinates. Settled layouts stop requesting
+animation frames; pointer-controlled resizing and floating movement remain direct.
+
+Disable motion at runtime through the constructor configuration:
+
+```rust
+use dockspace::motion::{MotionMode, MotionSettings};
+
+let config = GpuiDockspaceConfig {
+    motion: MotionSettings {
+        mode: MotionMode::Off,
+        ..Default::default()
+    },
+    ..Default::default()
+};
+```
+
+For an existing host, use `dock.set_motion_settings(settings, window)` with its
+owning window. `settings.layout` accepts an instant transition, a tween with a
+duration and built-in or custom cubic Bézier curve, or a critical spring.
+The adapter currently consumes the layout policy; preview and focus decorations
+remain immediate. Pane views are laid out at current presentation rectangles,
+so their text and controls retain their size rather than scaling as a texture.
+
+Supply an observed accessibility preference with
+`dock.set_motion_preference(MotionPreference::Reduced, window)` to settle geometry
+immediately. The initial preference is `Unknown`, which permits motion by default;
+the adapter does not claim to read the operating system preference automatically.
+Setting `unknown_prefers_reduced_motion` opts into a conservative fallback.
+
+To compile the adapter without motion, disable its default features. The workbench
+can also run this static path:
+
+```sh
+cargo run --manifest-path integration/gpui-harness/Cargo.toml \
+  --no-default-features --bin gpui-workbench --locked
+```
+
 ## Real-window smoke check
 
 ```sh
 cargo run --manifest-path integration/gpui-harness/Cargo.toml \
   --bin gpui-workbench --locked -- --smoke
+```
+
+To run the same interaction journey and close the window before quitting:
+
+```sh
+cargo run --manifest-path integration/gpui-harness/Cargo.toml \
+  --bin gpui-workbench --locked -- --smoke-close
 ```
 
 This opens the ordinary workbench on the real platform and waits for the visible
@@ -103,6 +153,9 @@ failure, closing or quitting early, an adapter error, a failed assertion, and a
 20-second interaction timeout all produce a nonzero exit status. An independent
 25-second process watchdog also detects a stalled native quit; success requires
 the process to actually exit with status zero.
+The close variant removes the application window through GPUI's normal retirement
+path before its close observer requests application exit. It covers window cleanup
+separately from an application-level quit request.
 
 The smoke check requires a working native display and renderer. Its input enters
 through GPUI's public `Window::dispatch_event` path rather than the operating

@@ -140,6 +140,10 @@ impl Fixture {
     fn present(&mut self) {
         for _ in 0..8 {
             self.frame();
+            #[cfg(feature = "motion")]
+            if self.host.borrow().session.surface_motion_is_active(SURFACE) {
+                self.advance(Duration::from_millis(40));
+            }
             let host = self.host.borrow();
             assert!(host.error.is_none(), "adapter error: {:?}", host.error);
             if host.pending.is_none() && host.inputs.is_empty() && !host.dirty {
@@ -1239,3 +1243,7 @@ fn platform_cancel_covers_a_down_retained_by_a_rejected_candidate(cx: &mut TestA
         1
     );
 }
+
+mod geometry;
+#[cfg(feature = "motion")]
+mod motion;
