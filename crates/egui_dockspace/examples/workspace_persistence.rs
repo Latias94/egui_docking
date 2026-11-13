@@ -191,7 +191,8 @@ impl PersistenceApp {
     fn autosave(&mut self, context: &egui::Context) {
         // An unreadable file requires an explicit save before automatic replacement.
         if !self.auto_save || !self.save_on_close || self.layout_file.is_none() {
-            self.auto_save_at = None;
+            // Cancelling a deadline must preserve its unsaved layout change.
+            self.layout_dirty |= self.auto_save_at.take().is_some();
             return;
         }
         if context.will_discard() {
@@ -854,6 +855,53 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), original);
         app.save_layout_file();
         assert!(PersistenceApp::decode(&std::fs::read(path).unwrap()).is_ok());
+    }
+
+    #[test]
+    fn reenabling_autosave_resumes_a_change_scheduled_before_it_was_paused() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("layout.json");
+        let mut app = PersistenceApp::open(path.clone());
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        app.restore_named(DEFAULT_PRESET);
+        let ready = run_frame_at(&context, &mut app, Vec::new(), Some(0.0));
+        let checkbox = ready
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .find_map(|(id, node)| {
+                (node.role() == Role::CheckBox && node.label() == Some("Autosave layout"))
+                    .then_some(*id)
+            })
+            .expect("the example exposes its autosave toggle");
+        ready.drop_without_applying_deltas();
+        let toggle = || {
+            egui::Event::AccessKitActionRequest(ActionRequest {
+                action: Action::Click,
+                target_tree: TreeId::ROOT,
+                target_node: checkbox,
+                data: None,
+            })
+        };
+        run_frame_at(&context, &mut app, vec![toggle()], Some(0.1)).drop_without_applying_deltas();
+        assert!(!app.auto_save);
+        run_frame_at(&context, &mut app, Vec::new(), Some(1.0)).drop_without_applying_deltas();
+        assert!(
+            !path.exists(),
+            "paused autosave must not write the pending layout"
+        );
+        run_frame_at(&context, &mut app, vec![toggle()], Some(1.1)).drop_without_applying_deltas();
+        assert!(app.auto_save);
+        run_frame_at(&context, &mut app, Vec::new(), Some(1.7)).drop_without_applying_deltas();
+        let saved =
+            std::fs::read(&path).expect("reenabling autosave must persist the pending change");
+        assert!(PersistenceApp::decode(&saved).is_ok());
+        run_frame_at(&context, &mut app, Vec::new(), Some(3.0)).drop_without_applying_deltas();
+        assert_eq!(std::fs::read(path).unwrap(), saved);
     }
 
     #[test]
