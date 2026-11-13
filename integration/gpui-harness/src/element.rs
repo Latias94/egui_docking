@@ -114,14 +114,6 @@ impl DockspaceElement {
     }
 }
 
-impl IntoElement for DockspaceElement {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
-    }
-}
-
 impl Element for DockspaceElement {
     type RequestLayoutState = ();
     type PrepaintState = PreparedState;
