@@ -1021,17 +1021,17 @@ enum DockspacePersistenceErrorSource {
     #[error("dockspace persistence is not configured")]
     NotConfigured,
     #[error("external item identity allocation failed: {0}")]
-    ExternalItemKey(ExternalItemKeyMapError),
+    ExternalItemKey(#[source] ExternalItemKeyMapError),
     #[error("dockspace document capture failed: {0}")]
-    Capture(DockspaceDocumentCaptureError),
+    Capture(#[source] DockspaceDocumentCaptureError),
     #[error("dockspace document JSON encoding failed: {0}")]
-    EncodeJson(serde_json::Error),
+    EncodeJson(#[source] serde_json::Error),
     #[error("dockspace document JSON decoding failed: {0}")]
-    DecodeJson(serde_json::Error),
+    DecodeJson(#[source] serde_json::Error),
     #[error("dockspace document version decoding failed: {0}")]
-    Decode(DockspaceDocumentDecodeError),
+    Decode(#[source] DockspaceDocumentDecodeError),
     #[error("dockspace document validation failed: {0}")]
-    Restore(DockspaceDocumentRestoreError),
+    Restore(#[source] DockspaceDocumentRestoreError),
     #[error("dockspace engine initialization failed: {0}")]
     Engine(#[source] Box<crate::engine::EngineError>),
     #[error("live dockspace document restore failed: {0}")]

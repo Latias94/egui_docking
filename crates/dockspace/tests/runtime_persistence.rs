@@ -71,6 +71,26 @@ fn saved_document_with_two_items() -> (Vec<u8>, ItemId, ItemId) {
 }
 
 #[test]
+fn malformed_json_preserves_parser_diagnostics_in_the_public_error_chain() {
+    use std::error::Error;
+
+    let error = DockspaceSession::from_document_json(
+        b"[1,\n{\"workspace\": }\n]",
+        DockPolicy::default(),
+        |_, _| true,
+    )
+    .unwrap_err();
+    assert_eq!(error.kind(), DockspacePersistenceErrorKind::InvalidDocument);
+    let parser = error
+        .source()
+        .and_then(|source| source.downcast_ref::<serde_json::Error>())
+        .expect("applications must retain the parser's typed position diagnostics");
+    assert_eq!(parser.classify(), serde_json::error::Category::Syntax);
+    assert_eq!(parser.line(), 2);
+    assert!(parser.column() > 0);
+}
+
+#[test]
 fn document_uses_one_schema_and_requires_explicit_null_fields_before_recognition() {
     let mut bootstrap = DockspaceDocumentBootstrap::new(DOCUMENT);
     let item = bootstrap.ensure_item("pane:first").unwrap();
