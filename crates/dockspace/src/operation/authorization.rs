@@ -188,7 +188,66 @@ pub(crate) struct DropCommandEligibility<'a> {
     payload: &'a MovePayload,
     retained_facts: DockPayloadPolicyFacts,
     undocked_facts: DockPayloadPolicyFacts,
-    has_reorder_barriers: bool,
+    reorder_barriers: Option<TabReorderBarriers>,
+}
+
+/// Blocked positions derived once from an immutable source tab group.
+struct TabReorderBarriers {
+    from: usize,
+    blocked: Vec<(usize, ItemId)>,
+}
+
+impl TabReorderBarriers {
+    fn capture(
+        items: &[ItemId],
+        policy: &DockPolicySnapshot,
+        source: &ItemSource,
+    ) -> Result<Option<Self>, CommandError> {
+        let from = items.iter().position(|item| *item == source.item()).ok_or(
+            CommandError::ItemNotInTabs {
+                tabs: source.tabs(),
+                item: source.item(),
+            },
+        )?;
+        let mut blocked = Vec::new();
+        for (index, &item) in items.iter().enumerate() {
+            if policy
+                .policy()
+                .item_rule(item)
+                .is_some_and(|rule| !rule.allows_tab_reorder())
+            {
+                blocked.push((index, item));
+                // Every rightward gap sees this first blocker. Leftward gaps
+                // retain earlier blockers to preserve the command's error order.
+                if index >= from {
+                    break;
+                }
+            }
+        }
+        Ok((!blocked.is_empty()).then_some(Self { from, blocked }))
+    }
+
+    fn check(&self, insertion_index: usize) -> Result<(), CommandError> {
+        let to = if insertion_index > self.from {
+            insertion_index - 1
+        } else {
+            insertion_index
+        };
+        if self.from == to {
+            return Ok(());
+        }
+        // Match the command path's first blocked item in original tab order,
+        // including the moving item itself, without looking up policy again.
+        let first = self
+            .blocked
+            .partition_point(|(index, _)| *index < self.from.min(to));
+        if let Some(&(index, item)) = self.blocked.get(first)
+            && index <= self.from.max(to)
+        {
+            return Err(crate::policy::PolicyRejection::TabReorderDisabled { item }.into());
+        }
+        Ok(())
+    }
 }
 
 impl<'a> DropCommandEligibility<'a> {
@@ -226,18 +285,13 @@ impl<'a> DropCommandEligibility<'a> {
         );
         // All targets share one immutable source. Unrelated item rules must
         // not be rescanned for every insertion gap in its tab strip.
-        let has_reorder_barriers = if policy.has_item_rules()
+        let reorder_barriers = if policy.has_item_rules()
             && let MovePayload::Item(source) = payload
             && let Some(Node::Tabs { items, .. }) = workspace.storage.nodes.get(source.tabs())
         {
-            items.iter().any(|item| {
-                policy
-                    .policy()
-                    .item_rule(*item)
-                    .is_some_and(|rule| !rule.allows_tab_reorder())
-            })
+            TabReorderBarriers::capture(items, policy, source)?
         } else {
-            false
+            None
         };
         Ok(Self {
             workspace,
@@ -245,7 +299,7 @@ impl<'a> DropCommandEligibility<'a> {
             payload,
             retained_facts,
             undocked_facts,
-            has_reorder_barriers,
+            reorder_barriers,
         })
     }
 
@@ -269,12 +323,12 @@ impl<'a> DropCommandEligibility<'a> {
     }
 
     fn check_validated_target(&self, target: &DockTarget) -> Result<(), CommandError> {
-        if self.has_reorder_barriers
+        if let Some(barriers) = &self.reorder_barriers
             && let MovePayload::Item(source) = self.payload
             && let DockTarget::TabGap { target, index } = target
             && source.tabs() == target.tabs()
         {
-            authorize_reorder_barriers(self.workspace, self.policy, source, *index)?;
+            barriers.check(*index)?;
         }
         let payload = if move_undocks_source(self.workspace, self.payload, target) {
             &self.undocked_facts

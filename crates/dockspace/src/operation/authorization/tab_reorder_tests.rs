@@ -170,3 +170,41 @@ fn unrelated_and_neutral_rules_do_not_restrict_the_current_tabs_group() {
         }
     }
 }
+
+#[test]
+fn frozen_barriers_match_command_rejections_for_every_source_gap_and_rule_subset() {
+    let (workspace, _, tabs, _) = fixture();
+    let target = workspace.capture_tab_target(ROOT, tabs).unwrap();
+    for mask in 0..32_u32 {
+        let mut policy = DockPolicy::default();
+        for index in 0..5 {
+            if mask & (1 << index) != 0 {
+                let mut rule = DockItemRule::new();
+                rule.set_allow_tab_reorder(false);
+                policy.set_item_rule(ItemId::new(index + 1), rule);
+            }
+        }
+        let policy = policy.snapshot(PolicyRevision::default());
+        for item in (1..=5).map(ItemId::new) {
+            let source = workspace.capture_item_source(ROOT, tabs, item).unwrap();
+            let payload = MovePayload::Item(source.clone());
+            let eligibility =
+                DropCommandEligibility::new_validated(&workspace, &policy, &payload).unwrap();
+            for index in 0..=5 {
+                let preview = eligibility.check_validated_target(&DockTarget::TabGap {
+                    target: target.clone(),
+                    index,
+                });
+                let command = authorize_workspace_command(
+                    &workspace,
+                    &policy,
+                    &WorkspaceCommand::Reorder {
+                        source: source.clone(),
+                        insertion_index: index,
+                    },
+                );
+                assert_eq!(preview, command, "mask={mask}, item={item:?}, gap={index}");
+            }
+        }
+    }
+}
