@@ -74,7 +74,19 @@ changes through `request_input` and consume their result through
 
 `with_child_window_options` and `set_child_window_options` configure managed
 Child window decorations, Windows taskbar presence, stacking level and icon.
-New windows and replacements share these settings. Creation and recovery
+Use `with_child_window_options_for(surface, options)` or
+`set_child_window_options_for(surface, options)` for a stable `SurfaceId` override;
+unset fields inherit the current global options. `child_window_options_for(surface)`
+returns the resolved configuration. Overrides can be installed before creation
+and survive replacement or restoration of the same surface.
+`clear_child_window_options_for(surface)` removes an override and resumes the
+global configuration. After inheritance, unset fields use the same defaults for
+live windows and replacements: decorations and Windows taskbar presence are
+enabled, the stacking level is `Normal`, and no window icon is set. Removing a
+custom icon explicitly clears it; an unset icon does not inherit the Root icon.
+`NativeChildWindowOptions::default()` keeps all fields unset so surface overrides
+can inherit every global field. Changes apply on the next Root UI update, so
+request a Root repaint when changing them outside an update. Creation and recovery
 placement, visibility and ownership remain coordinated by the native lifecycle.
 Applications may request ordinary movement of a live window through the host;
 fresh OS observations determine its actual geometry. Configure the external
@@ -88,13 +100,13 @@ Window ordering has two scopes:
 - `NativeCommand::SelectItem` selects a pane and requests activation of its
   native window. Actual focus remains a platform observation.
 - `NativeChildWindowOptions::window_level` requests `Normal`, `AlwaysOnTop` or
-  `AlwaysOnBottom` for all managed children. The Root uses its own viewport
-  builder. A level does not specify order between windows at that level.
+  `AlwaysOnBottom` globally or for one overridden surface. The Root uses its own
+  viewport builder. A level does not specify order between windows at that level.
 
-The adapter currently has no per-window persistent appearance override or
-relative OS-window ordering API. `Child` describes lifecycle ownership; it does
-not establish a native owner/transient-parent relationship or guarantee that a
-child stays above the Root. Those policies require explicit platform support.
+The adapter currently has no relative OS-window ordering API. `Child` describes
+lifecycle ownership; it does not establish a native owner/transient-parent
+relationship or guarantee that a child stays above the Root. Those policies
+require explicit platform support.
 
 [Examples](../../docs/EXAMPLES.md) · [Development](../../CONTRIBUTING.md)
 · [Native qualification](../../integration/egui-native-smoke/README.md)

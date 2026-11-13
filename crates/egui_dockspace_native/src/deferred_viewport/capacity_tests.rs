@@ -65,6 +65,7 @@ fn child_window_appearance_preserves_hidden_preparation_and_visible_redeclaratio
         window_level: Some(egui::WindowLevel::AlwaysOnTop),
         icon: Some(Arc::clone(&icon)),
     };
+    let mut declared_icons = DeclaredWindowIcons::new();
     for configured in [false, true] {
         let options = if configured {
             options.clone()
@@ -77,15 +78,18 @@ fn child_window_appearance_preserves_hidden_preparation_and_visible_redeclaratio
             } else {
                 driver.entries[0].set_visible(false);
             }
-            let output = context.run_ui(egui::RawInput::default(), |ui| {
+            let specs = driver.retained_specs();
+            let mut output = context.run_ui(egui::RawInput::default(), |ui| {
                 declare_deferred_viewports(
                     ui.ctx(),
-                    driver.specs(),
-                    &options,
+                    &specs,
+                    &mut declared_icons,
+                    |_| options.clone(),
                     |_| "Inspector".into(),
                     |_, _, _| panic!("a deferred declaration must not render in the Root pass"),
                 );
             });
+            output.textures_delta.clear();
             let child = &output.viewport_output[&viewport];
             assert!(child.class == ViewportClass::Deferred);
             assert!(child.viewport_ui_cb.is_some());
@@ -97,6 +101,9 @@ fn child_window_appearance_preserves_hidden_preparation_and_visible_redeclaratio
                     .with_icon(Arc::clone(&icon))
             } else {
                 ViewportBuilder::default()
+                    .with_decorations(true)
+                    .with_taskbar(true)
+                    .with_window_level(egui::WindowLevel::Normal)
             }
             .with_visible(visible)
             .with_title("Inspector");
@@ -104,6 +111,213 @@ fn child_window_appearance_preserves_hidden_preparation_and_visible_redeclaratio
                 child.builder, expected,
                 "appearance must not override native placement, focus, visibility or pointer passthrough",
             );
+            output.drop_without_applying_deltas();
+        }
+    }
+}
+
+#[test]
+fn surface_appearance_survives_replacement_and_clear_restores_unset_global_defaults() {
+    let (mut session, mut binding) = session();
+    let first = binding;
+    let mut driver = DeferredViewportDriver::default();
+    let context = egui::Context::default();
+    context.set_embed_viewports(false);
+    let defaults = NativeChildWindowOptions::default();
+    let tools = NativeChildWindowOptions {
+        decorations: Some(false),
+        taskbar: Some(false),
+        window_level: Some(egui::WindowLevel::AlwaysOnTop),
+        icon: Some(std::sync::Arc::new(egui::IconData {
+            rgba: vec![255; 4],
+            width: 1,
+            height: 1,
+        })),
+    };
+    let mut overrides = std::collections::BTreeMap::from([(SURFACE, tools.clone())]);
+    let mut previous_builder: Option<ViewportBuilder> = None;
+    let mut declared_icons = DeclaredWindowIcons::new();
+    for step in 0..5 {
+        if matches!(step, 1 | 4) {
+            let previous = binding;
+            let reset = session.prepare_layout_reset(layout()).unwrap();
+            let mut frame = session
+                .begin_native_layout_reset_frame(&reset, |_| NativeReceiverAnswer::Unknown)
+                .unwrap();
+            frame
+                .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+                .unwrap();
+            binding = frame.commit().unwrap().native_bindings()[0];
+            assert_ne!(binding, first);
+            assert_eq!(binding.surface(), first.surface());
+            assert_ne!(viewport_id_for(binding), viewport_id_for(first));
+            assert_eq!(driver.remove(previous), Some(viewport_id_for(previous)));
+        } else if step == 2 {
+            assert_eq!(overrides.remove(&SURFACE), Some(tools.clone()));
+            assert_eq!(driver.set_visible(binding), Some(viewport_id_for(binding)));
+        }
+        let viewport = viewport_id_for(binding);
+        assert!(driver.insert(viewport, binding, bounds(), NativeSurfaceRole::Child));
+        let specs = driver.retained_specs();
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            declare_deferred_viewports(
+                ui.ctx(),
+                &specs,
+                &mut declared_icons,
+                |surface| {
+                    assert_eq!(surface, SURFACE);
+                    overrides.get(&surface).map_or_else(
+                        || defaults.clone(),
+                        |options| defaults.with_overrides(options),
+                    )
+                },
+                |_| "Inspector".into(),
+                |_, _, _| panic!("a deferred declaration must not render in the Root pass"),
+            );
+        });
+        output.textures_delta.clear();
+        let child = &output.viewport_output[&viewport];
+        let options = if step >= 2 {
+            defaults.clone()
+        } else {
+            defaults.with_overrides(&tools)
+        };
+        assert_eq!(
+            child.builder,
+            options
+                .viewport_builder()
+                .with_visible(specs[0].visible)
+                .with_title("Inspector"),
+            "stable surface options must survive a new binding and viewport, step={step}"
+        );
+        if step == 2 {
+            let (commands, _) = previous_builder
+                .as_mut()
+                .unwrap()
+                .patch(child.builder.clone());
+            assert!(commands.contains(&egui::ViewportCommand::Decorations(true)));
+            assert!(commands.contains(&egui::ViewportCommand::WindowLevel(
+                egui::WindowLevel::Normal
+            )));
+            assert_eq!(previous_builder.as_ref().unwrap().taskbar, Some(true));
+            assert_eq!(icon_clear_count(&child.commands), 1);
+        } else if step == 3 {
+            assert_eq!(icon_clear_count(&child.commands), 0);
+        } else if step == 4 {
+            let before = previous_builder.as_ref().unwrap();
+            assert_eq!(child.builder.decorations, before.decorations);
+            assert_eq!(child.builder.taskbar, before.taskbar);
+            assert_eq!(child.builder.window_level, before.window_level);
+            assert_eq!(child.builder.icon, before.icon);
+            assert_eq!(icon_clear_count(&child.commands), 1);
+        }
+        assert_eq!(declared_icons.len(), 1, "retired viewport, step={step}");
+        previous_builder = Some(child.builder.clone());
+        output.drop_without_applying_deltas();
+    }
+}
+
+fn icon_clear_count(commands: &[egui::ViewportCommand]) -> usize {
+    commands
+        .iter()
+        .filter(|command| matches!(command, egui::ViewportCommand::Icon(None)))
+        .count()
+}
+
+#[test]
+fn global_and_surface_icon_changes_clear_once_and_can_reapply_the_same_arc() {
+    use std::sync::Arc;
+
+    let (_session, binding) = session();
+    let viewport = viewport_id_for(binding);
+    let mut driver = DeferredViewportDriver::default();
+    assert!(driver.insert(viewport, binding, bounds(), NativeSurfaceRole::Child));
+    let specs = driver.retained_specs();
+    let icon = Arc::new(egui::IconData {
+        rgba: vec![255; 4],
+        width: 1,
+        height: 1,
+    });
+    let parent_icon = Arc::new(egui::IconData {
+        rgba: vec![0, 0, 255, 255],
+        width: 1,
+        height: 1,
+    });
+    for per_surface in [false, true] {
+        for parent_has_icon in [false, true] {
+            let context = egui::Context::default();
+            context.set_embed_viewports(false);
+            let mut declared_icons = DeclaredWindowIcons::new();
+            let mut retained = ViewportBuilder::default();
+            let mut window_icon = None;
+            for step in 0..8 {
+                let configured = NativeChildWindowOptions {
+                    icon: matches!(step, 1 | 4).then(|| Arc::clone(&icon)),
+                    taskbar: (step >= 6).then_some(false),
+                    ..Default::default()
+                };
+                let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+                    declare_deferred_viewports(
+                        ui.ctx(),
+                        &specs,
+                        &mut declared_icons,
+                        |_| {
+                            if per_surface {
+                                NativeChildWindowOptions::default().with_overrides(&configured)
+                            } else {
+                                configured.clone()
+                            }
+                        },
+                        |_| "Inspector".into(),
+                        |_, _, _| panic!("deferred declaration must not invoke pane UI"),
+                    );
+                });
+                output.textures_delta.clear();
+                let child = &output.viewport_output[&viewport];
+                // Use the real builder patch, including eframe's parent-icon
+                // fallback and recreation, before applying explicit commands.
+                let mut builder = child.builder.clone();
+                if builder.icon.is_none() && parent_has_icon {
+                    builder.icon = Some(Arc::clone(&parent_icon));
+                }
+                let (commands, recreate) = retained.patch(builder);
+                if recreate {
+                    window_icon = retained.icon.clone();
+                }
+                if step == 4 && !parent_has_icon {
+                    assert!(
+                        commands
+                            .iter()
+                            .all(|command| { !matches!(command, egui::ViewportCommand::Icon(_)) })
+                    );
+                }
+                for command in commands.iter().chain(&child.commands) {
+                    if let egui::ViewportCommand::Icon(icon) = command {
+                        window_icon.clone_from(icon);
+                    }
+                }
+                assert_eq!(
+                    window_icon, configured.icon,
+                    "step={step}, per_surface={per_surface}, parent_has_icon={parent_has_icon}"
+                );
+                assert_eq!(
+                    icon_clear_count(&child.commands),
+                    usize::from(matches!(step, 0 | 2 | 5 | 6))
+                );
+                output.drop_without_applying_deltas();
+            }
+            let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+                declare_deferred_viewports(
+                    ui.ctx(),
+                    &[],
+                    &mut declared_icons,
+                    |_| unreachable!("the managed viewport roster is empty"),
+                    |_| unreachable!("the managed viewport roster is empty"),
+                    |_, _, _| unreachable!("the managed viewport roster is empty"),
+                );
+            });
+            output.textures_delta.clear();
+            assert!(declared_icons.is_empty());
             output.drop_without_applying_deltas();
         }
     }

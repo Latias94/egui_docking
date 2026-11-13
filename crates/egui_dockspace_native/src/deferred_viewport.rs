@@ -5,12 +5,14 @@
 //! remembers which eframe viewport must be declared on the next root pass.
 
 use dockspace::geometry::PhysicalRect;
+use dockspace::model::SurfaceId;
 use dockspace::runtime::{NativeSurfaceBinding, NativeSurfaceRole};
 use eframe::egui::{self, ViewportBuilder, ViewportClass, ViewportId};
 
 use crate::NativeChildWindowOptions;
 use crate::error::NativeHostProtocolError;
 use crate::mailbox::DeferredViewportPaint;
+use crate::window_options::{DeclaredWindowIcon, DeclaredWindowIcons};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct DeferredViewportSpec {
@@ -195,8 +197,9 @@ pub(crate) fn viewport_id_for(binding: NativeSurfaceBinding) -> ViewportId {
 
 pub(crate) fn declare_deferred_viewports(
     context: &egui::Context,
-    specs: impl IntoIterator<Item = DeferredViewportSpec>,
-    options: &NativeChildWindowOptions,
+    specs: &[DeferredViewportSpec],
+    declared_icons: &mut DeclaredWindowIcons,
+    options: impl Fn(SurfaceId) -> NativeChildWindowOptions,
     title: impl Fn(DeferredViewportSpec) -> String,
     callback: impl Fn(DeferredViewportSpec, &mut egui::Ui, ViewportClass)
     + Clone
@@ -204,15 +207,46 @@ pub(crate) fn declare_deferred_viewports(
     + Sync
     + 'static,
 ) {
+    declared_icons.retain(|viewport, _| specs.iter().any(|spec| spec.viewport() == *viewport));
     for spec in specs {
+        let spec = *spec;
+        let options = options(spec.binding().surface());
         let callback = callback.clone();
         context.show_viewport_deferred(
             spec.viewport(),
-            spec.builder(options).with_title(title(spec)),
+            spec.builder(&options).with_title(title(spec)),
             move |ui, class| {
                 callback(spec, ui, class);
             },
         );
+        let taskbar = options.taskbar.unwrap_or(true);
+        let previous = declared_icons.insert(
+            spec.viewport(),
+            DeclaredWindowIcon {
+                icon: options.icon.clone(),
+                taskbar,
+            },
+        );
+        let clear_icon = previous
+            .as_ref()
+            .is_none_or(|previous| previous.icon.is_some() || previous.taskbar != taskbar);
+        let restore_icon = previous
+            .as_ref()
+            .is_some_and(|previous| previous.icon.is_none());
+        match options.icon {
+            // New children otherwise inherit the parent's icon in eframe. Make
+            // the initial no-icon default match an explicit live clear.
+            None if clear_icon => {
+                context.send_viewport_cmd_to(spec.viewport(), egui::ViewportCommand::Icon(None));
+            }
+            // A clear does not update egui's retained builder. Reapplying its
+            // former Arc can therefore need a command even when patch emits none.
+            Some(icon) if restore_icon => {
+                context
+                    .send_viewport_cmd_to(spec.viewport(), egui::ViewportCommand::Icon(Some(icon)));
+            }
+            _ => {}
+        }
     }
 }
 

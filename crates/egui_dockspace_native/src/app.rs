@@ -1,5 +1,6 @@
 //! Thin eframe application over one shared native runtime state.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use dockspace::model::{
@@ -23,6 +24,7 @@ use crate::error::{NativeHostProtocolError, NativeRuntimeError, NativeRuntimeErr
 use crate::lifecycle_progress::{NativeCloseProgress, NativeOutputBacklog};
 use crate::mailbox::DeferredViewportPaint;
 use crate::surface_driver::{NativeErrorPresentation, NativeRuntimeState, NativeSurfaceUpdate};
+use crate::window_options::DeclaredWindowIcons;
 use crate::{
     NativeActionFailure, NativeActionRequestError, NativeActionStatus, NativeChildWindowOptions,
     NativeLayoutRequestError,
@@ -53,6 +55,8 @@ pub struct NativeDockspaceApp<P> {
     state: Arc<Mutex<NativeRuntimeState<P>>>,
     native_host: Arc<dyn NativeHostHandler>,
     child_window_options: NativeChildWindowOptions,
+    child_window_overrides: BTreeMap<SurfaceId, NativeChildWindowOptions>,
+    declared_child_icons: DeclaredWindowIcons,
 }
 
 impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
@@ -187,13 +191,16 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
             state,
             native_host,
             child_window_options: NativeChildWindowOptions::default(),
+            child_window_overrides: BTreeMap::new(),
+            declared_child_icons: DeclaredWindowIcons::new(),
         })
     }
 
     /// Configures the appearance of managed child OS windows.
     ///
-    /// New windows and replacements use these options. Configure the external
-    /// Root separately through `eframe::NativeOptions::viewport`.
+    /// New windows and replacements use these defaults. Per-surface overrides
+    /// inherit fields they leave unset. Configure the external Root separately
+    /// through `eframe::NativeOptions::viewport`.
     #[must_use]
     pub fn with_child_window_options(mut self, options: NativeChildWindowOptions) -> Self {
         self.set_child_window_options(options);
@@ -203,7 +210,7 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
     /// Updates child-window appearance on the next Root UI update.
     ///
     /// Request a Root repaint when calling this outside an egui update. Fields
-    /// set to `None` leave existing platform properties unchanged.
+    /// left unset use the deterministic defaults in [`NativeChildWindowOptions`].
     pub fn set_child_window_options(&mut self, options: NativeChildWindowOptions) {
         self.child_window_options = options;
     }
@@ -212,6 +219,61 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
     #[must_use]
     pub fn child_window_options(&self) -> &NativeChildWindowOptions {
         &self.child_window_options
+    }
+
+    /// Configures appearance overrides for one stable managed surface.
+    ///
+    /// Unset fields inherit the global child-window options. Configuration may
+    /// precede window creation and survives replacement or restoration of the
+    /// same surface. It remains stored until explicitly cleared. The external
+    /// Root continues to use its application's `eframe::NativeOptions`.
+    #[must_use]
+    pub fn with_child_window_options_for(
+        mut self,
+        surface: SurfaceId,
+        options: NativeChildWindowOptions,
+    ) -> Self {
+        let _ = self.set_child_window_options_for(surface, options);
+        self
+    }
+
+    /// Replaces one surface's overrides, returning its previous overrides.
+    ///
+    /// Changes apply on the next Root UI update. Request a Root repaint when
+    /// calling this outside an egui update. Unset fields inherit the current
+    /// global options, then the defaults in [`NativeChildWindowOptions`].
+    pub fn set_child_window_options_for(
+        &mut self,
+        surface: SurfaceId,
+        options: NativeChildWindowOptions,
+    ) -> Option<NativeChildWindowOptions> {
+        self.child_window_overrides.insert(surface, options)
+    }
+
+    /// Returns the resolved global defaults and overrides for one surface.
+    ///
+    /// Remaining `None` fields use the defaults documented on
+    /// [`NativeChildWindowOptions`] when declaring the viewport; they do not
+    /// preserve historical window properties.
+    /// This does not query the OS or imply that the surface has a live window.
+    #[must_use]
+    pub fn child_window_options_for(&self, surface: SurfaceId) -> NativeChildWindowOptions {
+        self.child_window_overrides.get(&surface).map_or_else(
+            || self.child_window_options.clone(),
+            |overrides| self.child_window_options.with_overrides(overrides),
+        )
+    }
+
+    /// Removes a surface's overrides, returning them if present.
+    ///
+    /// The next Root UI update restores the current global options, including
+    /// Dockspace's defaults for global fields still set to `None`.
+    /// Request a Root repaint when calling this outside an egui update.
+    pub fn clear_child_window_options_for(
+        &mut self,
+        surface: SurfaceId,
+    ) -> Option<NativeChildWindowOptions> {
+        self.child_window_overrides.remove(&surface)
     }
 
     /// Configures input bindings before installing the native host handler.
@@ -564,7 +626,7 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
     /// admitted before that input was taken. A different roster announced here
     /// is eligible on the next run, whose complete output allowance is checked
     /// before taking more input. Text and IME events are never replayed.
-    pub fn show_root_surfaces(&self, ui: &mut egui::Ui, placements: &[NativeSurfacePlacement]) {
+    pub fn show_root_surfaces(&mut self, ui: &mut egui::Ui, placements: &[NativeSurfacePlacement]) {
         self.update_root_with_placements(ui, Some(placements));
     }
 
@@ -645,12 +707,12 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
         lock_state(&self.state).take_action_status()
     }
 
-    fn update_root(&self, ui: &mut egui::Ui) {
+    fn update_root(&mut self, ui: &mut egui::Ui) {
         self.update_root_with_placements(ui, None);
     }
 
     fn update_root_with_placements(
-        &self,
+        &mut self,
         ui: &mut egui::Ui,
         placements: Option<&[NativeSurfacePlacement]>,
     ) {
@@ -700,10 +762,18 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
         }
 
         let state = Arc::clone(&self.state);
+        let defaults = &self.child_window_options;
+        let overrides = &self.child_window_overrides;
         declare_deferred_viewports(
             &context,
-            specs,
-            &self.child_window_options,
+            &specs,
+            &mut self.declared_child_icons,
+            |surface| {
+                overrides.get(&surface).map_or_else(
+                    || defaults.clone(),
+                    |options| defaults.with_overrides(options),
+                )
+            },
             |spec| {
                 let state = lock_state(&self.state);
                 crate::window_title::window_title(
@@ -915,25 +985,26 @@ mod retained_focus_tests;
 mod tests {
     use std::sync::{Arc, Mutex, PoisonError};
 
+    use dockspace::model::{
+        DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId,
+        RootId, SurfaceId,
+    };
     use eframe::egui;
+    use egui_dockspace::{DockInputConfig, DockStyle, DockingActivation, PaneView};
 
-    #[test]
-    fn input_can_be_configured_before_the_bootstrap_registration_commits() {
-        use dockspace::model::{
-            DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId,
-            RootId, SurfaceId,
-        };
-        use egui_dockspace::{DockInputConfig, DockStyle, DockingActivation, PaneView};
+    struct Pane;
 
-        struct Pane;
-        impl PaneView for Pane {
-            fn title(&self, _: ItemId) -> Option<egui::WidgetText> {
-                Some("Document".into())
-            }
-            fn ui(&mut self, _: ItemId, _: &mut egui::Ui) -> egui_dockspace::PaneResponse {
-                Default::default()
-            }
+    impl PaneView for Pane {
+        fn title(&self, _: ItemId) -> Option<egui::WidgetText> {
+            Some("Document".into())
         }
+
+        fn ui(&mut self, _: ItemId, _: &mut egui::Ui) -> egui_dockspace::PaneResponse {
+            Default::default()
+        }
+    }
+
+    fn app() -> super::NativeDockspaceApp<Pane> {
         let surface = SurfaceId::new(1);
         let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
             surface,
@@ -945,22 +1016,90 @@ mod tests {
         .unwrap();
         let session =
             dockspace::runtime::DockspaceSession::from_layout(layout, Default::default()).unwrap();
-        let config = DockInputConfig {
-            docking: DockingActivation::HoldToEnable(egui::Modifiers::ALT),
-            cancel_drag: None,
-        };
-        let app = super::NativeDockspaceApp::new(
-            egui::Id::unique("initial-input-options"),
+        super::NativeDockspaceApp::new(
+            egui::Id::unique("initial-native-options"),
             session,
             surface,
             Pane,
             DockStyle::default(),
         )
         .unwrap()
-        .with_input(config)
-        .unwrap();
+    }
+
+    #[test]
+    fn input_can_be_configured_before_the_bootstrap_registration_commits() {
+        let config = DockInputConfig {
+            docking: DockingActivation::HoldToEnable(egui::Modifiers::ALT),
+            cancel_drag: None,
+        };
+        let app = app().with_input(config).unwrap();
         assert_eq!(app.input(), config);
         assert!(app.take_action_status().is_none());
+    }
+
+    #[test]
+    fn surface_window_options_inherit_defaults_and_can_be_replaced_and_cleared() {
+        use crate::NativeChildWindowOptions;
+
+        let document = SurfaceId::new(2);
+        let tools = SurfaceId::new(3);
+        let defaults = NativeChildWindowOptions {
+            decorations: Some(true),
+            taskbar: Some(true),
+            window_level: Some(egui::WindowLevel::Normal),
+            icon: Some(Arc::new(egui::IconData {
+                rgba: vec![255; 4],
+                width: 1,
+                height: 1,
+            })),
+        };
+        let tool_overrides = NativeChildWindowOptions {
+            taskbar: Some(false),
+            window_level: Some(egui::WindowLevel::AlwaysOnTop),
+            ..Default::default()
+        };
+        let mut app = app().with_child_window_options_for(tools, tool_overrides.clone());
+        assert_eq!(
+            app.child_window_options(),
+            &NativeChildWindowOptions::default()
+        );
+        assert_eq!(app.child_window_options_for(document).decorations, None);
+        assert_eq!(
+            app.child_window_options_for(document)
+                .viewport_builder()
+                .decorations,
+            Some(true)
+        );
+        app = app.with_child_window_options(defaults.clone());
+        assert_eq!(app.child_window_options(), &defaults);
+        assert_eq!(app.child_window_options_for(document), defaults);
+        let resolved = app.child_window_options_for(tools);
+        assert_eq!(resolved.decorations, Some(true));
+        assert_eq!(resolved.taskbar, Some(false));
+        assert_eq!(resolved.window_level, Some(egui::WindowLevel::AlwaysOnTop));
+        assert_eq!(resolved.icon, defaults.icon);
+
+        let new_defaults = NativeChildWindowOptions {
+            decorations: Some(false),
+            ..defaults
+        };
+        app.set_child_window_options(new_defaults.clone());
+        assert_eq!(app.child_window_options_for(document), new_defaults);
+        assert_eq!(app.child_window_options_for(tools).decorations, Some(false));
+        assert_eq!(app.child_window_options_for(tools).taskbar, Some(false));
+
+        let replacement = NativeChildWindowOptions {
+            decorations: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(
+            app.set_child_window_options_for(tools, replacement.clone()),
+            Some(tool_overrides)
+        );
+        assert_eq!(app.child_window_options_for(tools).taskbar, Some(true));
+        assert_eq!(app.clear_child_window_options_for(tools), Some(replacement));
+        assert_eq!(app.child_window_options_for(tools), new_defaults);
+        assert!(app.clear_child_window_options_for(tools).is_none());
     }
 
     #[derive(Default)]
