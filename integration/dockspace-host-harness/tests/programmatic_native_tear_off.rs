@@ -725,6 +725,56 @@ fn explicit_placement_can_recover_a_contained_root_without_visible_chrome() {
     let _ = request.accept();
 }
 
+#[test]
+fn native_dock_back_availability_waits_for_the_current_recovery_scene() {
+    let mut fixture = Fixture::new();
+    let action = fixture
+        .session
+        .prepare_move_to_new_window(NativeTearOffSource::Item(B), placement());
+    let mut request = fixture.request(action);
+    let ack = request.accept();
+    fixture.observe(&request, NativeCreateReadiness::Prepared, Some(ack));
+    let output = paint(&mut fixture.session, request.binding, request.placement);
+    fixture
+        .session
+        .report_surface_presentation(output, SurfacePresentationResult::Presented)
+        .unwrap();
+    let admitted = native_frame(&mut fixture.session).commit().unwrap();
+    assert_eq!(admitted.native_admissions(), [request.binding]);
+
+    let unavailable = fixture
+        .session
+        .presentation_commands(request.root)
+        .dock_back()
+        .unwrap();
+    assert_eq!(
+        unavailable.unavailable_reason(),
+        Some(DockspaceActionRejection::PresentationUnavailable { surface: HOST })
+    );
+
+    let output = paint(&mut fixture.session, fixture.root, root_bounds());
+    fixture
+        .session
+        .report_surface_presentation(output, SurfacePresentationResult::Presented)
+        .unwrap();
+    native_frame(&mut fixture.session).commit().unwrap();
+    let command = fixture
+        .session
+        .presentation_commands(request.root)
+        .dock_back()
+        .unwrap();
+    assert!(command.is_ready(), "{:?}", command.unavailable_reason());
+    let mut frame = native_frame(&mut fixture.session);
+    let submitted = frame
+        .submit_prepared_action(command.into_prepared().unwrap())
+        .unwrap();
+    let report = frame.commit().unwrap();
+    assert!(matches!(
+        report.submitted_action_outcome(submitted),
+        Some(HostInputOutcome::ProductPresentationActionRequested { .. })
+    ));
+}
+
 fn paint_distinct_minima(
     session: &mut DockspaceSession,
     binding: NativeSurfaceBinding,

@@ -280,6 +280,13 @@ impl DockEngine {
                 Ok(Some(surface)) => {
                     return Ok(self
                         .validate_product_root_float_availability(root, surface)
+                        .and_then(|()| {
+                            self.freeze_surface_recovery_target(surface)
+                                .map(|_| ())
+                                .ok_or(DockspaceActionRejection::PresentationUnavailable {
+                                    surface,
+                                })
+                        })
                         .map(|()| self.prepare_product_action(action)));
                 }
                 Ok(None) => {}
