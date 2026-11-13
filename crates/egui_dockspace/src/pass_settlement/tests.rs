@@ -63,6 +63,18 @@ fn input(viewport: ViewportId) -> RawInput {
     input
 }
 
+fn idle_viewport(context: &Context, viewport: ViewportId) {
+    for _ in 0..4 {
+        context
+            .run_ui(input(viewport), |_| {})
+            .drop_without_applying_deltas();
+        if !context.has_requested_repaint_for(&viewport) {
+            return;
+        }
+    }
+    panic!("the viewport must be idle before observing a delayed output wakeup");
+}
+
 fn measured_session() -> DockspaceSession {
     let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
         SURFACE,
@@ -478,6 +490,105 @@ fn an_output_hook_discard_delivers_only_the_terminal_pass() {
 }
 
 #[test]
+fn discarded_only_receipts_wake_the_rebound_lane_without_presenting_old_output() {
+    for (change_context, register_first) in
+        [(false, false), (false, true), (true, false), (true, true)]
+    {
+        for result in [
+            Some(SurfacePresentationResult::Presented),
+            Some(SurfacePresentationResult::Dropped),
+            None,
+        ] {
+            let original_context = test_context();
+            original_context.options_mut(|options| options.max_passes = 2.try_into().unwrap());
+            original_context.add_plugin(LateDiscard { remaining: 1 });
+            let rebound_context = if change_context {
+                test_context()
+            } else {
+                original_context.clone()
+            };
+            let rebound_viewport = if change_context {
+                ViewportId::ROOT
+            } else {
+                ViewportId::from_hash_of("discarded-output-rebound-viewport")
+            };
+            let settlement = ProductPassSettlement::default();
+            let mut session = measured_session();
+            session
+                .configure_output_capacity(std::num::NonZeroUsize::MIN)
+                .unwrap();
+            let mut passes = 0;
+            let mut artifact = None;
+            let (output, receipt) = run_ui(&original_context, input(ViewportId::ROOT), |ui| {
+                passes += 1;
+                if passes == 1 {
+                    artifact = Some(stage_surface(&settlement, &mut session, ui));
+                }
+            })
+            .into_parts();
+            assert_eq!(passes, 2);
+            assert_eq!(receipt.discarded.len(), 1);
+            assert!(receipt.deliveries.is_empty());
+            output.drop_without_applying_deltas();
+            {
+                let mut frame = session.begin_host_frame().unwrap();
+                assert!(!frame.reserve_surface_output(SURFACE).unwrap());
+            }
+            settlement
+                .take_ready_before_run(&rebound_context, rebound_viewport)
+                .unwrap();
+            idle_viewport(&original_context, ViewportId::ROOT);
+            idle_viewport(&rebound_context, rebound_viewport);
+            let old_wakeups = Arc::new(Mutex::new(Vec::new()));
+            if change_context {
+                let observed = Arc::clone(&old_wakeups);
+                let state = Arc::downgrade(&settlement.state);
+                original_context.set_request_repaint_callback(move |info| {
+                    assert!(state.upgrade().unwrap().try_lock().is_ok());
+                    observed.lock().unwrap().push(info.viewport_id);
+                });
+            }
+            let wakeups = Arc::new(Mutex::new(Vec::new()));
+            let observed = Arc::clone(&wakeups);
+            let state = Arc::downgrade(&settlement.state);
+            rebound_context.set_request_repaint_callback(move |info| {
+                assert!(state.upgrade().unwrap().try_lock().is_ok());
+                observed.lock().unwrap().push(info.viewport_id);
+            });
+            if register_first {
+                settlement.wait_for_output(&rebound_context, rebound_viewport);
+            }
+            assert!(wakeups.lock().unwrap().is_empty());
+            match result {
+                Some(result) => receipt.report(result),
+                None => drop(receipt),
+            }
+            if !register_first {
+                assert!(wakeups.lock().unwrap().is_empty());
+                settlement.wait_for_output(&rebound_context, rebound_viewport);
+            }
+            assert_eq!(
+                wakeups.lock().unwrap().as_slice(),
+                &[rebound_viewport],
+                "{result:?}/change_context={change_context}/register_first={register_first} must wake only the waiting lane"
+            );
+            assert!(old_wakeups.lock().unwrap().is_empty());
+            let ready = settlement
+                .take_ready_before_run(&rebound_context, rebound_viewport)
+                .unwrap();
+            assert!(ready.presentations.is_empty());
+            assert_eq!(ready.presentation_failure, None);
+            assert!(
+                flush_presentations(&mut session)
+                    .surface_presentation_commits()
+                    .iter()
+                    .any(|commit| commit.retires(artifact.unwrap()))
+            );
+        }
+    }
+}
+
+#[test]
 fn ordered_input_keeps_raw_batch_time_across_reruns_without_using_predicted_time() {
     for (raw_time, expected) in [
         (None, None),
@@ -582,6 +693,94 @@ fn an_output_hook_unwind_abandons_the_open_pass_and_allows_a_fresh_run() {
             .iter()
             .any(|commit| commit.presents(recovered))
     );
+}
+
+#[test]
+fn rejected_and_abandoned_runs_wake_waiters_after_retiring_their_outputs() {
+    for abandoned in [false, true] {
+        let context = test_context();
+        let settlement = ProductPassSettlement::default();
+        let mut session = measured_session();
+        session
+            .configure_output_capacity(std::num::NonZeroUsize::MIN)
+            .unwrap();
+        context
+            .run_ui(input(ViewportId::ROOT), |ui| {
+                ui.label("Settlement lifecycle pane");
+            })
+            .drop_without_applying_deltas();
+        if !abandoned {
+            context.add_plugin(RemovePaneGeometry {
+                removed: Arc::new(AtomicUsize::new(0)),
+            });
+        }
+        let raw = input(ViewportId::ROOT);
+        let run = super::ProductPassSettlementRun::begin(&context, &raw);
+        let mut artifact = None;
+        let mut output = context.run_ui(raw, |ui| {
+            let scope = run.begin_pass(ui).unwrap();
+            let _callback = scope.enter(ui);
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .id_salt(super::RUN_SCOPE_TAG)
+                    .ui_stack_info(
+                        egui::UiStackInfo::default().with_tag_value(super::RUN_SCOPE_TAG, scope),
+                    ),
+                |ui| artifact = Some(stage_surface(&settlement, &mut session, ui)),
+            );
+        });
+        idle_viewport(&context, ViewportId::ROOT);
+        let wakeups = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&wakeups);
+        let state = Arc::downgrade(&settlement.state);
+        context.set_request_repaint_callback(move |info| {
+            assert_eq!(info.viewport_id, ViewportId::ROOT);
+            assert!(state.upgrade().unwrap().try_lock().is_ok());
+            observed.fetch_add(1, Ordering::Relaxed);
+        });
+        settlement.wait_for_output(&context, ViewportId::ROOT);
+        assert_eq!(wakeups.load(Ordering::Relaxed), 0);
+
+        if abandoned {
+            let interrupted = catch_unwind(AssertUnwindSafe(move || {
+                let _run = run;
+                panic!("abandon a completed egui callback before settlement");
+            }));
+            assert!(interrupted.is_err());
+        } else {
+            let receipt = run.complete(&mut output);
+            assert!(receipt.deliveries.is_empty());
+            assert!(receipt.discarded.is_empty());
+            drop(receipt);
+        }
+        output.drop_without_applying_deltas();
+        assert_eq!(
+            wakeups.load(Ordering::Relaxed),
+            1,
+            "abandoned={abandoned} must wake the output waiter after retirement"
+        );
+        {
+            let state = settlement.state.lock().unwrap();
+            assert!(state.output_retired);
+            assert!(state.waiting_for_output.is_none());
+        }
+        let ready = take_ready(&settlement, &context, ViewportId::ROOT);
+        assert!(ready.presentations.is_empty());
+        assert_eq!(
+            ready.presentation_failure,
+            Some(if abandoned {
+                PresentationSettlementFailure::Abandoned
+            } else {
+                PresentationSettlementFailure::OutputMismatch
+            })
+        );
+        assert!(
+            flush_presentations(&mut session)
+                .surface_presentation_commits()
+                .iter()
+                .any(|commit| commit.retires(artifact.unwrap()))
+        );
+    }
 }
 
 #[test]

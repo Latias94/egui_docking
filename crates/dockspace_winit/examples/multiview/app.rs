@@ -73,13 +73,7 @@ impl App {
     fn advance(&mut self, event_loop: &ActiveEventLoop) -> AppResult<()> {
         loop {
             self.host.dispatch(event_loop, &mut self.session)?;
-            let observed = self.host.observe(&mut self.session)?;
-            let report = workspace::idle(&mut self.session)?;
-            self.host.records_committed();
-            self.host.accept(&mut self.session, report)?;
-            if observed {
-                self.host.drain_destroyed(&mut self.session)?;
-            }
+            self.host.settle_observations(&mut self.session)?;
             if !self.host.has_work() {
                 break;
             }

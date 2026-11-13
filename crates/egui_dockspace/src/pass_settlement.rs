@@ -54,7 +54,7 @@ pub struct DockspaceOutputReceipt {
     context: Context,
     viewport: ViewportId,
     deliveries: Vec<SurfaceDelivery>,
-    discarded: Vec<PaintedSurfaceOutput>,
+    discarded: Vec<DiscardedSurfaceOutput>,
 }
 
 impl DockspaceOutputReceipt {
@@ -67,18 +67,18 @@ impl DockspaceOutputReceipt {
         // Retire discarded predecessors together with the terminal result.
         // Retiring them during the next speculative pass would revoke the
         // stream while egui is still producing its replacement output.
-        self.discarded.clear();
         let mut needs_repaint = false;
+        let mut output_wakeups = retire_discarded_outputs(&mut self.discarded);
         for delivery in self.deliveries.drain(..) {
             let Some(state) = delivery.state.upgrade() else {
                 continue;
             };
             let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
-            if state
+            let lane_matches = state
                 .lane
                 .as_ref()
-                .is_some_and(|lane| Arc::ptr_eq(&lane.identity, &delivery.lane))
-            {
+                .is_some_and(|lane| Arc::ptr_eq(&lane.identity, &delivery.lane));
+            if lane_matches {
                 needs_repaint |= delivery.needs_repaint;
                 state.ready.push(ReadySurfacePresentation {
                     output: delivery.output,
@@ -89,10 +89,19 @@ impl DockspaceOutputReceipt {
                         None
                     },
                 });
+            } else {
+                drop(delivery.output);
+                state.output_retired = true;
+            }
+            if let Some(waiter) = state.waiting_for_output.take() {
+                output_wakeups.push(waiter);
             }
         }
         if needs_repaint {
             self.context.request_repaint_of(self.viewport);
+        }
+        for (context, viewport) in output_wakeups {
+            context.request_repaint_of(viewport);
         }
     }
 }
@@ -319,6 +328,22 @@ impl ProductPassSettlement {
         state.bind_lane(&context, viewport);
         Some(state.take_ready())
     }
+
+    pub(super) fn wait_for_output(&self, context: &Context, viewport: ViewportId) {
+        let identity = context_identity(context);
+        let needs_repaint = {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if !state.lane_matches(&identity, viewport) {
+                return;
+            }
+            let ready = !state.ready.is_empty() || state.output_retired;
+            state.waiting_for_output = (!ready).then(|| (context.clone(), viewport));
+            ready
+        };
+        if needs_repaint {
+            context.request_repaint_of(viewport);
+        }
+    }
 }
 
 pub(super) enum ProductPassEnrollment {
@@ -359,13 +384,40 @@ struct SurfaceDelivery {
     needs_repaint: bool,
 }
 
+struct DiscardedSurfaceOutput {
+    state: Weak<Mutex<PassSettlementState>>,
+    output: PaintedSurfaceOutput,
+}
+
+fn retire_discarded_outputs(
+    discarded: &mut Vec<DiscardedSurfaceOutput>,
+) -> Vec<(Context, ViewportId)> {
+    let states: Vec<_> = discarded
+        .drain(..)
+        .map(|discarded| {
+            drop(discarded.output);
+            discarded.state
+        })
+        .collect();
+    // Release the whole batch before any waiter can retry its output reservation.
+    states
+        .into_iter()
+        .filter_map(|state| {
+            let state = state.upgrade()?;
+            let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
+            state.output_retired = true;
+            state.waiting_for_output.take()
+        })
+        .collect()
+}
+
 pub(super) struct ProductPassSettlementRun {
     context: Context,
     context_identity: Arc<ContextIdentity>,
     viewport: ViewportId,
     portal: Arc<Mutex<ActiveRunPortal>>,
     completed: bool,
-    discarded: RefCell<Vec<PaintedSurfaceOutput>>,
+    discarded: RefCell<Vec<DiscardedSurfaceOutput>>,
 }
 
 /// Exclusively owns shape data from Context return through final settlement.
@@ -481,6 +533,7 @@ impl ProductPassSettlementRun {
     ) -> DockspaceOutputReceipt {
         let terminal = self.take_terminal();
         let mut deliveries = Vec::new();
+        let mut rejected = Vec::new();
         if let Some((run, pass, poisoned, participants)) = terminal {
             let mut staged = Vec::new();
             let mut invalid = poisoned;
@@ -543,6 +596,12 @@ impl ProductPassSettlementRun {
                                 PresentationSettlementFailure::OutputMismatch
                             });
                     }
+                    if let Some(output) = batch.output {
+                        rejected.push(DiscardedSurfaceOutput {
+                            state: participant,
+                            output,
+                        });
+                    }
                     continue;
                 }
                 let focus = batch
@@ -565,6 +624,9 @@ impl ProductPassSettlementRun {
         scrub_private_markers(output);
         self.remove_portal();
         self.completed = true;
+        for (context, viewport) in retire_discarded_outputs(&mut rejected) {
+            context.request_repaint_of(viewport);
+        }
         DockspaceOutputReceipt {
             context: self.context.clone(),
             viewport: self.viewport,
@@ -612,7 +674,10 @@ impl ProductPassSettlementRun {
             let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(open) = state.take_open(&run, pass) {
                 if let Some(output) = open.batch.and_then(|batch| batch.output) {
-                    self.discarded.borrow_mut().push(output);
+                    self.discarded.borrow_mut().push(DiscardedSurfaceOutput {
+                        state: participant,
+                        output,
+                    });
                 }
                 if abandoned || poisoned {
                     state.failure = Some(PresentationSettlementFailure::Abandoned);
@@ -638,6 +703,9 @@ impl Drop for ProductPassSettlementRun {
         if !self.completed {
             self.retire_terminal(true);
             self.remove_portal();
+            for (context, viewport) in retire_discarded_outputs(self.discarded.get_mut()) {
+                context.request_repaint_of(viewport);
+            }
         }
     }
 }
@@ -664,6 +732,8 @@ struct PassSettlementState {
     ready: Vec<ReadySurfacePresentation>,
     failure: Option<PresentationSettlementFailure>,
     lane_changed: bool,
+    waiting_for_output: Option<(Context, ViewportId)>,
+    output_retired: bool,
 }
 
 impl PassSettlementState {
@@ -674,6 +744,8 @@ impl PassSettlementState {
                 self.failure = Some(PresentationSettlementFailure::Abandoned);
             }
             self.ready.clear();
+            self.waiting_for_output = None;
+            self.output_retired = false;
             self.lane = Some(SettlementLane {
                 context: Arc::downgrade(context),
                 viewport,
@@ -683,6 +755,8 @@ impl PassSettlementState {
     }
 
     fn take_ready(&mut self) -> ReadyProductPassSettlementBatch {
+        self.waiting_for_output = None;
+        self.output_retired = false;
         ReadyProductPassSettlementBatch {
             presentations: std::mem::take(&mut self.ready),
             presentation_failure: self.failure.take(),

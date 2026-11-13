@@ -63,7 +63,7 @@ The registry is a specialization of `dockspace::runtime::NativeWindows<K, T>`.
 A framework with its own platform implementation can use the core type with its
 own window ID type and no winit dependency.
 
-The [multiview example](examples/multiview.rs) demonstrates that lifecycle with
+The [multiview example](examples/multiview/main.rs) demonstrates that lifecycle with
 real OS windows and software presentation. Follow the
 [engine host guide](../dockspace/docs/guide.md) and check the
 [platform matrix](../../docs/PLATFORM_SUPPORT.md). The

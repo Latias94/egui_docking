@@ -14,8 +14,9 @@ use dockspace::{
         HostInputOutcome, NativeCloseDisposition, NativeCloseEffectAcknowledgement,
         NativeCloseState, NativeCreateEffectAcknowledgement, NativeCreateReadiness,
         NativeDispatchFailure, NativeEffectAcknowledgement, NativeEffectOperation,
-        NativeEffectRequest, NativeSurfaceBinding, NativeSurfaceCloseAction, NativeSurfaceRole,
-        NativeUnsupportedReason, NativeWindowBinding, NativeWindowFacts, NativeWorkAreaRoster,
+        NativeEffectRequest, NativeHostErrorKind, NativeSurfaceBinding, NativeSurfaceCloseAction,
+        NativeSurfaceRole, NativeUnsupportedReason, NativeWindowBinding, NativeWindowFacts,
+        NativeWorkAreaRoster,
     },
 };
 use dockspace_winit::{
@@ -242,6 +243,23 @@ impl Host {
         Ok(true)
     }
 
+    /// Commits observations and drains destroyed routes, including bounded ingress retries.
+    pub fn settle_observations(&mut self, session: &mut DockspaceSession) -> AppResult<()> {
+        loop {
+            self.observe(session)?;
+            let report = workspace::idle(session)?;
+            self.records_committed();
+            self.accept(session, report)?;
+            // observe() withholds a complete snapshot until every destruction arrives.
+            if self.retiring.values().all(|entry| entry.destroyed) {
+                self.drain_destroyed(session)?;
+            }
+            if !self.pending_records {
+                return Ok(());
+            }
+        }
+    }
+
     pub fn dispatch(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -426,16 +444,25 @@ impl Host {
         for id in destroyed {
             let entry = self
                 .retiring
-                .remove(&id)
+                .get_mut(&id)
                 .ok_or("destroyed route is missing")?;
-            self.last_snapshot
-                .retain(|(binding, _)| *binding != entry.window);
             // All outputs were synchronously settled and the final OS event is
-            // consumed. Remove the last route before making quiescence permanent.
-            for binding in entry.placements {
-                session.report_native_binding_quiescence(binding)?;
+            // consumed. Retain the unrecorded suffix if ingress is full.
+            while let Some(binding) = entry.placements.last().copied() {
+                if let Err(error) = session.report_native_binding_quiescence(binding) {
+                    if error.native_kind() == Some(NativeHostErrorKind::InputCapacity)
+                        && self.pending_records
+                    {
+                        return Ok(());
+                    }
+                    return Err(error.into());
+                }
+                entry.placements.pop();
                 self.pending_records = true;
             }
+            self.last_snapshot
+                .retain(|(binding, _)| *binding != entry.window);
+            self.retiring.remove(&id);
         }
         Ok(())
     }
@@ -487,3 +514,6 @@ impl Host {
         )?)
     }
 }
+
+#[cfg(test)]
+mod tests;
