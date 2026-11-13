@@ -15,6 +15,9 @@ use super::*;
 #[path = "escape_cancel.rs"]
 mod escape_cancel;
 
+mod capture_continuity;
+mod randomized;
+
 fn captured_record(
     native: &NativeCoordinator,
     binding: NativeSurfaceBinding,

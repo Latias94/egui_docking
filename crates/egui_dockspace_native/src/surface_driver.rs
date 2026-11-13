@@ -1994,7 +1994,19 @@ impl<P: PaneView> NativeRuntimeState<P> {
     pub(crate) fn render_error(&self, ui: &mut egui::Ui, presentation: NativeErrorPresentation) {
         let primary = self.shutdown.as_ref().map_or_else(
             || "unknown native runtime error".to_owned(),
-            |shutdown| shutdown.primary.to_string(),
+            |shutdown| {
+                let summary = shutdown.primary.to_string();
+                let mut cause: &dyn std::error::Error = &shutdown.primary;
+                while let Some(source) = cause.source() {
+                    cause = source;
+                }
+                let detail = cause.to_string();
+                if detail == summary {
+                    summary
+                } else {
+                    format!("{summary}: {detail}")
+                }
+            },
         );
         let cleanup_count = self
             .shutdown
@@ -2371,6 +2383,35 @@ mod tests {
             disabled,
             "fatal/quarantined status must be exposed as non-interactive"
         );
+    }
+
+    #[test]
+    fn fatal_status_identifies_the_underlying_failure() {
+        let mut state = test_state();
+        let cause = NativeHostProtocolError::PaintedOutputCountMismatch {
+            expected: 1,
+            actual: 0,
+        };
+        let expected = cause.to_string();
+        state.stop_current_output(cause.into());
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            state.render_error(ui, NativeErrorPresentation::RetainedOverlay);
+        });
+        output.textures_delta.clear();
+        let tree = output.platform_output.accesskit_update.as_ref().unwrap();
+        assert!(
+            tree.nodes.iter().any(|(_, node)| {
+                node.role() == egui::accesskit::Role::Label
+                    && node.value().is_some_and(|message| {
+                        message.starts_with("Native dockspace stopped")
+                            && message.contains(&expected)
+                    })
+            }),
+            "the visible status must preserve the exact cause instead of only the error category"
+        );
+        output.drop_without_applying_deltas();
     }
 
     #[test]

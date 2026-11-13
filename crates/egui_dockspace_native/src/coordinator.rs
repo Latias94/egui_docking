@@ -502,7 +502,6 @@ impl NativeCoordinator {
         limit: NativeCombinedStorageLimit,
         clock: dockspace::runtime::NativeMonotonicClock,
     ) -> Result<Self, NativeRuntimeError> {
-        limit.validate()?;
         Self::new_with_storage_allowance(
             session,
             initial_pointer_roster,
@@ -521,6 +520,11 @@ impl NativeCoordinator {
         combined: Option<NativeCombinedStorageLimit>,
         clock: Option<dockspace::runtime::NativeMonotonicClock>,
     ) -> Result<Self, NativeRuntimeError> {
+        if let Some(limit) = combined {
+            limit.validate()?;
+        } else if let Some(limit) = storage_limit {
+            NativeCombinedStorageLimit::validate_input_records(limit)?;
+        }
         let binding_slots = storage_limit
             .and_then(NativeInputStorageLimit::producer_storage_limit)
             .map(|limit| limit.binding_slots().get());
@@ -1695,6 +1699,9 @@ impl NativeCoordinator {
                             NativePointerTranslation::NotPointer => unreachable!(
                                 "a cursor prefix claim contains only immutable cursor-moved records"
                             ),
+                            NativePointerTranslation::Restart { .. } => unreachable!(
+                                "only mouse-down callbacks replace a native pointer stream"
+                            ),
                         }
                     }
                 });
@@ -1747,6 +1754,10 @@ impl NativeCoordinator {
             }
             NativePointerTranslation::Ignored => budget.complete_unsequenced_records(1),
             NativePointerTranslation::Input(input) => self.record_pointer(input)?,
+            NativePointerTranslation::Restart { cancelled, pressed } => {
+                self.session
+                    .record_native_pointer_batch([cancelled, pressed])?;
+            }
         }
         drop(record);
         if !self.bridge.acknowledge_translated_event(

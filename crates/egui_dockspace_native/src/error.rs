@@ -114,6 +114,10 @@ pub(crate) enum NativeHostProtocolError {
     NativeInputDispatchChanged,
     #[error("finite native host-owner storage requires both producer and effect-report bounds")]
     NativeOwnerStorageConfiguration,
+    #[error(
+        "native pointer recovery requires at least 2 recorded-input slots; configured {record_slots}"
+    )]
+    NativePointerInputStorageConfiguration { record_slots: usize },
     #[error("an exact native close cancellation was not accepted by the core")]
     NativeCloseCancellationRejected,
     #[error("the committed overload cancellation does not match its frozen input boundary")]
@@ -128,6 +132,7 @@ impl NativeHostProtocolError {
             Self::OutputTokenUnavailable
             | Self::RootSurfaceUnavailable(_)
             | Self::StylePresentationMismatch { .. }
+            | Self::NativePointerInputStorageConfiguration { .. }
             | Self::NativeOwnerStorageConfiguration => NativeRuntimeErrorKind::InvalidConfiguration,
             Self::MultipassLocalActionConflict | Self::NativeReportStorageUnavailable => {
                 NativeRuntimeErrorKind::OperationConflict

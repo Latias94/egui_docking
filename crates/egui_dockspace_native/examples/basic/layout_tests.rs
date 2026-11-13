@@ -55,6 +55,106 @@ fn app_with_session(
     }
 }
 
+#[test]
+fn default_layout_waits_for_one_time_inspector_placement_before_editing() {
+    let layout = example_layout();
+    let session = DockspaceSession::from_layout(layout.clone(), DockPolicy::default()).unwrap();
+    let version = session.version();
+    let mut app = app_with_session(layout, SURFACE, session);
+    let before = app
+        .dockspace
+        .with_view(|view| view.contained(INSPECTOR_FLOATING).unwrap().rect());
+
+    app.record_action_status(&NativeActionStatus::LayoutReset {
+        previous: version,
+        current: version,
+    });
+    assert!(
+        matches!(
+            app.action,
+            ExampleActionState::AwaitingInspectorPlacement("Default layout")
+        ),
+        "Default layout must await its restored Inspector placement, not finish after its first paint"
+    );
+    assert!(!app.dockspace.is_surface_presented(SURFACE));
+    app.finish_presentation_wait();
+    assert!(matches!(
+        app.action,
+        ExampleActionState::AwaitingInspectorPlacement("Default layout")
+    ));
+    assert_eq!(
+        app.dockspace
+            .with_view(|view| view.contained(INSPECTOR_FLOATING).unwrap().rect()),
+        before,
+        "unmeasured placement must remain unchanged until the actual surface is presented"
+    );
+    assert!(
+        app.dockspace
+            .request_command(NativeCommand::SelectItem { item: EDITOR })
+            .is_ok(),
+        "waiting for initial presentation must not queue the geometry command prematurely"
+    );
+}
+
+#[test]
+fn appearance_changes_keep_the_users_contained_window_placement() {
+    let mut app = app(example_layout(), SURFACE);
+    app.record_action_status(&NativeActionStatus::StyleChanged {
+        changed: true,
+        geometry_changed: true,
+    });
+    assert!(matches!(
+        app.action,
+        ExampleActionState::AwaitingFreshPresentation("Appearance")
+    ));
+}
+
+#[test]
+fn initial_inspector_placement_waits_for_its_own_presentation_once() {
+    let mut app = app(example_layout(), SURFACE);
+    app.action = ExampleActionState::AwaitingLayoutOutcome("Inspector placement");
+    app.record_action_status(&NativeActionStatus::Dock(DockspaceActionStatus::Applied(
+        DockspaceActionOutcome::ContainedBoundsUpdated {
+            root: INSPECTOR_ROOT,
+            surface: SURFACE,
+            floating: INSPECTOR_FLOATING,
+            changed: true,
+        },
+    )));
+    assert!(matches!(
+        app.action,
+        ExampleActionState::AwaitingFreshPresentation("Inspector placement")
+    ));
+    app.finish_presentation_wait();
+    assert!(matches!(
+        app.action,
+        ExampleActionState::AwaitingFreshPresentation("Inspector placement")
+    ));
+    assert!(
+        app.dockspace
+            .request_command(NativeCommand::SelectItem { item: EDITOR })
+            .is_ok(),
+        "the fitted result waits for presentation without queueing another automatic placement"
+    );
+}
+
+#[test]
+fn scripted_layout_reset_keeps_its_existing_presentation_barrier() {
+    let layout = example_layout();
+    let session = DockspaceSession::from_layout(layout.clone(), DockPolicy::default()).unwrap();
+    let version = session.version();
+    let mut app = app_with_session(layout, SURFACE, session);
+    app.action = ExampleActionState::AwaitingSmokeOutcome("Smoke: Default layout");
+    app.record_action_status(&NativeActionStatus::LayoutReset {
+        previous: version,
+        current: version,
+    });
+    assert!(matches!(
+        app.action,
+        ExampleActionState::AwaitingFreshPresentation("Default layout")
+    ));
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 #[allow(

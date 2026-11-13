@@ -77,6 +77,24 @@ physical checks require the isolated environments documented in
 real-window and physical-input checks on demand. Run it before a release and
 when changing native input, presentation, lifecycle or dependency pins.
 
+The workbench and native coordinator also run seeded input journeys during their
+normal tests. They combine docking, cancellation, missing releases and retries.
+The multiview journey moves panes between three windows in all six directions,
+including focus transfers, capture changes and modifier changes during a drag.
+Failures include the seed and recent actions. Replay one seed with
+`DOCKSPACE_TEST_SEED=0x5eed` and the appropriate command:
+
+```sh
+cargo nextest run -p egui_dockspace --features wgpu --example workbench --locked -E 'test(seeded_pointer_journeys)' --test-threads=2
+cargo nextest run --manifest-path integration/egui-fork-workspace/Cargo.toml -p egui_dockspace_native --all-features --locked -E 'test(seeded_native_mouse_journeys)' --test-threads=2
+cargo nextest run --manifest-path integration/egui-fork-workspace/Cargo.toml -p egui_dockspace_native --all-features --locked -E 'test(seeded_native_cross_window)' --test-threads=2
+```
+
+For a longer native pass over 128 seeds and both coordinate lanes, run the second
+command with `-E 'test(seeded_native_mouse_stress)' --run-ignored only`. These
+journeys exercise real adapter/reducer code with controlled callback facts;
+physical input and GPU presentation still require the native checks above.
+
 ## Reports and changes
 
 For a bug report, include the source revision, example/host, OS/backend, enabled

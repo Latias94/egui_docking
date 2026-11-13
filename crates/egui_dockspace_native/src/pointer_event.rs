@@ -102,6 +102,31 @@ pub(crate) enum NativePointerTranslation {
     NotPointer,
     Ignored,
     Input(NativePointerInput),
+    /// One real down replaces a stream whose release never reached this host.
+    Restart {
+        cancelled: NativePointerInput,
+        pressed: NativePointerInput,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MousePressTransition {
+    Initial,
+    Duplicate,
+    Restart,
+}
+
+fn mouse_press_transition<T: Eq>(
+    active: Option<Option<&T>>,
+    observed: Option<&T>,
+) -> MousePressTransition {
+    match (active, observed) {
+        (None, _) => MousePressTransition::Initial,
+        (Some(Some(previous)), Some(current)) if previous == current => {
+            MousePressTransition::Duplicate
+        }
+        (Some(_), _) => MousePressTransition::Restart,
+    }
 }
 
 impl NativePointerTranslator {
@@ -307,9 +332,12 @@ impl NativePointerTranslator {
                 |current| Some(current.saturating_add(*cost)),
             );
         }
-        let NativePointerTranslation::Input(input) = translation else {
+        if matches!(
+            translation,
+            NativePointerTranslation::NotPointer | NativePointerTranslation::Ignored
+        ) {
             return translation;
-        };
+        }
         let device = match record.event() {
             WindowEvent::Touch(_) => PointerDeviceKind::Touch,
             WindowEvent::CursorMoved { .. }
@@ -333,7 +361,7 @@ impl NativePointerTranslator {
                 metadata.with_docking_enabled(config.docking_enabled(egui_modifiers(modifiers)));
         } else if starts_primary_press {
             // This is an initial gesture policy, not reconstructed event facts.
-            // Unknown moves, releases and repeated presses retain core intent.
+            // Unknown moves and releases retain core intent.
             let observed = record
                 .binding()
                 .and_then(|binding| {
@@ -347,7 +375,21 @@ impl NativePointerTranslator {
                 metadata = metadata.with_docking_enabled(false);
             }
         }
-        NativePointerTranslation::Input(input.with_metadata(metadata))
+        match translation {
+            NativePointerTranslation::Input(input) => {
+                NativePointerTranslation::Input(input.with_metadata(metadata))
+            }
+            NativePointerTranslation::Restart { cancelled, pressed } => {
+                NativePointerTranslation::Restart {
+                    cancelled: cancelled
+                        .with_metadata(PointerEventMetadata::new(device, captured_at)),
+                    pressed: pressed.with_metadata(metadata),
+                }
+            }
+            NativePointerTranslation::NotPointer | NativePointerTranslation::Ignored => {
+                unreachable!("non-input translations returned before metadata decoration")
+            }
+        }
     }
 
     fn starts_primary_press(&self, event: &WindowEvent) -> bool {
@@ -367,14 +409,25 @@ impl NativePointerTranslator {
         let Some(device) = pointer_device(event) else {
             return false;
         };
-        !matches!(
-            self.devices.get(&device),
-            Some(NativePointerDeviceEntry::Live(device))
-                if matches!(
-                    device.mouse.buttons.get(&NativePointerButton::Primary),
-                    Some(NativeMouseButtonState::Active { .. })
-                )
-        )
+        if let WindowEvent::MouseInput { primary_press, .. } = event {
+            let active = match self.devices.get(&device) {
+                Some(NativePointerDeviceEntry::Live(device)) => {
+                    device.mouse.active_press(NativePointerButton::Primary)
+                }
+                _ => None,
+            };
+            mouse_press_transition(active, primary_press.as_ref())
+                != MousePressTransition::Duplicate
+        } else {
+            !matches!(
+                self.devices.get(&device),
+                Some(NativePointerDeviceEntry::Live(device))
+                    if matches!(
+                        device.mouse.buttons.get(&NativePointerButton::Primary),
+                        Some(NativeMouseButtonState::Active { .. })
+                    )
+            )
+        }
     }
 
     #[cfg(test)]
@@ -534,6 +587,18 @@ impl NativePointerTranslator {
         let Some(device) = self.device_mut(device) else {
             return NativePointerTranslation::Ignored;
         };
+        let press_transition = match (event, record.event()) {
+            (
+                NativePointerEvent::ButtonPressed(button),
+                WindowEvent::MouseInput { primary_press, .. },
+            ) => mouse_press_transition(device.mouse.active_press(button), primary_press.as_ref()),
+            _ => MousePressTransition::Initial,
+        };
+        match press_transition {
+            MousePressTransition::Duplicate => return NativePointerTranslation::Ignored,
+            MousePressTransition::Restart => device.mouse.cancel_buttons(),
+            MousePressTransition::Initial => {}
+        }
         let original_primary_press = matches!(
             event,
             NativePointerEvent::ButtonPressed(NativePointerButton::Primary)
@@ -552,17 +617,29 @@ impl NativePointerTranslator {
             && let Some(NativeMouseButtonState::Active { primary_press, .. }) =
                 device.mouse.buttons.get_mut(&NativePointerButton::Primary)
         {
-            // Only the original accepted Primary edge may bind this identity. Repeated edges,
+            // Only a new accepted Primary edge may bind this identity. Duplicate edges,
             // motion and observation results cannot supplement an absent or revoked token.
             *primary_press = source.clone();
         }
-        NativePointerTranslation::Input(native_input(
-            device.pointer,
-            event,
-            record,
-            routes,
-            resolve_work_area,
-        ))
+        let pressed = native_input(device.pointer, event, record, routes, resolve_work_area);
+        if press_transition == MousePressTransition::Restart {
+            // The same callback owns both edges. The coordinator admits them as
+            // one batch before publishing this candidate translator state.
+            NativePointerTranslation::Restart {
+                cancelled: native_input(
+                    device.pointer,
+                    NativePointerEvent::StreamCancelled(
+                        NativePointerCancelReason::ExplicitPlatformCancellation,
+                    ),
+                    record,
+                    routes,
+                    resolve_work_area,
+                ),
+                pressed,
+            }
+        } else {
+            NativePointerTranslation::Input(pressed)
+        }
     }
 
     fn scroll(
@@ -834,6 +911,22 @@ impl NativeMouseState {
         self.buttons.is_empty() && self.capture.is_none()
     }
 
+    fn active_press(&self, button: NativePointerButton) -> Option<Option<&PointerPressToken>> {
+        match self.buttons.get(&button) {
+            Some(NativeMouseButtonState::Active { primary_press, .. }) => {
+                Some(primary_press.as_ref())
+            }
+            Some(NativeMouseButtonState::Cancelled) | None => None,
+        }
+    }
+
+    fn cancel_buttons(&mut self) {
+        for state in self.buttons.values_mut() {
+            *state = NativeMouseButtonState::Cancelled;
+        }
+        self.capture = None;
+    }
+
     fn observe(&mut self, event: NativePointerEvent, routes: NativePointerRoutes) -> bool {
         if self.should_ignore_captured_move(event, routes) {
             return false;
@@ -929,10 +1022,7 @@ impl NativeMouseState {
         if !self.references_binding(binding) {
             return false;
         }
-        for state in self.buttons.values_mut() {
-            *state = NativeMouseButtonState::Cancelled;
-        }
-        self.capture = None;
+        self.cancel_buttons();
         true
     }
 
@@ -1132,6 +1222,33 @@ mod tests {
     mod docking_enabled;
 
     use super::*;
+
+    #[test]
+    fn mouse_press_transition_ignores_only_the_same_explicit_press_identity() {
+        assert_eq!(
+            mouse_press_transition::<u64>(None, None),
+            MousePressTransition::Initial
+        );
+        assert_eq!(
+            mouse_press_transition(None, Some(&7)),
+            MousePressTransition::Initial
+        );
+        assert_eq!(
+            mouse_press_transition(Some(Some(&7)), Some(&7)),
+            MousePressTransition::Duplicate,
+        );
+        for (previous, observed) in [
+            (Some(&7), Some(&8)),
+            (Some(&7), None),
+            (None, Some(&8)),
+            (None, None),
+        ] {
+            assert_eq!(
+                mouse_press_transition(Some(previous), observed),
+                MousePressTransition::Restart,
+            );
+        }
+    }
 
     fn assert_read_only_mouse_device_lookup(
         translator: &NativePointerTranslator,

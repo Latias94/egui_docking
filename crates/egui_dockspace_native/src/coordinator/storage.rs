@@ -16,14 +16,17 @@ pub struct NativeStorageLimit {
 impl NativeStorageLimit {
     /// Selects a combined byte allowance and independent host-owner bounds.
     ///
-    /// `input` must select producer and report storage limits. Resource entries
+    /// `input` must select at least two recorded-input slots and producer and report
+    /// storage limits. The two slots admit cancellation and a replacement mouse
+    /// press atomically when a native release was lost. Resource entries
     /// are keyed by exact viewport/binding, and native closes have an independent
     /// limit. One inline focus owner is always included; retired obligations keep
     /// their original slots until settlement.
     ///
     /// # Errors
     ///
-    /// Rejects missing subprofile bounds, overflow, or a total allowance too
+    /// Rejects fewer than two input-record slots, missing subprofile bounds,
+    /// overflow, or a total allowance too
     /// small for complete initial native backing and future owner promises.
     pub fn new(
         input: NativeInputStorageLimit,
@@ -82,6 +85,20 @@ pub(crate) struct NativeCombinedStorageLimit {
 }
 
 impl NativeCombinedStorageLimit {
+    pub(super) fn validate_input_records(
+        input: NativeInputStorageLimit,
+    ) -> Result<(), NativeRuntimeError> {
+        if input.record_slots().get() < 2 {
+            return Err(
+                NativeHostProtocolError::NativePointerInputStorageConfiguration {
+                    record_slots: input.record_slots().get(),
+                }
+                .into(),
+            );
+        }
+        Ok(())
+    }
+
     fn dimensions(self) -> Option<(usize, usize)> {
         self.input.producer_storage_limit().map(|producer| {
             (
@@ -132,6 +149,7 @@ impl NativeCombinedStorageLimit {
     }
 
     pub(super) fn validate(self) -> Result<(), NativeRuntimeError> {
+        Self::validate_input_records(self.input)?;
         let (windows, _) = self
             .dimensions()
             .ok_or(NativeHostProtocolError::NativeOwnerStorageConfiguration)?;

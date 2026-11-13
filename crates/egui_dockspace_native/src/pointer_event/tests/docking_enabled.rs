@@ -195,7 +195,7 @@ fn unknown_mouse_and_touch_start_use_the_configured_baseline() {
 }
 
 #[test]
-fn unknown_repeated_press_move_and_release_do_not_reseed_activation() {
+fn a_new_mouse_press_reseeds_activation_after_a_missing_release() {
     let config = DockInputConfig {
         docking: egui_dockspace::DockingActivation::HoldToEnable(eframe::egui::Modifiers::ALT),
         ..Default::default()
@@ -205,7 +205,7 @@ fn unknown_repeated_press_move_and_release_do_not_reseed_activation() {
     for (index, (state, modifiers, directive)) in [
         (Some(ElementState::Pressed), None, Some(false)),
         (None, Some(ModifiersState::ALT), Some(true)),
-        (Some(ElementState::Pressed), None, None),
+        (Some(ElementState::Pressed), None, Some(false)),
         (None, None, None),
         (Some(ElementState::Released), None, None),
     ]
@@ -234,21 +234,128 @@ fn unknown_repeated_press_move_and_release_do_not_reseed_activation() {
             },
         };
         let record = record(index as u64 + 1, event);
-        let NativePointerTranslation::Input(baseline) =
-            translator.clone().translate(&record, |_| None)
-        else {
-            panic!("the real mouse edge translates");
-        };
+        let baseline = translator.clone().translate(&record, |_| None);
         let mut metadata = PointerEventMetadata::new(PointerDeviceKind::Mouse, captured_at);
         if let Some(enabled) = directive {
             metadata = metadata.with_docking_enabled(enabled);
         }
+        let expected = match baseline {
+            NativePointerTranslation::Input(input) => {
+                NativePointerTranslation::Input(input.with_metadata(metadata))
+            }
+            NativePointerTranslation::Restart { cancelled, pressed } => {
+                assert_eq!(index, 2, "only the replacement down restarts the stream");
+                NativePointerTranslation::Restart {
+                    cancelled: cancelled.with_metadata(PointerEventMetadata::new(
+                        PointerDeviceKind::Mouse,
+                        captured_at,
+                    )),
+                    pressed: pressed.with_metadata(metadata),
+                }
+            }
+            other => panic!("the real mouse edge translates: {other:?}"),
+        };
         assert_eq!(
             translator.translate_captured_with_input(&record, captured_at, &config, |_| None),
-            NativePointerTranslation::Input(baseline.with_metadata(metadata)),
+            expected,
             "edge {index} with {state:?}"
         );
     }
+}
+
+#[test]
+fn replacement_mouse_press_uses_current_configuration_instead_of_the_old_gesture_policy() {
+    let mut translator = NativePointerTranslator::default();
+    let captured_at = Duration::from_millis(40);
+    let down = |ordinal| {
+        record(
+            ordinal,
+            WindowEvent::MouseInput {
+                device_id: DeviceId::dummy(),
+                primary_press: None,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                facts: PointerEventFacts::default(),
+            },
+        )
+    };
+    assert!(matches!(
+        translator.translate_captured(&down(1), captured_at, |_| None),
+        NativePointerTranslation::Input(_)
+    ));
+    let config = DockInputConfig {
+        docking: egui_dockspace::DockingActivation::HoldToEnable(eframe::egui::Modifiers::ALT),
+        ..Default::default()
+    };
+    let NativePointerTranslation::Restart {
+        cancelled: raw_cancelled,
+        pressed: raw_pressed,
+    } = translator.clone().translate(&down(2), |_| None)
+    else {
+        panic!("a second tokenless down must replace the old stream");
+    };
+    let NativePointerTranslation::Restart { cancelled, pressed } =
+        translator.translate_captured_with_input(&down(2), captured_at, &config, |_| None)
+    else {
+        panic!("the tokenless down must replace the lost-release stream");
+    };
+    assert_eq!(
+        cancelled,
+        raw_cancelled.with_metadata(PointerEventMetadata::new(
+            PointerDeviceKind::Mouse,
+            captured_at,
+        )),
+    );
+    assert_eq!(
+        pressed,
+        raw_pressed.with_metadata(
+            PointerEventMetadata::new(PointerDeviceKind::Mouse, captured_at)
+                .with_docking_enabled(false),
+        ),
+    );
+}
+
+#[test]
+fn replacement_mouse_press_suppresses_held_secondary_button_release_tails() {
+    let mut translator = NativePointerTranslator::default();
+    let event = |ordinal, state, button| {
+        record(
+            ordinal,
+            WindowEvent::MouseInput {
+                device_id: DeviceId::dummy(),
+                primary_press: None,
+                state,
+                button,
+                facts: PointerEventFacts::default(),
+            },
+        )
+    };
+    for (ordinal, button) in [(1, MouseButton::Left), (2, MouseButton::Right)] {
+        assert!(matches!(
+            translator.translate(&event(ordinal, ElementState::Pressed, button), |_| None),
+            NativePointerTranslation::Input(_)
+        ));
+    }
+    assert!(matches!(
+        translator.translate(&event(3, ElementState::Pressed, MouseButton::Left), |_| {
+            None
+        }),
+        NativePointerTranslation::Restart { .. }
+    ));
+    assert_eq!(
+        translator.translate(
+            &event(4, ElementState::Released, MouseButton::Right),
+            |_| None
+        ),
+        NativePointerTranslation::Ignored,
+    );
+    assert!(matches!(
+        translator.translate(&event(5, ElementState::Released, MouseButton::Left), |_| {
+            None
+        }),
+        NativePointerTranslation::Input(_)
+    ));
+    assert!(translator.can_coalesce_idle_cursor_moves());
 }
 
 #[test]

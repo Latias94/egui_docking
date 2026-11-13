@@ -46,6 +46,17 @@ fn main() -> eframe::Result {
     policy.set_allow_native_surfaces(true);
     policy.set_close_capability(CloseCapability::DeferredAllowed);
     let command_smoke = std::env::args().any(|argument| argument == "--command-smoke");
+    let smoke = std::env::args().any(|argument| argument == "--smoke");
+    let docking_smoke = std::env::args().any(|argument| argument == "--docking-smoke");
+    // The finite journeys deliberately exercise their own initial geometry,
+    // including an off-screen contained window for BringContainedIntoView.
+    // The interactive example performs one initial fit after its real host
+    // surface has been presented.
+    let initial_action = if command_smoke || smoke || docking_smoke {
+        ExampleActionState::Idle
+    } else {
+        ExampleActionState::AwaitingInspectorPlacement("Initial layout")
+    };
     let mut panes = ExamplePanes::new();
     // The command journey verifies data retention without accepting desktop edits.
     // The interactive example and OS-input journey keep their editable content.
@@ -87,16 +98,12 @@ fn main() -> eframe::Result {
         presets: BTreeMap::new(),
         #[cfg(feature = "serde")]
         preset_name: "Working".to_owned(),
-        action: ExampleActionState::Idle,
+        action: initial_action,
         font_size: 13.0,
         density: DockDensity::Comfortable,
         status: None,
-        smoke: std::env::args()
-            .any(|argument| argument == "--smoke")
-            .then(smoke::EditorSmoke::new),
-        docking_smoke: std::env::args()
-            .any(|argument| argument == "--docking-smoke")
-            .then(docking_smoke::DockingSmoke::new),
+        smoke: smoke.then(smoke::EditorSmoke::new),
+        docking_smoke: docking_smoke.then(docking_smoke::DockingSmoke::new),
         command_smoke: command_smoke.then(command_smoke::CommandSmoke::new),
     };
     let options = eframe::NativeOptions {
@@ -142,6 +149,7 @@ enum ExampleActionState {
     AwaitingDockBackOutcome(RootId),
     AwaitingLayoutOutcome(&'static str),
     AwaitingFreshPresentation(&'static str),
+    AwaitingInspectorPlacement(&'static str),
     AwaitingSmokeOutcome(&'static str),
 }
 
@@ -294,6 +302,11 @@ impl NativeExampleApp {
                 ExampleActionState::AwaitingFreshPresentation(operation) => {
                     ui.label(format!(
                         "{operation}: layout restored; waiting for the main window and each child window to be ready for editing…"
+                    ));
+                }
+                ExampleActionState::AwaitingInspectorPlacement(operation) => {
+                    ui.label(format!(
+                        "{operation}: waiting for the main window to present before fitting Inspector into view…"
                     ));
                 }
                 _ => {
@@ -470,7 +483,26 @@ impl NativeExampleApp {
                 ExampleActionState::AwaitingFreshPresentation("Appearance")
             }
             NativeActionStatus::LayoutReset { .. } => {
-                ExampleActionState::AwaitingFreshPresentation("Default layout")
+                // The scripted editor smoke owns its own Default-layout
+                // barrier. The interactive example additionally fits the
+                // contained Inspector once against the first real surface
+                // bounds, so the toolbar height never becomes a hard-coded
+                // placement assumption.
+                match self.action {
+                    ExampleActionState::AwaitingSmokeOutcome(_) => {
+                        ExampleActionState::AwaitingFreshPresentation("Default layout")
+                    }
+                    _ => ExampleActionState::AwaitingInspectorPlacement("Default layout"),
+                }
+            }
+            NativeActionStatus::Dock(DockspaceActionStatus::Applied(
+                DockspaceActionOutcome::ContainedBoundsUpdated { .. },
+            )) if matches!(
+                self.action,
+                ExampleActionState::AwaitingLayoutOutcome("Inspector placement")
+            ) =>
+            {
+                ExampleActionState::AwaitingFreshPresentation("Inspector placement")
             }
             #[cfg(feature = "serde")]
             NativeActionStatus::DocumentRestored { .. } => {
@@ -509,6 +541,23 @@ impl NativeExampleApp {
             {
                 self.action = ExampleActionState::Idle;
                 self.status = Some(format!("{operation} ready."));
+            }
+            ExampleActionState::AwaitingInspectorPlacement(operation)
+                if self.all_surfaces_presented() && self.dockspace.is_quiescent() =>
+            {
+                let host = self.dockspace.root_surface();
+                let inspector_is_contained = self.dockspace.with_view(|view| {
+                    view.item(INSPECTOR)
+                        .is_some_and(|item| item.surface() == host && item.contained().is_some())
+                });
+                self.action = ExampleActionState::Idle;
+                self.status = Some(format!("{operation} ready."));
+                if inspector_is_contained {
+                    let request = self
+                        .dockspace
+                        .request_command(NativeCommand::BringContainedIntoView { item: INSPECTOR });
+                    self.begin_layout_action("Inspector placement", request);
+                }
             }
             _ => {}
         }

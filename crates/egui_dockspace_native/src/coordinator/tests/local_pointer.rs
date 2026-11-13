@@ -27,6 +27,9 @@ const THIRD: ItemId = ItemId::new(3);
 const WINDOW: u64 = 11;
 const CAPTURED_AT: Duration = Duration::from_millis(40);
 
+mod random_journey;
+mod reentry;
+
 fn geometry() -> NativeLocalGeometry {
     NativeLocalGeometry::new(
         PhysicalSize::new(1200.0, 900.0).unwrap(),

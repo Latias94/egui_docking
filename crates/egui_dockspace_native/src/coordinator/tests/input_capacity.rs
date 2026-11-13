@@ -1,5 +1,6 @@
 use super::callback_prefix::{commit_boundary, pointer_record};
 use super::*;
+use crate::NativeRuntimeErrorKind;
 use dockspace::runtime::NativeInputStorageLimit;
 use std::num::NonZeroUsize;
 
@@ -35,6 +36,192 @@ fn bounded_coordinator(slots: usize) -> (NativeCoordinator, NativeSurfaceBinding
         .unwrap();
     assert!(!native.session.has_pending_native_input());
     (native, binding)
+}
+
+fn single_surface_session() -> DockspaceSession {
+    DockspaceSession::from_layout(
+        DockspaceLayout::new([DockspaceSurfaceLayout::new(
+            FIRST_SURFACE,
+            DockspaceRootLayout::new(
+                RootId::new(1),
+                DockspaceNode::central_tabs([ItemId::new(1)]),
+            ),
+        )])
+        .unwrap(),
+        DockPolicy::default(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_one_slot_native_transport_rejects_configuration_before_enrollment() {
+    let error = NativeCoordinator::new_with_storage_limits(
+        single_surface_session(),
+        NativePointerRoster::Exact(Vec::new()),
+        Some(NativeInputStorageLimit::new(NonZeroUsize::MIN, 1024 * 1024)),
+        None,
+    )
+    .unwrap_err();
+    assert_eq!(error.kind(), NativeRuntimeErrorKind::InvalidConfiguration);
+    let source = std::error::Error::source(&error)
+        .expect("configuration rejection must explain the required native record bound")
+        .to_string();
+    assert!(source.contains("at least 2"), "{source}");
+    assert!(source.contains("record"), "{source}");
+}
+
+#[test]
+fn a_single_input_record_remains_valid_for_the_renderer_neutral_core() {
+    let mut session = single_surface_session();
+    session
+        .enable_managed_native_host_with_input_storage_limit(
+            NativePointerRoster::Exact(Vec::new()),
+            NativeInputStorageLimit::new(NonZeroUsize::MIN, 1024 * 1024),
+        )
+        .unwrap();
+    let mut frame = session.begin_host_frame().unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    frame.commit().unwrap();
+}
+
+#[test]
+fn public_native_storage_configuration_rejects_a_one_record_transport() {
+    use dockspace::runtime::{NativeProducerStorageLimit, NativeReportStorageLimit};
+
+    let input = NativeInputStorageLimit::new(NonZeroUsize::MIN, 1024 * 1024)
+        .with_producer_storage_limit(NativeProducerStorageLimit::new(
+            NonZeroUsize::new(2).unwrap(),
+            NonZeroUsize::MIN,
+            1024 * 1024,
+        ))
+        .with_report_storage_limit(NativeReportStorageLimit::new(
+            NonZeroUsize::new(2).unwrap(),
+            NonZeroUsize::MIN,
+            1024 * 1024,
+        ));
+    let error = NativeStorageLimit::new(input, 16 * 1024 * 1024, 1, 1).unwrap_err();
+    assert_eq!(error.kind(), NativeRuntimeErrorKind::InvalidConfiguration);
+    assert!(
+        std::error::Error::source(&error)
+            .unwrap()
+            .to_string()
+            .contains("at least 2")
+    );
+}
+
+#[test]
+fn a_two_slot_native_transport_can_restart_after_a_missing_mouse_release() {
+    let mut native = NativeCoordinator::new_with_storage_limits(
+        single_surface_session(),
+        NativePointerRoster::Exact(Vec::new()),
+        Some(NativeInputStorageLimit::new(
+            NonZeroUsize::new(2).unwrap(),
+            1024 * 1024,
+        )),
+        None,
+    )
+    .unwrap();
+    commit_boundary(&mut native);
+    for ordinal in 1..=2 {
+        let record = NativeWindowEventRecord::for_test(
+            ordinal,
+            WindowId::from(11),
+            Some(ViewportId::ROOT),
+            None,
+            WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                primary_press: None,
+                state: winit::event::ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+                facts: winit::event::PointerEventFacts::default(),
+            },
+        );
+        native.bridge.push_record(HostRecord::WindowEvent(record));
+        let recorded = native.session.native_input_recorded_count();
+        assert_eq!(
+            native
+                .reduce_callback_prefix(&eframe::egui::Context::default(), &mut test_budget())
+                .unwrap(),
+            Some(NonZeroUsize::MIN),
+        );
+        assert_eq!(
+            native.session.native_input_recorded_count(),
+            recorded + ordinal,
+            "the first callback records one press; its replacement records cancellation and press"
+        );
+        commit_boundary(&mut native);
+    }
+    assert!(native.next_window_event().unwrap().is_none());
+    assert!(!native.session.has_pending_native_input());
+}
+
+#[test]
+fn replacement_mouse_down_admits_cancellation_and_press_atomically_after_capacity_returns() {
+    let (mut native, binding) = bounded_coordinator(4);
+    let context = egui::Context::default();
+    let first = pointer_record(&native, binding, 1, true);
+    native.bridge.push_record(HostRecord::WindowEvent(first));
+    native
+        .reduce_callback_prefix(&context, &mut test_budget())
+        .unwrap();
+    commit_boundary(&mut native);
+
+    let motion = pointer_record(&native, binding, 2, false);
+    let NativePointerTranslation::Input(movement) = native
+        .pointer_translator
+        .clone()
+        .translate(&motion, |_| None)
+    else {
+        panic!("the held mouse retains its stream");
+    };
+    native
+        .session
+        .record_native_pointer_sequence([movement; 3])
+        .unwrap();
+    assert_eq!(
+        native.session.prepare_native_pointer_capacity().unwrap(),
+        Some(1)
+    );
+    let next = pointer_record(&native, binding, 3, true);
+    native.bridge.push_record(HostRecord::WindowEvent(next));
+    let recorded = native.session.native_input_recorded_count();
+    let translator = format!("{:?}", native.pointer_translator);
+    assert!(
+        native
+            .reduce_callback_prefix(&context, &mut test_budget())
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(native.session.native_input_recorded_count(), recorded);
+    assert_eq!(format!("{:?}", native.pointer_translator), translator);
+    assert_eq!(native.next_window_event().unwrap().unwrap().ordinal(), 3);
+    assert_eq!(
+        native.session.prepare_native_pointer_capacity().unwrap(),
+        Some(1)
+    );
+
+    commit_boundary(&mut native);
+    assert_eq!(
+        native
+            .reduce_callback_prefix(&context, &mut test_budget())
+            .unwrap(),
+        Some(NonZeroUsize::MIN),
+    );
+    assert_eq!(native.session.native_input_recorded_count(), recorded + 2);
+    assert!(native.next_window_event().unwrap().is_none());
+    let retained = format!("{:?}", native.pointer_translator);
+    drop(
+        native
+            .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .unwrap(),
+    );
+    assert!(native.session.has_pending_native_input());
+    assert_eq!(format!("{:?}", native.pointer_translator), retained);
+    commit_boundary(&mut native);
+    assert!(!native.session.has_pending_native_input());
+    assert!(!native.pointer_translator.can_coalesce_idle_cursor_moves());
 }
 
 #[test]
