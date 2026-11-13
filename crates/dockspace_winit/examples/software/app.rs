@@ -172,13 +172,11 @@ impl App {
         )?;
         let window = Rc::clone(state.surface.window());
         state.surface.resize(width, height)?;
-        let mut buffer = state.surface.buffer_mut()?;
         let mut frame = self.session.begin_host_frame()?;
         frame.begin_encoding_pass()?;
         editor::measure(&mut frame, bounds)?;
         let Some(plan) = frame.paint_plan(editor::SURFACE)? else {
             let report = frame.commit()?;
-            drop(buffer);
             state.request_repaint(&report);
             return Ok(());
         };
@@ -187,6 +185,7 @@ impl App {
             .as_ref()
             .map(|_| smoke::inspect(plan))
             .transpose()?;
+        let mut buffer = state.surface.buffer_mut()?;
         let receipt = paint::render(plan, &mut buffer, [size.width, size.height], scale)?;
         frame.confirm_surface_painted(receipt)?;
         let mut report = frame.commit()?;
