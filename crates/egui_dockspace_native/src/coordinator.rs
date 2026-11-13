@@ -6,14 +6,14 @@ use std::sync::Arc;
 use dockspace::geometry::PhysicalRect;
 use dockspace::model::SurfaceId;
 use dockspace::runtime::{
-    DockspacePresentationTransition, DockspaceSession, HostFrameReport, HostInputOutcome,
-    HostWindowToken, NativeCloseDisposition, NativeCloseEffectAcknowledgement, NativeCloseState,
-    NativeCreateEffectAcknowledgement, NativeDispatchFailure, NativeEffectAcknowledgement,
-    NativeEffectOperation, NativeEffectRequest, NativeEffectResult, NativeEffectSubmissionError,
-    NativeGlobalFocus, NativeHostErrorKind, NativeIndeterminateReason, NativeInputBudget,
-    NativeInputStorageLimit, NativePointerInput, NativePointerRoster, NativeReceiverAnswer,
-    NativeReceiverQuery, NativeSurfaceBinding, NativeUnsupportedReason, PaintedSurfaceOutput,
-    SurfacePresentationResult, SurfaceUnavailableReason,
+    DockspaceEvent, DockspacePresentationTransition, DockspaceSession, HostFrameReport,
+    HostInputOutcome, HostWindowToken, NativeCloseDisposition, NativeCloseEffectAcknowledgement,
+    NativeCloseState, NativeCreateEffectAcknowledgement, NativeDispatchFailure,
+    NativeEffectAcknowledgement, NativeEffectOperation, NativeEffectRequest, NativeEffectResult,
+    NativeEffectSubmissionError, NativeGlobalFocus, NativeHostErrorKind, NativeIndeterminateReason,
+    NativeInputBudget, NativeInputStorageLimit, NativePointerInput, NativePointerRoster,
+    NativeReceiverAnswer, NativeReceiverQuery, NativeSurfaceBinding, NativeUnsupportedReason,
+    PaintedSurfaceOutput, SurfacePresentationResult, SurfaceUnavailableReason,
 };
 #[cfg(test)]
 use dockspace::runtime::{NativeWindowFacts, NativeWorkAreaBinding, NativeWorkAreaRoster};
@@ -78,6 +78,8 @@ pub(crate) use storage::{
 
 pub(crate) use shutdown::{NativeShutdownAdvance, NativeShutdownRegistration};
 
+type EventHandler = Box<dyn FnMut(&[DockspaceEvent]) + Send>;
+
 /// Sole native coordinator for one renderer-neutral docking session.
 ///
 /// Native callbacks only append immutable records. Application code reduces
@@ -106,6 +108,7 @@ pub(crate) struct NativeCoordinator {
     input_control: NativeInputControl,
     lifecycle_progress: NativeLifecycleProgress,
     stationary: NativeStationaryState,
+    event_handler: Option<EventHandler>,
     #[cfg(test)]
     report_observer: Option<Arc<dyn Fn(&HostFrameReport) + Send + Sync>>,
 }
@@ -423,6 +426,13 @@ impl std::fmt::Debug for NativeCoordinator {
 }
 
 impl NativeCoordinator {
+    pub(crate) fn set_event_handler(
+        &mut self,
+        handler: impl FnMut(&[DockspaceEvent]) + Send + 'static,
+    ) {
+        self.event_handler = Some(Box::new(handler));
+    }
+
     /// Observes committed reports at their existing adapter settlement boundary.
     #[cfg(test)]
     pub(crate) fn observe_reports_for_test(
@@ -628,6 +638,7 @@ impl NativeCoordinator {
             input_control,
             lifecycle_progress: NativeLifecycleProgress::default(),
             stationary: NativeStationaryState::default(),
+            event_handler: None,
             #[cfg(test)]
             report_observer: None,
         };
@@ -991,6 +1002,11 @@ impl NativeCoordinator {
         &mut self,
         report: &HostFrameReport,
     ) -> Result<bool, NativeRuntimeError> {
+        if !report.events().is_empty()
+            && let Some(handler) = &mut self.event_handler
+        {
+            handler(report.events());
+        }
         #[cfg(test)]
         if let Some(observer) = &self.report_observer {
             observer(report);

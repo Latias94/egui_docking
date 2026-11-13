@@ -28,6 +28,7 @@ mod held_close;
 mod ingress_create;
 mod input_capacity;
 mod input_control;
+mod lifecycle_events;
 mod local_pointer;
 mod overload;
 mod owner_storage;

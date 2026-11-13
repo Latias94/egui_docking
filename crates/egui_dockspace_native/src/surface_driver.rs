@@ -640,6 +640,13 @@ impl<P: PaneView> NativeRuntimeState<P> {
         self.coordinator.native_host_handler()
     }
 
+    pub(crate) fn set_event_handler(
+        &mut self,
+        handler: impl FnMut(&[crate::DockspaceEvent]) + Send + 'static,
+    ) {
+        self.coordinator.set_event_handler(handler);
+    }
+
     pub(crate) fn input_storage_reserved_bytes(&self) -> Option<usize> {
         self.coordinator.combined_storage_reserved_bytes()
     }

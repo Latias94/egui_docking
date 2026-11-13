@@ -72,6 +72,14 @@ gesture-cancel shortcut; default bindings are Shift and Escape. Queue runtime
 changes through `request_input` and consume their result through
 `take_action_status`, like other application commands.
 
+Use `with_event_handler` to observe the same committed `DockspaceEvent` batches
+as headless hosts and the single-surface egui adapter. The optional synchronous
+callback receives only future nonempty publications, including native service
+work and final UI passes. Pending transfers, discarded passes and rejected
+actions do not produce completion notifications. The adapter retains no event
+history. The runtime lock remains held: keep the handler short, queue work for
+the application, and call runtime methods only after the handler returns.
+
 `with_child_window_options` and `set_child_window_options` configure managed
 Child window decorations, Windows taskbar presence, stacking level and icon.
 Use `with_child_window_options_for(surface, options)` or

@@ -403,6 +403,69 @@ fn paint_child_output(
 }
 
 #[test]
+fn native_lifecycle_events_wait_for_first_live_ownership_and_do_not_repeat() {
+    use dockspace::runtime::DockspaceEventKind;
+
+    let (mut native, _, source, child) = content_ready_child();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    native.set_event_handler(move |events| sender.send(events.to_vec()).unwrap());
+    let output = paint_child_output(&mut native, child);
+    let pending = commit_model_frame(&mut native);
+    assert!(pending.events().is_empty());
+    native.settle_host_frame_report(&pending).unwrap();
+    assert_source_retained(&native, source, child);
+    assert!(receiver.try_recv().is_err());
+
+    native
+        .session
+        .report_surface_presentation(output, SurfacePresentationResult::Presented)
+        .unwrap();
+    let mut frame = native
+        .session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .unwrap();
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    let report = frame.commit().unwrap();
+    assert_eq!(report.native_admissions(), &[child]);
+    assert_eq!(
+        report
+            .events()
+            .iter()
+            .filter(|event| {
+                matches!(event.kind(), DockspaceEventKind::RootRehomed {
+                    root,
+                    surface,
+                    floating: None,
+                } if *root == RootId::new(2) && *surface == child.surface())
+            })
+            .count(),
+        1
+    );
+    native.settle_host_frame_report(&report).unwrap();
+    assert_eq!(receiver.try_recv().unwrap(), report.events());
+
+    let settled = commit_model_frame(&mut native);
+    assert!(settled.events().is_empty());
+    native.settle_host_frame_report(&settled).unwrap();
+    assert!(receiver.try_recv().is_err());
+}
+
+#[test]
+fn shutdown_cancellation_does_not_notify_a_native_move_as_completed() {
+    let (mut native, _, source, child) = content_ready_child();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    native.set_event_handler(move |events| sender.send(events.to_vec()).unwrap());
+    quarantine_without_source_measurement(&mut native);
+    let cancelled = native.advance_shutdown_boundary(&egui::Context::default(), &mut test_budget());
+    assert!(cancelled.errors.is_empty(), "{cancelled:#?}");
+    assert!(!native.session.has_pending_native_create());
+    assert_source_retained(&native, source, child);
+    assert!(receiver.try_recv().is_err());
+}
+
+#[test]
 fn first_live_report_grants_presented_authority_without_changing_physical_coordinates() {
     let (mut native, _, source, child) = content_ready_child();
     let viewport = viewport_id_for(child);

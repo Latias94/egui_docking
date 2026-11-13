@@ -276,6 +276,26 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
         self.child_window_overrides.remove(&surface)
     }
 
+    /// Handles future committed product events without retaining an event history.
+    ///
+    /// The callback runs once for each nonempty core publication, including
+    /// final UI passes, native service work and shutdown. Repeated encoding
+    /// passes and pending native transfers do not emit completion events.
+    /// Installing or replacing a handler never replays earlier publications.
+    ///
+    /// The runtime lock remains held. Keep the callback short and do not call
+    /// this application's runtime methods from it. Queue application work and
+    /// commands for a later update; the callback may run outside an egui UI
+    /// pass. Clone events only when the application needs to retain them.
+    #[must_use]
+    pub fn with_event_handler(
+        self,
+        handler: impl FnMut(&[crate::DockspaceEvent]) + Send + 'static,
+    ) -> Self {
+        lock_state(&self.state).set_event_handler(handler);
+        self
+    }
+
     /// Configures input bindings before installing the native host handler.
     ///
     /// Use [`Self::request_input`] after the host begins receiving input.
