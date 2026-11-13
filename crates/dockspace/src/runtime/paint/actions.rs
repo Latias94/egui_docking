@@ -365,7 +365,7 @@ impl SurfacePaintPlan<'_> {
         let record = self
             .plan
             .splitter_record(id)
-            .filter(|record| record.operable())?;
+            .filter(|record| record.operable() && self.plan.partition_available(id.root))?;
         let delta = self.splitter_adjustment_delta(
             crate::scene::SplitterResizeTarget::Handle(id),
             record.axis(),

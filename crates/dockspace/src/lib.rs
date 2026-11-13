@@ -113,6 +113,8 @@ pub mod layout;
 #[cfg(not(test))]
 mod layout;
 pub mod model;
+#[cfg(feature = "motion")]
+pub mod motion;
 pub(crate) use graph::operation;
 #[cfg(feature = "serde")]
 mod persistence;

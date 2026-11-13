@@ -130,6 +130,24 @@ enum PreparedDocumentUpdate {
 }
 
 impl<'session> DockspaceHostFrame<'session> {
+    /// Freezes motion time, policy and host preference for this update.
+    ///
+    /// Call before encoding. Reuse one timestamp across all surfaces and
+    /// rendering passes; this does not invalidate layout measurements.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after encoding starts or while native input is pending.
+    #[cfg(feature = "motion")]
+    pub fn set_motion(
+        &mut self,
+        motion: crate::motion::MotionFrame,
+    ) -> Result<(), DockspaceRuntimeError> {
+        self.ensure_semantic_input_allowed()?;
+        self.frame.set_motion_frame(motion);
+        Ok(())
+    }
+
     /// Replaces all logical placements in one real native window atomically.
     ///
     /// Measurements and painting in this candidate use the proposed placements.

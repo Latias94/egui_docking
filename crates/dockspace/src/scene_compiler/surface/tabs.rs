@@ -33,8 +33,8 @@ pub(in crate::scene_compiler) use crate::scene_compiler::tab_strip_layout::{
     reveal_tab_range, tab_local_range,
 };
 use crate::scene_manifest::{
-    AuthoritativeSurfaceMeasurements, SurfaceRequirements, TabBarRequirement, TabIntrinsicKey,
-    TabStripControlMetrics, TabStripControlPlacement, TabStripKey,
+    AuthoritativeSurfaceMeasurements, SurfaceMeasurements, SurfaceRequirements, TabBarRequirement,
+    TabIntrinsicKey, TabStripControlMetrics, TabStripControlPlacement, TabStripKey,
 };
 use crate::tab_strip::{
     ActiveTabListMenu, TabStripControlId, TabStripStateKey, TabStripStateStore,
@@ -335,7 +335,7 @@ pub(super) fn compile_tabs_leaf(
     policy: &DockPolicySnapshot,
     config: &DockPresentationConfig,
     requirements: &SurfaceRequirements,
-    measurements: AuthoritativeSurfaceMeasurements<'_>,
+    measurements: &SurfaceMeasurements,
     surface: SurfaceId,
     root: RootId,
     tabs: NodeId,
@@ -349,6 +349,7 @@ pub(super) fn compile_tabs_leaf(
     root_central: bool,
     presentation_menu_anchor: bool,
     outer_guides: Option<GuideEdgeGeometry>,
+    emit_drop_targets: bool,
     ready: &mut PresentationPlan,
 ) -> Result<(), SceneCompilationError> {
     let bar_id = TabBarSceneId { root, tabs };
@@ -387,6 +388,7 @@ pub(super) fn compile_tabs_leaf(
             layer,
             tab_strip_states,
             presentation_menu_anchor,
+            emit_drop_targets,
             ready,
         )?;
     } else if tab_bar_requirement.policy().visibility() == TabBarVisibility::AutoHideSingle
@@ -407,7 +409,7 @@ pub(super) fn compile_tabs_leaf(
             )?;
         }
     }
-    if rect_has_area(bounds) {
+    if emit_drop_targets && rect_has_area(bounds) {
         let inner_guide = if let Some(outer_guides) = outer_guides {
             compile_inner_targets_and_guide(
                 policy,
@@ -489,7 +491,7 @@ fn compile_tab_strip(
     policy: &DockPolicySnapshot,
     config: &DockPresentationConfig,
     requirement: &TabBarRequirement,
-    measurements: AuthoritativeSurfaceMeasurements<'_>,
+    measurements: &SurfaceMeasurements,
     surface: SurfaceId,
     root: RootId,
     tabs: NodeId,
@@ -499,6 +501,7 @@ fn compile_tab_strip(
     layer: SceneLayerKey,
     tab_strip_states: &TabStripStateStore,
     presentation_menu_anchor: bool,
+    emit_drop_targets: bool,
     ready: &mut PresentationPlan,
 ) -> Result<(), SceneCompilationError> {
     let interaction = requirement.policy().interaction();
@@ -508,7 +511,7 @@ fn compile_tab_strip(
     let active_menu = tab_strip_states.active_menu_for(state_key);
     let strip_key = TabStripKey::new(surface, bar_id);
     let strip = measurements
-        .tab_strip(strip_key)
+        .measured_tab_strip(strip_key)
         .ok_or(SceneCompilationError::MissingTabStripMeasurement { key: strip_key })?;
     let chrome = tab_strip_optional_chrome_layout(
         bar,
@@ -531,7 +534,7 @@ fn compile_tab_strip(
     for item in items.iter().copied() {
         let key = TabIntrinsicKey::new(surface, TabSceneId { root, tabs, item });
         let intrinsic = measurements
-            .tab_intrinsic(key)
+            .measured_tab_intrinsic(key)
             .ok_or(SceneCompilationError::MissingTabIntrinsicMeasurement { key })?;
         let item_close_allowed = requirement
             .close_capability(item)
@@ -760,7 +763,7 @@ fn compile_tab_strip(
         )?;
     }
 
-    if interaction == TabBarInteraction::Enabled {
+    if emit_drop_targets && interaction == TabBarInteraction::Enabled {
         let availability = tab_availability(policy);
         let gap_viewport = if let Some(after_tabs) = after_tabs_bounds {
             LogicalRect::new(

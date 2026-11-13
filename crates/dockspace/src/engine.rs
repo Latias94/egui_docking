@@ -9,6 +9,8 @@ mod error;
 mod gesture_cancel;
 mod host_frame;
 mod input;
+#[cfg(feature = "motion")]
+mod layout_motion;
 mod logical_surface;
 mod native_admission;
 mod native_input;

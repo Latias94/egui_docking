@@ -216,6 +216,12 @@ impl MagneticTargetCandidate {
 }
 
 impl MagneticTargetField {
+    #[cfg(feature = "motion")]
+    pub(crate) fn retain_roots(&mut self, mut permits: impl FnMut(RootId) -> bool) {
+        self.panes.retain(|field| permits(field.root));
+        self.roots.retain(|field| permits(field.root));
+    }
+
     #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.panes.is_empty() && self.roots.is_empty()

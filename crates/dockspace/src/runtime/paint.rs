@@ -99,6 +99,17 @@ impl fmt::Debug for DockspaceSemanticOutput {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DockspaceVisualId(VisualIdentity);
 
+/// Content identity preserved across docking within one session and workspace epoch.
+///
+/// Hosts may use this as a widget/view namespace. It carries no input authority
+/// and changes on layout replacement even when the same item numbers reappear.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct DockspaceContentId {
+    domain: crate::ids::EngineAuthorityDomainId,
+    epoch: crate::ids::WorkspaceEpoch,
+    item: ItemId,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum VisualIdentity {
     Pane(crate::scene::PaneSceneId),
@@ -1555,6 +1566,35 @@ impl DockspaceHostFrame<'_> {
 }
 
 impl<'frame> SurfacePaintPlan<'frame> {
+    /// Returns a stable content namespace for this session and workspace epoch.
+    ///
+    /// Unlike slot identity, this remains unchanged when an item docks into a
+    /// different group. It is a view key, not a receiver or action capability.
+    #[must_use]
+    pub const fn content_identity(self, item: ItemId) -> DockspaceContentId {
+        DockspaceContentId {
+            domain: self.authority_domain,
+            epoch: self.version.epoch(),
+            item,
+        }
+    }
+
+    /// Returns whether this output's root has solver-backed partition geometry.
+    ///
+    /// During topology transitions content may move independently of splitters.
+    /// Adapters omit structural controls until an output restores a partition.
+    #[must_use]
+    pub fn partition_available(self, root: RootId) -> bool {
+        self.plan.partition_available(root)
+    }
+
+    /// Returns the frozen motion inputs for non-interactive decoration tracks.
+    #[cfg(feature = "motion")]
+    #[must_use]
+    pub fn motion_frame(self) -> Option<crate::motion::MotionFrame> {
+        self.candidate.motion_frame()
+    }
+
     /// Visits tab resource requests in their original surface-program order.
     ///
     /// Requests include visible tabs, popup rows, destination feedback, every
@@ -2536,7 +2576,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
         &self,
         junction: SplitterJunctionPaintRecord<'frame>,
     ) -> bool {
-        junction.record.operable()
+        self.plan.partition_available(junction.record.id().root()) && junction.record.operable()
     }
 
     /// Returns whether every incident splitter on one junction axis accepts a
@@ -2547,6 +2587,9 @@ impl<'frame> SurfacePaintPlan<'frame> {
         junction: SplitterJunctionPaintRecord<'frame>,
         axis: DockspaceAxis,
     ) -> bool {
+        if !self.plan.partition_available(junction.record.id().root()) {
+            return false;
+        }
         let axis: Axis = axis.into();
         // Runtime plans borrow the validator's canonical, unique record arrays.
         let junctions = self.plan.splitter_junction_records();

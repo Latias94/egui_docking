@@ -1201,11 +1201,11 @@ impl CoreHostFrame {
         Ok(())
     }
 
-    pub(crate) fn refresh_contained_layout(&mut self) -> Result<(), CoreHostFrameError> {
-        self.refresh_contained_layout_except(None)
+    pub(crate) fn refresh_presentation_layout(&mut self) -> Result<(), CoreHostFrameError> {
+        self.refresh_presentation_layout_except(None)
     }
 
-    pub(crate) fn refresh_contained_layout_except(
+    pub(crate) fn refresh_presentation_layout_except(
         &mut self,
         freshly_measured: Option<SurfaceId>,
     ) -> Result<(), CoreHostFrameError> {
@@ -1217,7 +1217,7 @@ impl CoreHostFrame {
         }
         let refreshed = self
             .candidate
-            .refresh_contained_layouts(self.tick, freshly_measured);
+            .refresh_presentation_layouts(self.tick, freshly_measured);
         match refreshed {
             Ok(false) => Ok(()),
             Ok(true) => match self.refresh_presentation_snapshot() {
@@ -2735,6 +2735,8 @@ impl CoreHostFrame {
         let request = self.stage_presentation_output(surface, frozen, &obligation)?;
         let contribution = PreparedSurfaceContribution {
             token,
+            #[cfg(feature = "motion")]
+            next_motion: None,
             policy_revision: token.ticket().policy(),
             state: PreparedSurfaceContributionState::Retained { ticket },
         };
@@ -2888,7 +2890,7 @@ impl CoreHostFrame {
     /// Closes this capability's semantic input prefix in place.
     pub(crate) fn begin_presentation_phase(&mut self) -> Result<(), CoreHostFrameError> {
         self.ensure_input_prefix_complete()?;
-        self.refresh_contained_layout()?;
+        self.refresh_presentation_layout()?;
         // Semantic input in this same frame may have retired the frozen
         // provider after its final segment was reduced. The reducer owns that
         // transition; presentation only requires the frozen segment and its

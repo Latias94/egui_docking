@@ -1641,7 +1641,7 @@ impl DockspaceHostFrame<'_> {
 
     pub(super) fn complete_pointer_input(&mut self) -> Result<(), DockspaceRuntimeError> {
         self.complete_pointer_journal()?;
-        self.frame.refresh_contained_layout()?;
+        self.frame.refresh_presentation_layout()?;
         Ok(())
     }
 

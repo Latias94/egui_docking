@@ -212,7 +212,8 @@ impl DockspaceHostFrame<'_> {
         if self.surface_answered(surface) || self.frame.surface_is_measured(surface) {
             return Err(DockspaceInteractionError::SurfaceAlreadyAnswered { surface }.into());
         }
-        self.frame.refresh_contained_layout_except(Some(surface))?;
+        self.frame
+            .refresh_presentation_layout_except(Some(surface))?;
         let requirements = self
             .frame
             .view()

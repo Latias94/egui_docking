@@ -291,7 +291,7 @@ fn presented_target_preview_survives_unpresented_measurements_without_borrowing_
         .visual()
         .clone();
     assert!(matches!(original_visual, PreviewVisual::Dock { .. }));
-    frame.refresh_contained_layout().unwrap();
+    frame.refresh_presentation_layout().unwrap();
     complete_host_frame_with_retained_or_unavailable(&engine, &mut frame);
     host.finish(frame, &mut engine);
 
@@ -355,7 +355,7 @@ fn presented_target_preview_survives_unpresented_measurements_without_borrowing_
         Some(target_basis),
         "publication must bind the layout that actually solved the hover, not ready B"
     );
-    frame.refresh_contained_layout().unwrap();
+    frame.refresh_presentation_layout().unwrap();
     complete_host_frame_with_retained_or_unavailable(&engine, &mut frame);
     host.finish(frame, &mut engine);
 

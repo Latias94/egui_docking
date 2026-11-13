@@ -172,12 +172,14 @@ impl DockEngine {
                         })
             }
             PresentationHitRegionKind::SplitterHandle(splitter) => {
-                self.presented_root_owner_is_current(plan, splitter.root)
+                plan.partition_available(splitter.root)
+                    && self.presented_root_owner_is_current(plan, splitter.root)
                     && self.presented_root_structure_is_current(plan, splitter.root)
             }
             PresentationHitRegionKind::SplitterJunction(junction) => {
                 junction.splitters().iter().all(|splitter| {
-                    self.presented_root_owner_is_current(plan, splitter.root)
+                    plan.partition_available(splitter.root)
+                        && self.presented_root_owner_is_current(plan, splitter.root)
                         && self.presented_root_structure_is_current(plan, splitter.root)
                 })
             }

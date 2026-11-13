@@ -205,6 +205,16 @@ impl DockspaceSession {
         )
     }
 
+    /// Returns whether a surface's layout transition needs another sample.
+    ///
+    /// Hosts schedule a frame only while visible and output capacity is
+    /// available. Presentation terminal wakeups remain independent.
+    #[cfg(feature = "motion")]
+    #[must_use]
+    pub fn surface_motion_is_active(&self, surface: crate::model::SurfaceId) -> bool {
+        self.engine.surface_motion_is_active(surface)
+    }
+
     /// Returns whether a release or root rehome still owns a presentation obligation.
     ///
     /// This derives from pending drag releases, contained-transform releases, and

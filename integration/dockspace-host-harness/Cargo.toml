@@ -11,6 +11,7 @@ publish = false
 [features]
 default = []
 serde = ["dockspace/serde"]
+motion = ["dockspace/motion"]
 
 [dependencies]
 dockspace = { path = "../../crates/dockspace", default-features = false }
@@ -21,3 +22,7 @@ dockspace_host_conformance = { path = "../../crates/dockspace_host_conformance" 
 
 [lints.rust]
 unsafe_code = "forbid"
+
+[[example]]
+name = "motion"
+required-features = ["motion"]

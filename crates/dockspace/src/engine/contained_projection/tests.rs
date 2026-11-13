@@ -205,6 +205,14 @@ fn fixture(pane_count: usize) -> (DockspaceSession, Painted) {
     let mut session = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
     session.enable_host_pointer().unwrap();
     let mut frame = session.begin_host_frame().unwrap();
+    #[cfg(feature = "motion")]
+    frame
+        .set_motion(crate::motion::MotionFrame {
+            now: std::time::Duration::ZERO,
+            settings: crate::motion::MotionSettings::default(),
+            preference: crate::motion::MotionPreference::Full,
+        })
+        .unwrap();
     // Keep every background pane above its minimum at all three fixture sizes.
     frame
         .measure_surface(

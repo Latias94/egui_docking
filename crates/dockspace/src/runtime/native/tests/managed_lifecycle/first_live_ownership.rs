@@ -242,6 +242,14 @@ fn emit_first_live_child_output(
     let mut measure = session
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
         .expect("the public first-live measurement frame begins");
+    #[cfg(feature = "motion")]
+    measure
+        .set_motion(crate::motion::MotionFrame {
+            now: std::time::Duration::from_millis(1000),
+            settings: crate::motion::MotionSettings::default(),
+            preference: crate::motion::MotionPreference::Full,
+        })
+        .unwrap();
     let surfaces = measure.surfaces();
     assert_eq!(surfaces.len(), 2);
     assert!(surfaces.contains(&root.surface()));

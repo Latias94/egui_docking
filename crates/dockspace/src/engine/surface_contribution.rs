@@ -92,6 +92,8 @@ pub struct PreparedSurfaceContribution {
     pub(super) token: SurfaceContributionToken,
     pub(super) policy_revision: PolicyRevision,
     pub(super) state: PreparedSurfaceContributionState,
+    #[cfg(feature = "motion")]
+    pub(super) next_motion: Option<Arc<super::layout_motion::SurfaceMotionState>>,
 }
 
 impl PreparedSurfaceContribution {
@@ -251,6 +253,22 @@ impl DockEngine {
         token: SurfaceContributionToken,
         measurements: SurfaceMeasurements,
     ) -> Result<PreparedSurfaceContribution, SurfaceContributionPrepareError> {
+        let contribution = self.prepare_surface_contribution_base(token, measurements)?;
+        #[cfg(feature = "motion")]
+        {
+            self.prepare_layout_motion(contribution)
+        }
+        #[cfg(not(feature = "motion"))]
+        {
+            Ok(contribution)
+        }
+    }
+
+    fn prepare_surface_contribution_base(
+        &self,
+        token: SurfaceContributionToken,
+        measurements: SurfaceMeasurements,
+    ) -> Result<PreparedSurfaceContribution, SurfaceContributionPrepareError> {
         let surface = token.surface();
         let current = self
             .presentation_authority
@@ -312,6 +330,24 @@ impl DockEngine {
                     projection
                 });
         let native_projection = self.scene().native_first_live_projection(surface);
+        #[cfg(feature = "motion")]
+        if native_projection.is_none()
+            && let Some(plan) = self.cached_motion_target(
+                token,
+                &measurements,
+                contained_projection,
+                &resize_overrides,
+            )
+        {
+            return Ok(PreparedSurfaceContribution {
+                token,
+                #[cfg(feature = "motion")]
+                next_motion: None,
+                policy_revision,
+                state: PreparedSurfaceContributionState::Ready { plan },
+            });
+        }
+
         if native_projection.is_none()
             && let Some(candidate) = matching_candidate
             && candidate.plan().measurement_ticket() == Some(token.ticket())
@@ -342,6 +378,8 @@ impl DockEngine {
             // adopt its solved offsets before the complete frame can publish it.
             return Ok(PreparedSurfaceContribution {
                 token,
+                #[cfg(feature = "motion")]
+                next_motion: None,
                 policy_revision,
                 state: PreparedSurfaceContributionState::Ready {
                     plan: Arc::clone(candidate.shared_plan()),
@@ -397,6 +435,8 @@ impl DockEngine {
         {
             return Ok(PreparedSurfaceContribution {
                 token,
+                #[cfg(feature = "motion")]
+                next_motion: None,
                 policy_revision,
                 state: PreparedSurfaceContributionState::Ready {
                     plan: Arc::new(plan),
@@ -474,6 +514,8 @@ impl DockEngine {
 
         Ok(PreparedSurfaceContribution {
             token,
+            #[cfg(feature = "motion")]
+            next_motion: None,
             policy_revision,
             state,
         })
@@ -623,6 +665,8 @@ impl DockEngine {
         };
         Ok(PreparedSurfaceContribution {
             token,
+            #[cfg(feature = "motion")]
+            next_motion: None,
             policy_revision,
             state: PreparedSurfaceContributionState::Retained { ticket },
         })

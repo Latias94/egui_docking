@@ -1,6 +1,8 @@
 # Separate target layout from interruptible presentation geometry
 
-Status: Proposed; runtime support and the public interface are not implemented.
+Status: Accepted; first delivery implements the shared `motion` feature, same-root
+survivor transitions, egui configuration and passive decoration tracks. Native
+compositor integration, cross-window content flights and exit snapshots remain deferred.
 
 ## Context
 
@@ -54,7 +56,7 @@ Use the following motion roles:
 
 These initial values are tuning seeds awaiting experiments in a real editor, not validated performance thresholds or exact settling deadlines. Carbon's [productive duration tokens][carbon-overview] provide comparison points, not a conversion between tween duration and spring response. Related changes share a start time and consistent timing; equal-width pane moves can share a trajectory, and valid partition changes must share boundary motion.
 
-The compile-time feature and runtime controls are separate. With motion available, provide global `Off`/`System` policy and per-effect `Inherit`/`Off`/explicit transition settings. Resolve global Off first, then host-reported reduced motion, then effect settings and adapter defaults. A missing system fact remains Unknown with an explicit application fallback; enabling a feature does not prove OS preference support. `Off` samples target geometry immediately and schedules no motion wakeup. Reduced motion removes geometry travel, scale and bounce, retaining optional short color/opacity feedback and a static cue. Keyboard navigation remains immediate. Applications can replace settings at runtime; a zero timing normalizes to the immediate path before any division.
+The compile-time feature and runtime controls are separate. With motion available, provide global `Off`/`System` policy and one explicit `Transition` per effect, including `Instant`. Defaults live in `MotionSettings`, avoiding an additional inheritance layer. Resolve global Off first, then host-reported reduced motion, then the effect transition. A missing system fact remains Unknown with an explicit application fallback; enabling a feature does not prove OS preference support. `Off` samples target geometry immediately and schedules no motion wakeup. Reduced motion removes geometry travel, scale and bounce, retaining optional short color/opacity feedback and a static cue. Keyboard navigation remains immediate. Applications can replace settings at runtime; a zero timing normalizes to the immediate path before any division.
 
 Keep `MotionSettings` separate from `DockPresentationConfig`, whose revision currently requires fresh layout measurements. Freeze motion settings for one outer update and invalidate only affected tracks when settings change. Changing a curve, duration or effect policy must not stale layout measurements or require a whole-tree remeasure. Reuse existing output identity and invalidation mechanisms rather than adding a motion-revision ledger.
 

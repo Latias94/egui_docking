@@ -1,7 +1,8 @@
 # Public host contract harness
 
 This independent workspace uses `dockspace`'s public API as its only production dependency.
-Its `serde` feature forwards to `dockspace/serde`; it has no UI or platform dependencies.
+Its optional `serde` and `motion` features forward to the corresponding core
+features; it has no UI or platform dependencies.
 
 `tests/shared_local_scenario.rs` consumes the same L08 semantic scenario as the
 core conformance and egui product executors. It resolves prepared actions from
@@ -250,3 +251,16 @@ Unknown/foreign/empty facts cannot reuse a historical placement authority.
 and selected-item host frames at 16/128/1024 panes. It has no time threshold and
 is not platform-latency certification. Core work counters separately distinguish
 shared immutable workspace snapshots from explicit command-stage graph copies.
+
+With `motion`, `tests/motion.rs` renders core-sampled geometry without a framework
+animator. Native tear-off tests also enable the policy while retaining the exact
+static first-live admission path. Run the small renderer-free cost probe with:
+
+```sh
+cargo run --release --manifest-path integration/dockspace-host-harness/Cargo.toml --features motion --example motion --locked
+```
+
+The CSV separates target preparation, steady tick preparation and program walking
+at 16 and 64 panes. It excludes application content, text shaping, GPU work and
+physical presentation, and its deliberately long tween keeps every sampled tick
+active. It is a local comparison tool, not a frame-rate guarantee.

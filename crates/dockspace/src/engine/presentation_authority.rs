@@ -34,6 +34,8 @@ pub(super) struct PresentationAuthorityState {
     pub(super) presentation: PresentationLedger,
     pub(super) last_presentation_output_serial: PresentationOutputSerial,
     pub(super) selection_rebind: Option<SelectionRebind>,
+    #[cfg(feature = "motion")]
+    pub(super) motion: super::layout_motion::LayoutMotionState,
 }
 
 /// A canonical Select preserves structural inventories; geometry still needs current input checks.
@@ -62,6 +64,8 @@ impl PartialEq for PresentationAuthorityState {
             presentation,
             last_presentation_output_serial,
             selection_rebind: _,
+            #[cfg(feature = "motion")]
+                motion: _,
         } = self;
         let Self {
             allocation_issuer: other_allocation_issuer,
@@ -76,8 +80,21 @@ impl PartialEq for PresentationAuthorityState {
             presentation: other_presentation,
             last_presentation_output_serial: other_last_presentation_output_serial,
             selection_rebind: _,
+            #[cfg(feature = "motion")]
+                motion: _,
         } = other;
-        allocation_issuer == other_allocation_issuer
+        let motion_matches = {
+            #[cfg(feature = "motion")]
+            {
+                self.motion == other.motion
+            }
+            #[cfg(not(feature = "motion"))]
+            {
+                true
+            }
+        };
+        motion_matches
+            && allocation_issuer == other_allocation_issuer
             && presentation_config == other_presentation_config
             && presentation_config_revision == other_presentation_config_revision
             && presentation_requirements == other_presentation_requirements
@@ -117,6 +134,8 @@ impl PresentationAuthorityState {
             presentation,
             last_presentation_output_serial: PresentationOutputSerial::default(),
             selection_rebind: None,
+            #[cfg(feature = "motion")]
+            motion: Default::default(),
         }
     }
 
@@ -1408,6 +1427,18 @@ impl DockEngine {
                     .adopt_resolved_scroll_offsets(surface, resolved_tab_offsets)
                     .map_err(|source| Self::contribution_invariant(cause, source.to_string()))?;
                 self.presentation_authority.last_presentation_output_serial = output_serial;
+                #[cfg(feature = "motion")]
+                match contribution.next_motion {
+                    Some(state) => {
+                        self.presentation_authority
+                            .motion
+                            .surfaces
+                            .insert(surface, state);
+                    }
+                    None => {
+                        self.presentation_authority.motion.surfaces.remove(&surface);
+                    }
+                }
                 if self
                     .presentation_authority
                     .selection_rebind

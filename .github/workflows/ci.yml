@@ -87,11 +87,11 @@ jobs:
         run: >-
           cargo nextest run
           --manifest-path integration/dockspace-host-harness/Cargo.toml --locked
-      - name: Run public host contract with persistence support
+      - name: Run public host contract with persistence and motion
         run: >-
           cargo nextest run
           --manifest-path integration/dockspace-host-harness/Cargo.toml
-          --features serde --locked
+          --features serde,motion --locked
       - name: Run engine-owned output example
         run: >-
           cargo run --manifest-path integration/dockspace-host-harness/Cargo.toml

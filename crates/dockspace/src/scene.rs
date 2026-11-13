@@ -1,6 +1,7 @@
 //! Type-state construction of immutable semantic docking scenes.
 
 mod lifecycle;
+mod motion;
 mod paint_program;
 mod program;
 mod records;
@@ -23,6 +24,8 @@ pub(crate) use self::paint_program::{
 use self::program::SurfaceProgram;
 #[cfg(test)]
 pub(crate) use self::program::SurfaceProgramBlock;
+#[cfg(feature = "motion")]
+pub(crate) use self::program::SurfaceProgramVisitError;
 pub(crate) use self::program::{
     ResolvedSurfaceProgramOperation, ResolvedSurfaceProgramRoot, ResolvedSurfaceProgramStep,
     SurfaceProgramBuildError, SurfaceProgramRootOperation, SurfaceProgramRootPresentation,
@@ -258,6 +261,10 @@ struct SurfaceFacts {
     drop_targets: Vec<Arc<DropTargetRecord>>,
     magnetic_target_field: MagneticTargetField,
     surface_program: SurfaceProgram,
+    #[cfg(feature = "motion")]
+    unavailable_partitions: BTreeSet<RootId>,
+    #[cfg(feature = "motion")]
+    pane_ranks: BTreeMap<PaneSceneId, usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -357,6 +364,10 @@ impl PresentationPlan {
                 drop_targets: Vec::new(),
                 magnetic_target_field: MagneticTargetField::default(),
                 surface_program: SurfaceProgram::default(),
+                #[cfg(feature = "motion")]
+                unavailable_partitions: BTreeSet::new(),
+                #[cfg(feature = "motion")]
+                pane_ranks: BTreeMap::new(),
             }),
         }
     }

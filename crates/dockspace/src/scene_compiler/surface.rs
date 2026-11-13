@@ -6,6 +6,8 @@ mod contained;
 mod error;
 mod guides;
 mod measurement;
+#[cfg(feature = "motion")]
+mod motion;
 mod tabs;
 
 use contained::compile_contained_record;
@@ -19,6 +21,8 @@ use measurement::{RootLayoutMeasurement, measure_root_layout};
 pub(crate) use measurement::{
     contained_minimum_size, pane_outer_minimum, selection_geometry_unchanged,
 };
+#[cfg(feature = "motion")]
+pub(crate) use motion::materialize_presentation_sample;
 use tabs::{compile_tabs_leaf, select_presentation_menu_tab_bar};
 pub(super) use tabs::{operable_tab_chrome, tab_strip_optional_chrome_layout};
 #[cfg(test)]
@@ -596,6 +600,7 @@ fn compile_root(
         None
     };
 
+    let tab_measurements = measurements.snapshot();
     for (node, projected) in &projection.nodes {
         let rect = clip_rect(projected.rect, bounds)?;
         match workspace
@@ -619,7 +624,7 @@ fn compile_root(
                     policy,
                     config,
                     requirements,
-                    measurements,
+                    &tab_measurements,
                     surface,
                     root,
                     *node,
@@ -633,6 +638,7 @@ fn compile_root(
                     root_record.node == *node && root_record.central == Some(*node),
                     presentation_menu_tabs == Some(*node),
                     outer_guides,
+                    true,
                     ready,
                 )?;
             }

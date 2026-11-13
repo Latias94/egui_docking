@@ -77,6 +77,11 @@ close decisions and persistence contracts, and the
 - Resolve close requests immediately or retain a deferred token while saving.
 - Enable `serde` to save and restore a complete layout document with stable pane
   keys. The application chooses storage and serializes its own pane data.
+- Enable `motion` for interruptible presentation geometry. Supply a monotonic
+  `MotionFrame` once per host update, render the sampled surface program, and
+  schedule another visible frame while `surface_motion_is_active` is true and
+  output capacity permits. [The host guide](docs/guide.md#motion) explains timing,
+  reduced motion, input authority and integration with retained UI frameworks.
 
 [Examples](../../docs/EXAMPLES.md) · [Platform support](../../docs/PLATFORM_SUPPORT.md)
 · [Repository](../../README.md)

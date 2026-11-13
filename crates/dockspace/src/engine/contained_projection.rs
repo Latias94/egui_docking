@@ -152,7 +152,7 @@ impl DockEngine {
             })
     }
 
-    pub(super) fn refresh_contained_layouts(
+    pub(super) fn refresh_presentation_layouts(
         &mut self,
         tick: ReducerTickId,
         freshly_measured: Option<SurfaceId>,
@@ -171,7 +171,17 @@ impl DockEngine {
             let Some(candidate) = self.scene().ready_candidate(surface) else {
                 continue;
             };
-            if candidate.plan().contained_projection() == projection {
+            let motion_changed = {
+                #[cfg(feature = "motion")]
+                {
+                    self.motion_needs_refresh(surface)
+                }
+                #[cfg(not(feature = "motion"))]
+                {
+                    false
+                }
+            };
+            if candidate.plan().contained_projection() == projection && !motion_changed {
                 continue;
             }
             let Some(layout) = candidate.plan().layout_facts() else {

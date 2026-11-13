@@ -544,6 +544,13 @@ impl SurfaceProgram {
     }
 
     pub(super) fn finish(&mut self) -> Result<(), SurfaceProgramBuildError> {
+        self.finish_in_pane_order(|_, _| (false, 0))
+    }
+
+    fn finish_in_pane_order(
+        &mut self,
+        mut pane_rank: impl FnMut(RootId, SurfaceProgramRootOperation) -> (bool, usize),
+    ) -> Result<(), SurfaceProgramBuildError> {
         if self.finished {
             return Err(SurfaceProgramBuildError::AlreadyFinished);
         }
@@ -615,8 +622,9 @@ impl SurfaceProgram {
         let root_drafts = std::mem::take(&mut self.root_drafts);
         self.root_indices.clear();
         for mut root in root_drafts {
-            root.operations
-                .sort_by_key(|operation| operation.paint_rank());
+            root.operations.sort_by_key(|operation| {
+                (pane_rank(root.root, *operation), operation.paint_rank())
+            });
             blocks.push(SurfaceProgramBlock::RootBegin {
                 root: root.root,
                 presentation: root.presentation,
@@ -732,6 +740,39 @@ impl PresentationPlan {
     }
 
     pub(crate) fn finish_surface_program(&mut self) -> Result<(), SurfaceProgramBuildError> {
+        #[cfg(feature = "motion")]
+        if !self.facts.pane_ranks.is_empty() {
+            let mut program = std::mem::take(&mut self.facts_mut().surface_program);
+            let root_control_rank = |root| self.root_control_pane_rank(root);
+            let result = program.finish_in_pane_order(|root, operation| match operation {
+                SurfaceProgramRootOperation::Pane(id) => (false, self.pane_rank(id.root, id.tabs)),
+                SurfaceProgramRootOperation::TabBar(id) => {
+                    (false, self.pane_rank(id.root, id.tabs))
+                }
+                SurfaceProgramRootOperation::Tab(id) => (false, self.pane_rank(id.root, id.tabs)),
+                SurfaceProgramRootOperation::TabStripControl(id) => {
+                    let bar = id.bar();
+                    (false, self.pane_rank(bar.root, bar.tabs))
+                }
+                SurfaceProgramRootOperation::PresentationMenuAnchor(root) => self
+                    .facts
+                    .presentation_menu_anchor_records
+                    .iter()
+                    .find(|record| record.root() == root)
+                    .and_then(|record| match record.host() {
+                        PresentationMenuAnchorHost::TabBar(bar) => {
+                            Some((false, self.pane_rank(bar.root, bar.tabs)))
+                        }
+                        PresentationMenuAnchorHost::ContainedTitle(_) => None,
+                    })
+                    .unwrap_or_else(|| root_control_rank(root)),
+                SurfaceProgramRootOperation::Splitter(_)
+                | SurfaceProgramRootOperation::SplitterJunction(_)
+                | SurfaceProgramRootOperation::ContainedControls(_) => root_control_rank(root),
+            });
+            self.facts_mut().surface_program = program;
+            return result;
+        }
         self.facts_mut().surface_program.finish()
     }
 

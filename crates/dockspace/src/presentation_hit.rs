@@ -18,6 +18,8 @@ use crate::ids::RootId;
 use crate::ids::{FloatingPresentationId, SurfaceId};
 use crate::pointer_journal::PointerDeviceKind;
 use crate::presentation_observation::SurfacePresentationOutputTicket;
+#[cfg(feature = "motion")]
+use crate::scene::PresentationMenuAnchorHost;
 use crate::scene::{
     ContainedResizeDirection, PaneSceneId, PresentationPlan, ResolvedSurfaceProgramOperation,
     ResolvedSurfaceProgramStep, SceneBuildError, SplitterJunctionId, SplitterSceneId,
@@ -204,6 +206,8 @@ pub struct PresentationHitStackKey {
     plane: PresentationPlane,
     popup_role: Option<PopupHitRole>,
     layer: SceneLayerKey,
+    #[cfg(feature = "motion")]
+    pane_rank: (bool, usize),
     precedence: PresentationHitPrecedence,
 }
 
@@ -217,6 +221,8 @@ impl PresentationHitStackKey {
             plane,
             popup_role: None,
             layer,
+            #[cfg(feature = "motion")]
+            pane_rank: (false, 0),
             precedence,
         }
     }
@@ -230,6 +236,8 @@ impl PresentationHitStackKey {
             plane: PresentationPlane::Popup(session),
             popup_role: Some(role),
             layer: SceneLayerKey::surface_base(),
+            #[cfg(feature = "motion")]
+            pane_rank: (false, 0),
             precedence,
         }
     }
@@ -569,6 +577,9 @@ fn emit_regions(
     plan.visit_surface_program(|step| {
         match step {
             ResolvedSurfaceProgramStep::Operation { operation, .. } => {
+                #[cfg(feature = "motion")]
+                push_ranked_operation_regions(plan, regions, surface, operation);
+                #[cfg(not(feature = "motion"))]
                 push_operation_regions(regions, surface, operation);
             }
             ResolvedSurfaceProgramStep::PopupBackdrop(backdrop) => {
@@ -594,6 +605,66 @@ fn emit_regions(
         Ok::<(), Infallible>(())
     })
     .map_err(|_| SceneBuildError::InvalidSurfaceProgram { surface })
+}
+
+#[cfg(feature = "motion")]
+fn push_ranked_operation_regions(
+    plan: &PresentationPlan,
+    regions: &mut impl FnMut(PresentationHitRegion),
+    surface: SurfaceId,
+    operation: ResolvedSurfaceProgramOperation<'_>,
+) {
+    let pane_rank = match operation {
+        ResolvedSurfaceProgramOperation::Pane(pane) => {
+            (false, plan.pane_rank(pane.id().root, pane.id().tabs))
+        }
+        ResolvedSurfaceProgramOperation::Tab(tab) => {
+            (false, plan.pane_rank(tab.id().root, tab.id().tabs))
+        }
+        ResolvedSurfaceProgramOperation::TabBar(bar) => {
+            (false, plan.pane_rank(bar.id().root, bar.id().tabs))
+        }
+        ResolvedSurfaceProgramOperation::TabStripControl(control) => {
+            let bar = control.id().bar();
+            (false, plan.pane_rank(bar.root, bar.tabs))
+        }
+        ResolvedSurfaceProgramOperation::PresentationMenuAnchor(anchor) => match anchor.host() {
+            PresentationMenuAnchorHost::TabBar(bar) => (false, plan.pane_rank(bar.root, bar.tabs)),
+            PresentationMenuAnchorHost::ContainedTitle(_) => {
+                plan.root_control_pane_rank(anchor.root())
+            }
+        },
+        ResolvedSurfaceProgramOperation::Splitter(splitter) => {
+            if !plan.partition_available(splitter.id().root) {
+                return;
+            }
+            plan.root_control_pane_rank(splitter.id().root)
+        }
+        ResolvedSurfaceProgramOperation::SplitterJunction(junction) => {
+            if !plan.partition_available(junction.id().root()) {
+                return;
+            }
+            plan.root_control_pane_rank(junction.id().root())
+        }
+        ResolvedSurfaceProgramOperation::ContainedControls(contained) => {
+            plan.root_control_pane_rank(contained.root())
+        }
+    };
+    push_operation_regions(
+        &mut |mut region| {
+            region.stack.pane_rank = if matches!(
+                region.id().kind(),
+                PresentationHitRegionKind::ContainedFrameBlocker(_)
+            ) {
+                (false, 0)
+            } else {
+                pane_rank
+            };
+            regions(region);
+        },
+        surface,
+        operation,
+    );
 }
 
 // Touch rows arrive in input-region order. Compact both inventories together so

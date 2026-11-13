@@ -261,9 +261,22 @@ fn work_areas() -> NativeWorkAreaRoster {
 }
 
 fn native_frame(session: &mut DockspaceSession) -> DockspaceHostFrame<'_> {
-    session
+    let frame = session
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
-        .unwrap()
+        .unwrap();
+    #[cfg(feature = "motion")]
+    let frame = {
+        let mut frame = frame;
+        frame
+            .set_motion(dockspace::motion::MotionFrame {
+                now: std::time::Duration::from_millis(1000),
+                settings: dockspace::motion::MotionSettings::default(),
+                preference: dockspace::motion::MotionPreference::Full,
+            })
+            .unwrap();
+        frame
+    };
+    frame
 }
 
 fn finish(mut frame: DockspaceHostFrame<'_>) -> HostFrameReport {
@@ -303,7 +316,25 @@ fn execute_paint(
     binding: NativeSurfaceBinding,
 ) -> (PaintedSurfaceOutput, Vec<OwnedRecord>) {
     let mut frame = native_frame(session);
+    #[cfg(feature = "motion")]
+    let prospective_child = frame.view().surface(binding.surface()).is_none();
     let plan = frame.paint_plan(binding.surface()).unwrap().unwrap();
+    #[cfg(feature = "motion")]
+    {
+        assert_eq!(
+            plan.motion_frame().unwrap().preference,
+            dockspace::motion::MotionPreference::Full
+        );
+        plan.visit_surface_program(|step| {
+            if let dockspace::runtime::SurfacePaintProgramStep::RootBegin { root, .. } = step {
+                if prospective_child {
+                    assert!(plan.partition_available(root.root()));
+                }
+            }
+            Ok::<(), ()>(())
+        })
+        .unwrap();
+    }
     let (recording, receipt) = RecordingRenderer::execute(plan).unwrap();
     frame.confirm_surface_painted(receipt).unwrap();
     let mut report = finish(frame);

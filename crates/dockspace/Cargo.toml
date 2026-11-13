@@ -12,6 +12,7 @@ readme = "README.md"
 
 [features]
 default = []
+motion = []
 serde = ["dep:blake3", "dep:serde", "dep:serde_json"]
 
 [dependencies]

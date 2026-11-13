@@ -1084,6 +1084,82 @@ is one possible host-owned format, not a core renderer or a GPU-present claim.
 The companion public-contract tests use the same API from an independent Cargo
 workspace, with default features and optional persistence.
 
+## Motion
+
+Enable the optional `motion` feature to separate the target layout from its
+rendered geometry. The feature is disabled by default and adds no platform,
+renderer or async dependency. Without it, target and presentation rectangles
+are identical.
+
+Before encoding, set one monotonic timestamp and policy for the entire update:
+
+```rust
+# #[cfg(feature = "motion")]
+# fn update(frame: &mut dockspace::runtime::DockspaceHostFrame<'_>) -> Result<(), dockspace::runtime::DockspaceRuntimeError> {
+use std::time::Duration;
+use dockspace::motion::{MotionFrame, MotionPreference, MotionSettings};
+
+frame.set_motion(MotionFrame {
+    now: Duration::from_millis(1000), // Use your host's monotonic elapsed time.
+    settings: MotionSettings::default(),
+    preference: MotionPreference::Full, // Supply the preference actually observed.
+})?;
+# Ok(())
+# }
+```
+
+Keep the timestamp fixed across rendering passes and surfaces in that update.
+Changing motion settings does not invalidate measurements. `System` resolves
+the supplied preference; `Unknown` defaults to reduced motion, with an explicit
+application fallback setting. Off, reduced motion and zero timing use immediate
+geometry and request no motion frames.
+
+Render content, chrome and clips at the rectangles in `SurfacePaintPlan`.
+Retained frameworks should key content views with `content_identity(item)` and
+apply the supplied geometry directly. Running a second layout animation in the
+framework would separate visible content from core hit and accessibility bounds.
+Text is reflowed at the sampled size rather than scaled as a texture.
+
+Motion changes presentation only: semantic commands commit immediately. New
+trajectories start at confirmed Presented geometry; active trajectories retarget
+from their current analytic position and velocity. Springs preserve unconstrained
+channel velocities; tweens promise position continuity. Clipping, nonnegative-size
+projection, direct gestures and explicit settlement can reset velocity.
+
+The first delivery animates surviving visible items within the same surface and
+root. Newly visible items appear at target, and removed items have no exit
+snapshot. Root changes and native prospective-child first-live output are
+immediate. It does not move OS windows or promise atomic cross-window animation.
+During topology changes, panes may overlap. One core pane order drives drawing
+and hit precedence. A moving root without a valid partition exposes no splitter,
+junction or structural drop operation; unaffected roots and content actions remain
+available. The target layout remains available internally for constraints.
+
+After committing an output, check `session.surface_motion_is_active(surface)` to
+decide whether a visible surface needs another frame. Stop when it settles, pause
+hidden surfaces, and wait for the existing terminal-output wakeup under output
+backpressure. Resume with current time; do not replay intermediate ticks. As with
+static output, report Presented or Dropped and commit that report before granting
+input to its receivers. Evaluating another sample does not authorize it. A reported
+newer Presented output awaiting an earlier terminal result conservatively blocks
+old input until the ordered terminal prefix can commit.
+
+Focus and drop-decoration tracks may consume `plan.motion_frame()` but have no
+input authority. Keep final drop-target geometry available separately to custom
+painters. `partition_available(root)` describes this artifact, so model settlement
+alone cannot restore structural receivers on an older visible frame.
+
+Run the independent public-host motion contract and cost probe:
+
+```sh
+cargo nextest run --manifest-path integration/dockspace-host-harness/Cargo.toml --features motion --test motion --locked
+cargo run --release --manifest-path integration/dockspace-host-harness/Cargo.toml --features motion --example motion --locked
+```
+
+The probe separates target preparation, active/static tick preparation and
+display-list traversal at 16 and 64 panes. It excludes application content and GPU
+rendering; use the egui workbench exercise to measure those host costs separately.
+
 ## Features
 
 - `serde`: session-owned versioned JSON persistence with append-only external

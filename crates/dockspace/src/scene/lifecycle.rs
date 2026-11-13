@@ -506,6 +506,17 @@ impl SurfaceScene {
         }
     }
 
+    /// Returns only geometry whose exact output has been observed as presented.
+    /// Stale fallbacks are retained only after that observation boundary.
+    #[cfg(feature = "motion")]
+    pub(crate) fn confirmed_presentation(&self) -> Option<&SurfacePlanScene> {
+        match self {
+            Self::Ready(ready) => ready.retained_output(ready.confirmed_paint_fallback?),
+            Self::Stale(stale) => Some(stale.paint_fallback()),
+            Self::Bootstrap(_) => None,
+        }
+    }
+
     /// Returns exact plan stamps retained by this scene for adapter-side caching.
     #[must_use]
     #[cfg(test)]

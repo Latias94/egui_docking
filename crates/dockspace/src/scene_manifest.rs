@@ -1540,15 +1540,6 @@ impl AuthoritativeSurfaceMeasurements<'_> {
         }
     }
 
-    /// Returns one exact tab intrinsic.
-    #[must_use]
-    pub fn tab_intrinsic(self, key: TabIntrinsicKey) -> Option<TabIntrinsic> {
-        match self.measurements.tab_intrinsics.get(&key) {
-            Some(Measurement::Measured(value)) => Some(*value),
-            Some(Measurement::Unavailable(_)) | None => None,
-        }
-    }
-
     /// Returns one exact tab-strip measurement.
     #[must_use]
     pub fn tab_strip(self, key: TabStripKey) -> Option<TabStripMetrics> {
@@ -2507,7 +2498,12 @@ mod tests {
 
         assert_eq!(accepted.bounds().width().to_bits(), 800.0_f64.to_bits());
         assert!(accepted.pane_minimum(keys().1).is_some());
-        assert!(accepted.tab_intrinsic(keys().2).is_some());
+        assert!(
+            accepted
+                .measurements
+                .measured_tab_intrinsic(keys().2)
+                .is_some()
+        );
         assert!(accepted.tab_strip(keys().3).is_some());
     }
 
