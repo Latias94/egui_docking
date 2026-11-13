@@ -50,6 +50,19 @@ impl DockEngine {
         Ok(())
     }
 
+    pub(super) fn validate_product_native_main_dock_back_availability(
+        &self,
+        root: RootId,
+        target_surface: SurfaceId,
+    ) -> Result<(), DockspaceActionRejection> {
+        self.validate_product_root_float_availability(root, target_surface)?;
+        let source = self
+            .native_presentation_rehome_source(root, target_surface)?
+            .ok_or(DockspaceActionRejection::DockBackUnavailable { root })?;
+        self.prepare_bound_native_main_dock_back(root, source)
+            .map(|_| ())
+    }
+
     pub(super) fn native_main_dock_back_target(
         &self,
         root: RootId,

@@ -279,14 +279,7 @@ impl DockEngine {
             match self.native_main_dock_back_target(root) {
                 Ok(Some(surface)) => {
                     return Ok(self
-                        .validate_product_root_float_availability(root, surface)
-                        .and_then(|()| {
-                            self.freeze_surface_recovery_target(surface)
-                                .map(|_| ())
-                                .ok_or(DockspaceActionRejection::PresentationUnavailable {
-                                    surface,
-                                })
-                        })
+                        .validate_product_native_main_dock_back_availability(root, surface)
                         .map(|()| self.prepare_product_action(action)));
                 }
                 Ok(None) => {}
