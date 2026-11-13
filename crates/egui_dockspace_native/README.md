@@ -7,6 +7,11 @@ adds native window creation and recovery, per-window output reporting and
 multiview input integration. The core remains the sole docking-state owner;
 your application owns pane content.
 
+Pane rearrangements in this adapter are immediate. The official egui adapter's
+configurable layout motion is not yet connected to this native driver. Native
+window movement, including the solar-system example, follows its own application
+clock and the desktop compositor.
+
 For one OS window using official egui, start with
 [`egui_dockspace`](../egui_dockspace) and its complete-output editor instead.
 

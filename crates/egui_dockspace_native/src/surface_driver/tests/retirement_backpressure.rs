@@ -10,8 +10,9 @@ use dockspace::model::{
 use dockspace::runtime::{
     DockspaceSession, HostFrameReport, NativeCloseState, NativeInputStorageLimit,
     NativeMonotonicClock, NativePointerRoster, NativeProducerStorageLimit, NativeReceiverAnswer,
-    NativeReportStorageLimit, NativeSurfacePlacement, NativeWindowFacts, NativeWindowInputState,
-    NativeWindowPresentationState, NativeWorkAreaRoster, SurfaceUnavailableReason,
+    NativeReportStorageLimit, NativeSurfaceBinding, NativeSurfacePlacement, NativeWindowFacts,
+    NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaRoster,
+    SurfaceUnavailableReason,
 };
 use eframe::egui::{self, ViewportId};
 use egui_dockspace::DockStyle;
@@ -19,6 +20,7 @@ use winit::window::WindowId;
 
 use super::super::{NativeCoordinator, NativeRuntimeState, ROOT_WINDOW_TOKEN};
 use super::{SURFACE, TestPanes};
+use crate::mailbox::HostRecord;
 use crate::{NativeStorageLimit, NativeWindowClosePolicy};
 
 const SURFACES: [SurfaceId; 5] = [
@@ -102,14 +104,10 @@ fn commit_prefix(state: &mut NativeRuntimeState<TestPanes>) -> HostFrameReport {
     report
 }
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "the service regression retains five exact Root lanes across a real reset and two bounded input commits"
-)]
-fn service_native_events_commits_retirement_prefix_before_retrying_the_remaining_root_lane() {
+fn shared_root_state(
+    context: &egui::Context,
+) -> (NativeRuntimeState<TestPanes>, Vec<NativeSurfaceBinding>) {
     let mut state = state();
-    let context = egui::Context::default();
     let original = commit_prefix(&mut state).native_bindings()[0];
     state
         .coordinator
@@ -166,13 +164,17 @@ fn service_native_events_commits_retirement_prefix_before_retrying_the_remaining
     state
         .root_placements
         .commit(&state.coordinator, state.root_surface, &report);
-    state.service_native_events(&context).unwrap();
+    state.service_native_events(context).unwrap();
     let predecessors = state
         .coordinator
         .session()
         .native_surface_bindings_for_window(original.window())
         .collect::<Vec<_>>();
     assert_eq!(predecessors.len(), 5);
+    (state, predecessors)
+}
+
+fn reset_layout(state: &mut NativeRuntimeState<TestPanes>) -> Vec<NativeSurfaceBinding> {
     let reset = state
         .coordinator
         .session()
@@ -193,7 +195,14 @@ fn service_native_events_commits_retirement_prefix_before_retrying_the_remaining
     state
         .root_placements
         .commit(&state.coordinator, state.root_surface, &report);
-    let successors = report.native_bindings().to_vec();
+    report.native_bindings().to_vec()
+}
+
+#[test]
+fn service_native_events_commits_retirement_prefix_before_retrying_the_remaining_root_lane() {
+    let context = egui::Context::default();
+    let (mut state, predecessors) = shared_root_state(&context);
+    let successors = reset_layout(&mut state);
     let bridge = state.coordinator.dispatch_bridge();
     let candidates = bridge.retirement_quiescence_candidates();
     assert_eq!(candidates.len(), predecessors.len());
@@ -206,7 +215,7 @@ fn service_native_events_commits_retirement_prefix_before_retrying_the_remaining
     let recorded = state.coordinator.session().native_input_recorded_count();
 
     // The fifth append must wait for the first four to commit inside service.
-    state.service_native_events(&context).unwrap();
+    let wake = state.service_native_events(&context).unwrap();
     assert_eq!(
         state.coordinator.session().native_input_recorded_count(),
         recorded + 4
@@ -223,8 +232,17 @@ fn service_native_events_commits_retirement_prefix_before_retrying_the_remaining
             .count(),
         1
     );
+    assert_eq!(
+        wake,
+        eframe::NativeHostWake::ServiceAfterCurrent,
+        "committing the accepted retirement prefix must schedule its capacity-blocked suffix"
+    );
 
-    state.service_native_events(&context).unwrap();
+    assert_eq!(
+        state.service_native_events(&context).unwrap(),
+        eframe::NativeHostWake::Wait,
+        "the scheduled follow-up must stop servicing after the remaining lane commits"
+    );
     assert_eq!(
         state.coordinator.session().native_input_recorded_count(),
         recorded + 5
@@ -249,5 +267,76 @@ fn service_native_events_commits_retirement_prefix_before_retrying_the_remaining
             .viewport_binding(ViewportId::ROOT)
             .is_some()
     );
+    assert!(state.error().is_none());
+}
+
+#[test]
+fn service_native_events_waits_for_an_outstanding_retirement_callback() {
+    let context = egui::Context::default();
+    let (mut state, predecessors) = shared_root_state(&context);
+    let retained = predecessors[0];
+    let bridge = state.coordinator.dispatch_bridge();
+    let command = eframe::prepare_native_viewport_pointer_passthrough(ViewportId::ROOT, false);
+    assert!(bridge.reserve_pointer_callback(
+        ViewportId::ROOT,
+        retained,
+        WindowId::from(61),
+        command.token(),
+        false,
+    ));
+    reset_layout(&mut state);
+    let recorded = state.coordinator.session().native_input_recorded_count();
+
+    assert_eq!(
+        state.service_native_events(&context).unwrap(),
+        eframe::NativeHostWake::Wait,
+        "the window-wide callback keeps its shared placements pending without polling"
+    );
+    assert_eq!(bridge.retirement_quiescence_candidates(), predecessors);
+    assert_eq!(
+        state.coordinator.session().native_input_recorded_count(),
+        recorded
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            state.service_native_events(&context).unwrap(),
+            eframe::NativeHostWake::Wait,
+            "an outstanding callback must wait for its external receipt without polling"
+        );
+        assert_eq!(
+            state.coordinator.session().native_input_recorded_count(),
+            recorded
+        );
+        assert_eq!(bridge.retirement_quiescence_candidates(), predecessors);
+    }
+
+    bridge.push_record(HostRecord::ViewportPointerPassthrough(
+        crate::input_control::NativePointerPassthroughRecord::for_test(
+            command.token(),
+            ViewportId::ROOT,
+            WindowId::from(61),
+            None,
+            false,
+            eframe::NativeViewportPointerPassthroughStatus::Applied,
+        ),
+    ));
+    let mut wake = state.service_native_events(&context).unwrap();
+    for _ in 0..SURFACES.len() {
+        match wake {
+            eframe::NativeHostWake::Wait => break,
+            eframe::NativeHostWake::ServiceAfterCurrent => {
+                wake = state.service_native_events(&context).unwrap();
+            }
+            other => panic!("callback retirement requested an unexpected wake: {other:?}"),
+        }
+    }
+    assert_eq!(wake, eframe::NativeHostWake::Wait);
+    assert!(!bridge.retirement_has_pending_work());
+    assert!(predecessors.iter().all(|&binding| {
+        !state
+            .coordinator
+            .session()
+            .recognizes_native_binding(binding)
+    }));
     assert!(state.error().is_none());
 }

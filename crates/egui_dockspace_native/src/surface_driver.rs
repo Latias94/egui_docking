@@ -523,6 +523,15 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 && !matches!(bridge.admission_dispatch(), NativeDispatch::Cancel { .. })
                 && !pending_create
             {
+                // Committing progress can free ingress capacity or the last host
+                // reference for a retirement candidate. Retry once; a candidate
+                // still waiting for external facts makes no progress and waits.
+                if progress
+                    && token.is_none_or(|token| token.viewport_id() == ViewportId::ROOT)
+                    && bridge.next_retirement_quiescence_candidate(None).is_some()
+                {
+                    return Ok(false);
+                }
                 break;
             }
             if budget.is_exhausted() || budget.remaining_records() == before {
