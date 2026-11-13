@@ -1431,12 +1431,8 @@ pub struct DockPolicySnapshot {
 }
 
 impl DockPolicySnapshot {
-    pub(crate) fn has_tab_reorder_constraints(&self) -> bool {
-        self.policy
-            .rules
-            .item_rules
-            .values()
-            .any(|rule| !rule.allows_tab_reorder())
+    pub(crate) fn has_item_rules(&self) -> bool {
+        !self.policy.rules.item_rules.is_empty()
     }
 
     /// Returns the exact revision carried by all proofs derived from this snapshot.

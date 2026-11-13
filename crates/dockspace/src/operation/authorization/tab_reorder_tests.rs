@@ -132,3 +132,41 @@ fn reorder_constraints_allow_undocking_and_new_items_before_the_barrier() {
             .collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn unrelated_and_neutral_rules_do_not_restrict_the_current_tabs_group() {
+    let (workspace, _, tabs, _) = fixture();
+    let mut policy = DockPolicy::default();
+    for id in 1..=4096 {
+        policy.set_item_rule(ItemId::new(id), DockItemRule::new());
+    }
+    let mut barrier = DockItemRule::new();
+    barrier.set_allow_tab_reorder(false);
+    // This barrier is open in another group, rather than being a stale rule.
+    policy.set_item_rule(ItemId::new(6), barrier);
+    let policy = policy.snapshot(PolicyRevision::default());
+    for from in 1..=5 {
+        let source = workspace
+            .capture_item_source(ROOT, tabs, ItemId::new(from))
+            .unwrap();
+        let payload = MovePayload::Item(source);
+        let eligibility =
+            DropCommandEligibility::new_validated(&workspace, &policy, &payload).unwrap();
+        for index in 0..=5 {
+            let target = DockTarget::TabGap {
+                target: workspace.capture_tab_target(ROOT, tabs).unwrap(),
+                index,
+            };
+            eligibility.check_validated_target(&target).unwrap();
+            prepare_transaction(
+                &workspace,
+                &policy,
+                &[WorkspaceCommand::Move {
+                    payload: payload.clone(),
+                    target,
+                }],
+            )
+            .unwrap();
+        }
+    }
+}

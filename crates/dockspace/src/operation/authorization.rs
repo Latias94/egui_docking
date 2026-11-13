@@ -188,6 +188,7 @@ pub(crate) struct DropCommandEligibility<'a> {
     payload: &'a MovePayload,
     retained_facts: DockPayloadPolicyFacts,
     undocked_facts: DockPayloadPolicyFacts,
+    has_reorder_barriers: bool,
 }
 
 impl<'a> DropCommandEligibility<'a> {
@@ -223,12 +224,28 @@ impl<'a> DropCommandEligibility<'a> {
             source.presentation(),
             true,
         );
+        // All targets share one immutable source. Unrelated item rules must
+        // not be rescanned for every insertion gap in its tab strip.
+        let has_reorder_barriers = if policy.has_item_rules()
+            && let MovePayload::Item(source) = payload
+            && let Some(Node::Tabs { items, .. }) = workspace.storage.nodes.get(source.tabs())
+        {
+            items.iter().any(|item| {
+                policy
+                    .policy()
+                    .item_rule(*item)
+                    .is_some_and(|rule| !rule.allows_tab_reorder())
+            })
+        } else {
+            false
+        };
         Ok(Self {
             workspace,
             policy,
             payload,
             retained_facts,
             undocked_facts,
+            has_reorder_barriers,
         })
     }
 
@@ -252,7 +269,13 @@ impl<'a> DropCommandEligibility<'a> {
     }
 
     fn check_validated_target(&self, target: &DockTarget) -> Result<(), CommandError> {
-        authorize_move_reorder(self.workspace, self.policy, self.payload, target)?;
+        if self.has_reorder_barriers
+            && let MovePayload::Item(source) = self.payload
+            && let DockTarget::TabGap { target, index } = target
+            && source.tabs() == target.tabs()
+        {
+            authorize_reorder_barriers(self.workspace, self.policy, source, *index)?;
+        }
         let payload = if move_undocks_source(self.workspace, self.payload, target) {
             &self.undocked_facts
         } else {
@@ -282,7 +305,9 @@ fn authorize_reorder(
         index: insertion_index,
     };
     authorize_tab_bar(policy, &target)?;
-    authorize_reorder_barriers(workspace, policy, source, insertion_index)?;
+    if policy.has_item_rules() {
+        authorize_reorder_barriers(workspace, policy, source, insertion_index)?;
+    }
     let payload = move_payload_policy_facts(workspace, &MovePayload::Item(source.clone()), false)?;
     authorize_drop(policy, DockDropOperation::TabMerge, &payload, &target)
 }
@@ -351,6 +376,7 @@ fn authorize_move_reorder(
     if let MovePayload::Item(source) = payload
         && let DockTarget::TabGap { target, index } = target
         && source.tabs() == target.tabs()
+        && policy.has_item_rules()
     {
         authorize_reorder_barriers(workspace, policy, source, *index)?;
     }
@@ -364,9 +390,6 @@ fn authorize_reorder_barriers(
     source: &ItemSource,
     insertion_index: usize,
 ) -> Result<(), CommandError> {
-    if !policy.has_tab_reorder_constraints() {
-        return Ok(());
-    }
     let tabs = source.tabs();
     let Some(Node::Tabs { items, .. }) = workspace.storage.nodes.get(tabs) else {
         return Err(CommandError::NodeIsNotTabs { node: tabs });
