@@ -45,8 +45,11 @@ fn main() -> eframe::Result {
     let mut policy = DockPolicy::default();
     policy.set_allow_native_surfaces(true);
     policy.set_close_capability(CloseCapability::DeferredAllowed);
-    let panes = ExamplePanes::new();
     let command_smoke = std::env::args().any(|argument| argument == "--command-smoke");
+    let mut panes = ExamplePanes::new();
+    // The command journey verifies data retention without accepting desktop edits.
+    // The interactive example and OS-input journey keep their editable content.
+    panes.text_editable = !command_smoke;
     let default_layout = if command_smoke {
         command_smoke::layout()
     } else {
@@ -623,11 +626,13 @@ impl ExamplePane {
 
 struct ExamplePanes {
     panes: BTreeMap<ItemId, ExamplePane>,
+    text_editable: bool,
 }
 
 impl ExamplePanes {
     fn new() -> Self {
         Self {
+            text_editable: true,
             panes: [
                 (OUTLINE, "pane/outline", "Outline", "Scene\n  Camera\n  Directional light\n  Player\n    Mesh\n    Controller"),
                 (EDITOR, "pane/document", "Document", "fn update(scene: &mut Scene) {\n    scene.player.translate([1.0, 0.0, 0.0]);\n}\n"),
@@ -790,6 +795,7 @@ impl PaneView for ExamplePanes {
                 ui.available_size(),
                 egui::TextEdit::multiline(&mut pane.text)
                     .id(pane_focus_id(item))
+                    .interactive(self.text_editable)
                     .desired_width(f32::INFINITY)
                     .font(egui::TextStyle::Monospace),
             );
@@ -809,7 +815,9 @@ impl PaneView for ExamplePanes {
     fn focus_target(&self, item: ItemId) -> Option<egui::Id> {
         self.panes
             .get(&item)
-            .filter(|pane| pane.loaded && ![PREVIEW, CONSOLE, PROFILER].contains(&item))
+            .filter(|pane| {
+                self.text_editable && pane.loaded && ![PREVIEW, CONSOLE, PROFILER].contains(&item)
+            })
             .map(|_| pane_focus_id(item))
     }
 

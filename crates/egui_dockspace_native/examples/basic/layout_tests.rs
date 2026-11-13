@@ -1,5 +1,26 @@
 use super::*;
 
+#[test]
+fn command_journey_read_only_content_ignores_unrelated_desktop_typing() {
+    for editable in [false, true] {
+        let context = egui::Context::default();
+        let mut panes = ExamplePanes::new();
+        panes.text_editable = editable;
+        let original = panes.panes[&EDITOR].text.clone();
+        let input = egui::RawInput {
+            events: vec![egui::Event::Text("DESKTOP_INPUT".to_owned())],
+            ..Default::default()
+        };
+        let mut output = context.run_ui(input, |ui| {
+            ui.memory_mut(|memory| memory.request_focus(pane_focus_id(EDITOR)));
+            panes.ui(EDITOR, ui);
+        });
+        output.textures_delta.clear();
+        assert_eq!(panes.panes[&EDITOR].text != original, editable);
+        assert_eq!(panes.focus_target(EDITOR).is_some(), editable);
+    }
+}
+
 fn app(layout: DockspaceLayout, host: SurfaceId) -> NativeExampleApp {
     let session = DockspaceSession::from_layout(layout.clone(), DockPolicy::default()).unwrap();
     app_with_session(layout, host, session)
