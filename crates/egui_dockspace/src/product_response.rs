@@ -6,7 +6,8 @@ use dockspace::model::{
 pub use dockspace::runtime::{
     DockspaceCloseItem, DockspaceCloseOutcome as DockspaceAppliedClose, DockspaceClosePlan,
     DockspaceCloseRejection as DockspaceCloseApplicationRejection, DockspaceCloseRequestRejection,
-    DockspaceCloseResolution, DockspaceEvent, DockspaceManipulationFeedback,
+    DockspaceCloseResolution, DockspaceEvent, DockspaceLayoutChange, DockspaceManipulationFeedback,
+    DockspaceNotification,
 };
 use dockspace::runtime::{
     DockspacePresentationTransitionResult, DockspaceTouchEvent, HostCloseRequestOrigin,
@@ -18,10 +19,9 @@ use dockspace::runtime::{
 pub struct DockspaceMutation {
     before: WorkspaceVersion,
     after: WorkspaceVersion,
-    workspace_changed: bool,
     published_state_changed: bool,
     affected_surfaces: Vec<SurfaceId>,
-    events: Vec<DockspaceEvent>,
+    notification: DockspaceNotification,
     manipulation_feedback: Vec<DockspaceManipulationFeedback>,
 }
 
@@ -30,10 +30,9 @@ impl DockspaceMutation {
         Self {
             before: version,
             after: version,
-            workspace_changed: false,
             published_state_changed: false,
             affected_surfaces: Vec::new(),
-            events: Vec::new(),
+            notification: DockspaceNotification::default(),
             manipulation_feedback: Vec::new(),
         }
     }
@@ -42,10 +41,9 @@ impl DockspaceMutation {
         Self {
             before: report.before(),
             after: report.after(),
-            workspace_changed: report.workspace_changed(),
             published_state_changed: report.published_state_changed(),
             affected_surfaces: report.affected_surfaces().to_vec(),
-            events: report.events().to_vec(),
+            notification: report.notification().clone(),
             manipulation_feedback: report.manipulation_feedback().to_vec(),
         }
     }
@@ -75,7 +73,7 @@ impl DockspaceMutation {
     /// Returns whether durable workspace state changed.
     #[must_use]
     pub const fn workspace_changed(&self) -> bool {
-        self.workspace_changed
+        self.notification.layout_change().is_some()
     }
 
     /// Returns whether any published scene or interaction state changed.
@@ -98,7 +96,22 @@ impl DockspaceMutation {
     /// events. Rereading or cloning this value preserves event identities.
     #[must_use]
     pub fn events(&self) -> &[DockspaceEvent] {
-        &self.events
+        self.notification.events()
+    }
+
+    /// Returns the shared core notification for this successful publication.
+    #[must_use]
+    pub const fn notification(&self) -> &DockspaceNotification {
+        &self.notification
+    }
+
+    /// Returns one summary for all durable docking-layout changes in this call.
+    ///
+    /// Includes split resizing even when no detailed lifecycle event is emitted.
+    /// Applications can debounce layout persistence from this value.
+    #[must_use]
+    pub const fn layout_change(&self) -> Option<DockspaceLayoutChange> {
+        self.notification.layout_change()
     }
 
     /// Returns manipulation feedback committed by this exact publication.

@@ -2632,9 +2632,22 @@ fn exact_surface_splitter_adjustment_uses_the_local_ready_candidate() {
     frame
         .measure_surface(SURFACE, metrics())
         .expect("the adjusted surface measures");
-    frame.commit().expect("the adjustment frame commits");
+    let report = frame.commit().expect("the adjustment frame commits");
 
     assert!(split_weights(&session)[0] > before[0]);
+    assert!(report.events().is_empty());
+    let change = report
+        .layout_change()
+        .expect("split resizing is a layout change");
+    assert_eq!(change.before(), report.before());
+    assert_eq!(change.after(), report.after());
+    assert_ne!(change.before(), change.after());
+    assert!(!report.notification().is_empty());
+
+    let mut idle = session.begin_host_frame().unwrap();
+    idle.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .unwrap();
+    assert!(idle.commit().unwrap().notification().is_empty());
 }
 
 #[test]

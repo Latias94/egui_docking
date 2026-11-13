@@ -10,7 +10,7 @@ use egui::{Context, Event, FullOutput, PointerButton, Pos2, RawInput, Rect, Ui, 
 use crate::{
     CloseDecision, DeferredCloseDecision, DockStyle, Dockspace, DockspaceAppliedClose,
     DockspaceCloseOutcome, DockspaceCloseRequestStatus, DockspaceCloseResolution, DockspaceEvent,
-    DockspaceEventKind, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
+    DockspaceEventKind, DockspaceLayout, DockspaceNode, DockspaceNotification, DockspaceRootLayout,
     DockspaceSurfaceLayout, ItemId, PaneResponse, PaneView, RootId, SurfaceId,
     SurfacePresentationResult, Tab, TabVisuals,
 };
@@ -47,6 +47,7 @@ struct Harness {
     nodes: Vec<(NodeId, Node)>,
     frame: u32,
     passes: usize,
+    notification: DockspaceNotification,
 }
 
 fn layout() -> DockspaceLayout {
@@ -74,6 +75,7 @@ impl Harness {
             nodes: Vec::new(),
             frame: 0,
             passes: 0,
+            notification: DockspaceNotification::default(),
         };
         assert!(harness.settle().is_empty());
         harness
@@ -97,6 +99,11 @@ impl Harness {
             )
             .unwrap();
         let events = response.mutation().events().to_vec();
+        self.notification = response.mutation().notification().clone();
+        assert_eq!(
+            self.notification.layout_change().is_some(),
+            response.mutation().workspace_changed(),
+        );
         let (output, receipt) = output.into_parts();
         self.nodes = output
             .platform_output
@@ -193,6 +200,7 @@ fn discarded_encoding_passes_still_return_one_selection_event() {
     });
     harness.context.add_plugin(LateDiscard { remaining: 2 });
     let events = harness.step(vec![Event::PointerMoved(position), button(position, true)]);
+    assert!(harness.notification.layout_change().is_some());
     assert_eq!(harness.passes, 3);
     assert_eq!(selections(&events, SECOND), 1);
     assert!(harness.dock.view().item(SECOND).unwrap().is_selected());
@@ -314,6 +322,9 @@ fn deferred_close_and_programmatic_noops_share_the_mutation_event_api() {
 fn reset_returns_a_single_replacement_event_without_replaying_it_in_show() {
     let mut harness = Harness::new(DockStyle::default());
     let mutation = harness.dock.reset_layout(layout()).unwrap();
+    let change = mutation.layout_change().unwrap();
+    assert_eq!(change.before(), mutation.before());
+    assert_eq!(change.after(), mutation.after());
     assert_eq!(mutation.events().len(), 1);
     assert_eq!(
         mutation.events()[0].kind(),

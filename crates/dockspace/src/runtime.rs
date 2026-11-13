@@ -21,6 +21,7 @@ mod manipulation_feedback;
 mod measurement;
 mod native;
 mod native_effect;
+mod notification;
 mod paint;
 #[cfg(feature = "serde")]
 mod persistence;
@@ -44,6 +45,7 @@ pub use manipulation_feedback::{
     DockspaceManipulationPendingReason, DockspaceManipulationRejection,
     DockspaceManipulationStatus,
 };
+pub use notification::{DockspaceLayoutChange, DockspaceNotification};
 pub use pointer_continuation::DockspacePointerContinuation;
 pub use session::DockspaceSession;
 pub use touch::{DockspaceContextMenuRequest, DockspaceTouchEvent};
@@ -614,12 +616,11 @@ pub enum DockspacePresentationTransitionResult {
 pub struct HostFrameReport {
     before: WorkspaceVersion,
     after: WorkspaceVersion,
-    workspace_changed: bool,
     published_state_changed: bool,
     affected_surfaces: Vec<SurfaceId>,
     surface_commits: Vec<HostSurfaceCommit>,
     inputs: Vec<HostInputOutcome>,
-    events: Vec<DockspaceEvent>,
+    notification: DockspaceNotification,
     submitted_actions: Vec<(DockspaceSubmittedAction, usize)>,
     presentation_transitions: Vec<DockspacePresentationTransition>,
     manipulation_feedback: Vec<DockspaceManipulationFeedback>,
@@ -656,10 +657,10 @@ impl HostFrameReport {
         self.after
     }
 
-    /// Returns whether the durable workspace topology changed.
+    /// Returns whether the durable docking layout changed, including selection and ratios.
     #[must_use]
     pub const fn workspace_changed(&self) -> bool {
-        self.workspace_changed
+        self.notification.layout_change().is_some()
     }
 
     /// Returns whether any published scene or interaction state changed.
@@ -699,7 +700,22 @@ impl HostFrameReport {
     /// its unpublished host frame produces no committed notifications.
     #[must_use]
     pub fn events(&self) -> &[DockspaceEvent] {
-        &self.events
+        self.notification.events()
+    }
+
+    /// Returns one application notification for this successful publication.
+    ///
+    /// Its layout-change summary also covers durable changes without detailed
+    /// lifecycle events, such as resizing a split. Abandoned frames publish none.
+    #[must_use]
+    pub const fn notification(&self) -> &DockspaceNotification {
+        &self.notification
+    }
+
+    /// Returns the complete frame's durable docking-layout change, when present.
+    #[must_use]
+    pub const fn layout_change(&self) -> Option<DockspaceLayoutChange> {
+        self.notification.layout_change()
     }
 
     /// Returns the exact reduced outcome for one action submitted through this frame.

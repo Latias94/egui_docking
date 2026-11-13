@@ -64,6 +64,15 @@ A successful submission means the candidate accepted the input; policy or
 availability can still reject the product operation at commit. The identity
 belongs to that frame attempt and does not resolve against a later report.
 
+After commit, `report.notification()` exposes one application notification:
+`layout_change()` summarizes all durable layout edits, while `events()` gives
+ordered selection, membership, placement and close details. Split ratios and
+contained bounds can change without a detailed event, so use the summary for
+debounced persistence. Rejected/no-op actions, pending close decisions, pure
+rendering and unpublished frames do not dirty the layout. OS-window geometry
+remains a separate host observation. Hosts own notification delivery and storage;
+core retains no notification history.
+
 To move a complete tabs leaf, capture it once with
 `session.capture_tabs_group(DockAnchor::Item(item))`, then use
 `prepare_dock_tabs` or `prepare_float_tabs`. The resulting action uses one atomic

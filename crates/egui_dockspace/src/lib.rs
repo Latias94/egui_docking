@@ -57,10 +57,11 @@ pub use dockspace::runtime::{
     DockspaceCloseInertReason, DockspaceCloseOutcome as DockspaceAppliedClose, DockspaceClosePhase,
     DockspaceCloseRejection as DockspaceCloseApplicationRejection, DockspaceCloseRequestRejection,
     DockspaceCloseResolution, DockspaceContextMenuRequest, DockspaceEvent, DockspaceEventId,
-    DockspaceEventKind, DockspaceFocusTarget, DockspaceManipulationCancelReason,
-    DockspaceManipulationDelivery, DockspaceManipulationFeedback, DockspaceManipulationFeedbackId,
-    DockspaceManipulationId, DockspaceManipulationPendingReason, DockspaceManipulationRejection,
-    DockspaceManipulationStatus, DockspaceTouchEvent, PreparedCloseRequest,
+    DockspaceEventKind, DockspaceFocusTarget, DockspaceLayoutChange,
+    DockspaceManipulationCancelReason, DockspaceManipulationDelivery,
+    DockspaceManipulationFeedback, DockspaceManipulationFeedbackId, DockspaceManipulationId,
+    DockspaceManipulationPendingReason, DockspaceManipulationRejection,
+    DockspaceManipulationStatus, DockspaceNotification, DockspaceTouchEvent, PreparedCloseRequest,
 };
 #[cfg(feature = "serde")]
 pub use dockspace::runtime::{

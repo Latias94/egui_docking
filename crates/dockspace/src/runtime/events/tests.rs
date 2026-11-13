@@ -53,7 +53,7 @@ fn present_surface(session: &mut DockspaceSession) {
             .unwrap(),
         )
         .unwrap();
-    assert!(commit(measure).events().is_empty());
+    assert!(commit(measure).notification().is_empty());
 
     let mut paint = session.begin_host_frame().unwrap();
     let receipt = paint
@@ -64,7 +64,7 @@ fn present_surface(session: &mut DockspaceSession) {
         .unwrap();
     paint.confirm_surface_painted(receipt).unwrap();
     let mut report = commit(paint);
-    assert!(report.events().is_empty());
+    assert!(report.notification().is_empty());
     let outputs = report.take_painted_outputs();
     assert_eq!(outputs.len(), 1);
     for output in outputs {
@@ -74,7 +74,7 @@ fn present_surface(session: &mut DockspaceSession) {
     }
     assert!(
         commit(session.begin_host_frame().unwrap())
-            .events()
+            .notification()
             .is_empty()
     );
 }
@@ -89,6 +89,10 @@ fn events_keep_intermediate_versions_order_and_session_scoped_identity() {
             .open_item_current(THIRD, DockPlacement::After(SECOND))
             .unwrap();
         let report = commit(frame);
+        let change = report.layout_change().unwrap();
+        assert_eq!(change.before(), report.before());
+        assert_eq!(change.after(), report.after());
+        assert_eq!(report.notification().events(), report.events());
         assert_eq!(
             report.events()[0].kind(),
             &DockspaceEventKind::SelectionCommitted { item: SECOND }
@@ -155,6 +159,7 @@ fn unchanged_rejected_stale_and_abandoned_actions_do_not_replay_changes() {
     frame.submit_prepared_action(stale).unwrap();
     let report = commit(frame);
     assert!(report.events().is_empty(), "{:?}", report.events());
+    assert!(report.notification().is_empty());
     assert!(
         report
             .inputs()
@@ -182,6 +187,10 @@ fn terminal_layout_replacement_hides_its_superseded_input_prefix() {
     assert_eq!(report.events().len(), 1);
     assert_eq!(report.events()[0].kind(), &DockspaceEventKind::LayoutReset);
     assert_eq!(report.events()[0].version(), report.after());
+    let change = report.layout_change().unwrap();
+    assert_eq!(change.before(), report.before());
+    assert_eq!(change.after(), report.after());
+    assert!(!change.before().is_same_epoch(change.after()));
     assert!(session.view().item(SECOND).is_none());
     assert!(session.view().item(THIRD).is_some());
 }

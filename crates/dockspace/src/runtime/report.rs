@@ -420,12 +420,11 @@ impl HostFrameReport {
         Self {
             before: transition.before(),
             after: transition.after(),
-            workspace_changed: transition.changed(),
             published_state_changed: transition.published_state_changed(),
             affected_surfaces,
             surface_commits,
             inputs,
-            events: super::events::committed_events(transition),
+            notification: super::DockspaceNotification::from_transition(transition),
             submitted_actions,
             presentation_transitions,
             manipulation_feedback,
