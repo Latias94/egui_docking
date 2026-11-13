@@ -11,6 +11,8 @@ use egui_dockspace::{
     TabBar, TabBarId, TabBarLayout, TabBarSlot, TabClose, TabVisuals,
 };
 
+#[cfg(feature = "motion")]
+mod motion;
 mod tabs;
 
 pub(super) const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -95,6 +97,9 @@ pub(super) fn run_editor(
     restore_layout: &mut bool,
 ) -> Result<(DockspaceOutput, Option<DockspaceResponse>), DockspaceError> {
     let mut custom_tabs = panes.custom_tabs;
+    #[cfg(feature = "motion")]
+    let (mut motion_settings, mut motion_preference) =
+        (*dockspace.motion_settings(), dockspace.motion_preference());
     if dockspace.view().surfaces().next().is_none() {
         let output = egui_dockspace::run_ui(context, input, |ui| {
             toolbar(ui, restore_layout, &mut custom_tabs);
@@ -110,9 +115,21 @@ pub(super) fn run_editor(
     let result = dockspace
         .run_single_surface_with_ui(context, input, SURFACE, panes, |ui| {
             toolbar(ui, restore_layout, &mut custom_tabs);
+            #[cfg(feature = "motion")]
+            motion::controls(ui, &mut motion_settings, &mut motion_preference);
         })
         .map(|(output, response)| (output, Some(response)));
     panes.custom_tabs = custom_tabs;
+    #[cfg(feature = "motion")]
+    {
+        if *dockspace.motion_settings() != motion_settings
+            || dockspace.motion_preference() != motion_preference
+        {
+            context.request_repaint();
+        }
+        dockspace.set_motion_settings(motion_settings);
+        dockspace.set_motion_preference(motion_preference);
+    }
     result
 }
 

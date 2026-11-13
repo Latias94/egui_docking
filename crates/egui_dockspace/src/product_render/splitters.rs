@@ -16,6 +16,9 @@ pub(crate) fn paint_splitter(
     splitter: dockspace::runtime::SplitterPaintRecord<'_>,
     paint: SurfacePaintDisposition,
 ) {
+    if !context.plan.partition_available(splitter.root()) {
+        return;
+    }
     let Some(draw) = egui_rect(splitter.draw_bounds()) else {
         return;
     };
@@ -91,6 +94,9 @@ pub(crate) fn paint_junction(
     junction: SplitterJunctionPaintRecord<'_>,
     paint: SurfacePaintDisposition,
 ) {
+    if !context.plan.partition_available(junction.root()) {
+        return;
+    }
     let Some(hit) = egui_rect(junction.hit_bounds()) else {
         return;
     };

@@ -17,6 +17,7 @@ winit = ["dep:dockspace_winit", "dep:egui-winit", "dep:winit"]
 wgpu = ["winit", "dep:egui-wgpu", "dep:pollster", "egui/default_fonts"]
 accesskit = ["winit", "egui-winit/accesskit"]
 serde = ["dockspace/serde"]
+motion = ["dockspace/motion"]
 # Internal seam consumed by the unpublished fork-backed native adapter. This
 # deliberately exposes only sessionless paint/measurement helpers; it does not
 # create or own a docking session.
@@ -81,6 +82,9 @@ name = "data_drag"
 
 [[test]]
 name = "auto_hide_tabs"
+
+[[test]]
+name = "content_identity"
 
 [lints]
 workspace = true

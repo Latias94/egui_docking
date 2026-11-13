@@ -27,6 +27,59 @@ Drag tabs onto a pane to merge or split it. To float a tab, hold **Shift** while
 dragging and release inside the window. Shift temporarily disables docking. Drag a
 floating group's dotted title grip onto a docking guide to dock the group again.
 
+To try interruptible layout and drop-preview motion:
+
+```sh
+cargo run -p egui_dockspace --example workbench --features wgpu,motion --locked
+```
+
+The toolbar lets you disable motion, request reduced motion, or tune a spring
+response or tween duration and curve. Dividers and drag proxies follow the
+pointer directly. New panes appear at their destination; surviving panes in
+the same root move from their previous geometry. Native OS window movement and
+cross-window content flights are outside this first delivery.
+
+## Configure motion
+
+The optional `motion` feature is off by default. Its settings are independent
+of `DockStyle` and do not invalidate layout measurements:
+
+```rust,ignore
+use std::time::Duration;
+use egui_dockspace::motion::{Curve, MotionPreference, MotionSettings, Transition};
+
+dockspace.set_motion_settings(MotionSettings {
+    layout: Transition::Tween {
+        duration: Duration::from_millis(200),
+        curve: Curve::EaseInOut,
+    },
+    ..Default::default()
+});
+dockspace.set_motion_preference(MotionPreference::Full);
+```
+
+Supply your application's observed system preference. egui has no portable OS
+reduced-motion fact, so the adapter starts with `Unknown`; the default settings
+treat that as reduced motion. Set `unknown_prefers_reduced_motion = false` only
+when your application deliberately chooses that fallback, as the workbench does.
+An egui `animation_time` of zero also disables geometry motion.
+
+`MotionMode::Off`, `Transition::Instant`, and zero timing settle immediately.
+`CriticalSpring { response }` preserves position and velocity on unconstrained
+retargeting; response is its natural period, not an exact completion deadline.
+`Tween { duration, curve }` has a finite duration and preserves position when
+retargeted. `Curve::Bezier(CubicBezier::new(...)?)` accepts validated custom curves.
+`drop_preview` and `pointer_focus` are separately configurable; spatial focus
+motion defaults to off, and keyboard focus remains immediate.
+
+Custom `PaneView::drop_preview_ui` painters receive both `DropPreview::rect`
+(the final candidate area) and `presentation_rect` (the passive animated overlay).
+The default painter uses the latter without changing docking targets or hits.
+Content widget identity follows the item within the same live workspace and
+egui Context, preserving editor selection and scroll state when it changes groups.
+Workspace replacement starts a new content namespace. Separate egui Contexts
+still require application-owned state transfer.
+
 ## Use winit
 
 For a small runnable editor with full drag docking:

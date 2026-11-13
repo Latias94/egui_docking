@@ -109,6 +109,8 @@ pub struct DropPreview {
     pub target_rect: Rect,
     /// Area occupied by the payload in the resulting candidate layout.
     pub rect: Rect,
+    /// Animated decoration bounds; `rect` remains the canonical candidate area.
+    pub presentation_rect: Rect,
     /// The candidate layout already draws the resulting area itself.
     ///
     /// When true, [`Self::paint_result`] skips its overlay to avoid drawing it twice.
@@ -153,7 +155,7 @@ impl DropPreview {
     pub fn paint_result(&self, ui: &Ui) {
         if !self.layout_projected {
             ui.painter().rect(
-                self.rect,
+                self.presentation_rect,
                 self.corner_radius,
                 self.fill,
                 self.stroke,

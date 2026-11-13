@@ -60,9 +60,15 @@ pub(crate) fn paint_pane(
     let Some(content_rect) = inset_ui_rect(pane_rect) else {
         return;
     };
+    // Content follows the item when docking changes its slot or parent Ui.
+    // The pane body above retains the slot's separate receiver identity.
     let mut child = context.ui.new_child(
         UiBuilder::new()
-            .id_salt((context.instance_id, "pane", pane.visual_id()))
+            .scope_id(
+                context
+                    .instance_id
+                    .with(("pane-content", context.plan.content_identity(item))),
+            )
             .max_rect(content_rect)
             .layout(Layout::top_down(Align::Min)),
     );
@@ -397,6 +403,9 @@ pub(crate) fn paint_tab(
                 ),
                 visible.right_bottom(),
             );
+            #[cfg(feature = "motion")]
+            let underline =
+                super::motion::sample(context, super::motion::Effect::PointerFocus, underline);
             context
                 .ui
                 .painter()

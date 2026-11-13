@@ -371,6 +371,8 @@ impl Dockspace {
                         pass_count += 1;
                         let sequence = self.ui_actions.enter_run(ui)?;
                         run_sequence = Some(sequence);
+                        #[cfg(feature = "motion")]
+                        let motion = self.motion_frame(ui);
                         let mut frame = self
                             .session
                             .resume_update(
@@ -385,6 +387,10 @@ impl Dockspace {
                                 .map_err(DockspaceError::from_detail)?;
                         }
                         if first {
+                            #[cfg(feature = "motion")]
+                            frame
+                                .set_motion(motion)
+                                .map_err(DockspaceError::from_detail)?;
                             let dock_rect = ui.available_rect_before_wrap();
                             let actual_focus = frame.view().surface(surface).map(|view| {
                                 crate::product_focus::sample_host_focus(
@@ -619,6 +625,16 @@ impl Dockspace {
         );
         let needs_repaint = pass.defer_measurement
             || pass.focus_needs_repaint
+            || {
+                #[cfg(feature = "motion")]
+                {
+                    pass.had_plan && self.session.surface_motion_is_active(surface)
+                }
+                #[cfg(not(feature = "motion"))]
+                {
+                    false
+                }
+            }
             || self
                 .session
                 .pointer_continuation_awaits_presentation(surface);

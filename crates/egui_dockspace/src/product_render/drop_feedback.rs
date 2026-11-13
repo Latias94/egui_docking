@@ -80,6 +80,16 @@ pub(super) fn paint(
         target,
         target_rect,
         rect,
+        presentation_rect: {
+            #[cfg(feature = "motion")]
+            {
+                super::motion::sample(context, super::motion::Effect::Drop, rect)
+            }
+            #[cfg(not(feature = "motion"))]
+            {
+                rect
+            }
+        },
         layout_projected: preview.is_layout_projected(),
         fill: context.visuals.drop_fill,
         stroke: Stroke::new(1.0, context.visuals.drop_border_color),

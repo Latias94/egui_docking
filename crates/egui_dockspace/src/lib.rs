@@ -52,6 +52,8 @@ pub use dockspace::model::{
     DockspaceTabsView, DockspaceView, FloatingPresentationId, InvalidDockFraction, ItemId,
     PreparedDockAction, PreparedTabsGroup, RootId, SurfaceId, WorkspaceVersion,
 };
+#[cfg(feature = "motion")]
+pub use dockspace::motion;
 pub use dockspace::runtime::SurfacePresentationResult;
 pub use dockspace::runtime::{
     DockspaceCloseInertReason, DockspaceCloseOutcome as DockspaceAppliedClose, DockspaceClosePhase,

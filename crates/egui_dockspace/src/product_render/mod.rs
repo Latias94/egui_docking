@@ -14,6 +14,8 @@ mod drop_feedback;
 mod geometry;
 mod guides;
 mod measurement;
+#[cfg(feature = "motion")]
+mod motion;
 mod presentation_menu;
 mod splitters;
 mod tab_chrome;
@@ -134,6 +136,8 @@ struct RenderContext<'ui, 'plan, 'scroll> {
     defer_measurement: &'ui mut bool,
     paint_audit: Option<&'ui mut crate::output_proof::PaintAudit>,
     pointer_authority: PointerActionAuthority,
+    #[cfg(feature = "motion")]
+    decoration_seen: [bool; 2],
 }
 
 impl RenderContext<'_, '_, '_> {
@@ -422,7 +426,11 @@ pub(crate) fn paint_surface(
             defer_measurement: &mut defer_measurement,
             paint_audit: paint_audit.as_mut(),
             pointer_authority,
+            #[cfg(feature = "motion")]
+            decoration_seen: [false; 2],
         };
+        #[cfg(feature = "motion")]
+        motion::begin(&context);
         let completed_program = context
             .plan
             .execute_surface_program(|step| -> Result<(), DockspaceRuntimeError> {
@@ -535,6 +543,8 @@ pub(crate) fn paint_surface(
                         }
                     }
                     SurfacePaintProgramStep::SurfaceEnd { semantic_output } => {
+                        #[cfg(feature = "motion")]
+                        motion::finish(&mut context);
                         terminal_semantic_output = Some(semantic_output);
                     }
                 }

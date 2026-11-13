@@ -40,6 +40,10 @@ use crate::style::DockStyle;
 #[path = "product_owned_run.rs"]
 mod owned_run;
 
+#[cfg(feature = "motion")]
+#[path = "product_motion.rs"]
+mod motion;
+
 #[cfg(test)]
 #[path = "product_chrome_tests.rs"]
 mod chrome_tests;
@@ -54,6 +58,10 @@ pub struct Dockspace {
     pending_focus: crate::product_focus::PendingFocusObservations,
     pointer: crate::product_pointer::ProductPointer,
     ui_actions: owned_run::UiActionQueue,
+    #[cfg(feature = "motion")]
+    motion_settings: dockspace::motion::MotionSettings,
+    #[cfg(feature = "motion")]
+    motion_preference: dockspace::motion::MotionPreference,
     #[cfg(test)]
     drop_target_observations: Vec<product_render::RegisteredDropTargetObservation>,
 }
@@ -74,6 +82,10 @@ impl Dockspace {
             pending_focus: crate::product_focus::PendingFocusObservations::default(),
             pointer: crate::product_pointer::ProductPointer::default(),
             ui_actions: owned_run::UiActionQueue::default(),
+            #[cfg(feature = "motion")]
+            motion_settings: dockspace::motion::MotionSettings::default(),
+            #[cfg(feature = "motion")]
+            motion_preference: dockspace::motion::MotionPreference::Unknown,
             #[cfg(test)]
             drop_target_observations: Vec::new(),
         }
@@ -895,11 +907,18 @@ impl Dockspace {
         let mut pointer_receivers = Vec::new();
         let mut focus_bindings = Vec::new();
         let mut had_plan = false;
+        let mut output_backpressured = false;
         let mut proof = None;
         let result = (|| -> Result<HostFrameReport, DockspaceError> {
+            #[cfg(feature = "motion")]
+            let motion = self.motion_frame(ui);
             let mut frame = self
                 .session
                 .begin_host_frame()
+                .map_err(DockspaceError::from_detail)?;
+            #[cfg(feature = "motion")]
+            frame
+                .set_motion(motion)
                 .map_err(DockspaceError::from_detail)?;
             let actual_focus = frame.view().surface(surface).map(|view| {
                 crate::product_focus::sample_host_focus(
@@ -951,6 +970,7 @@ impl Dockspace {
                 SurfaceWork::Deferred(SurfaceWorkDeferred::OutputCapacity) => (false, true),
             };
             let mut resources = product_render::PaintResources::default();
+            output_backpressured = backpressured;
             if measure {
                 missing.extend(product_render::measure_surface(
                     &mut frame,
@@ -1079,6 +1099,16 @@ impl Dockspace {
         let continuation_awaits_presentation = self
             .session
             .pointer_continuation_awaits_presentation(surface);
+        let motion_active = {
+            #[cfg(feature = "motion")]
+            {
+                had_plan && self.session.surface_motion_is_active(surface)
+            }
+            #[cfg(not(feature = "motion"))]
+            {
+                false
+            }
+        };
         let settlement_staged = settlement_claim.is_some_and(|claim| {
             claim.stage(ProductPassSettlementBatch {
                 emission_incomplete: had_plan && output.is_none(),
@@ -1086,7 +1116,9 @@ impl Dockspace {
                 proof,
                 pane_focus_observation,
                 pane_focus_pending,
-                needs_repaint: needs_presentation_settlement || continuation_awaits_presentation,
+                needs_repaint: needs_presentation_settlement
+                    || continuation_awaits_presentation
+                    || motion_active,
             })
         });
         let presentation_settlement_capability = match presentation_failure {
@@ -1108,11 +1140,13 @@ impl Dockspace {
                 DockspaceUnavailableReason::PresentationSettlementRequired,
             );
         }
-        if !had_plan
-            || report.repaint_surfaces().contains(&surface)
-            || !self.ui_actions.is_empty()
-            || (needs_presentation_settlement && settlement_staged)
-            || retirement_repaint
+        if !output_backpressured
+            && (!had_plan
+                || report.repaint_surfaces().contains(&surface)
+                || !self.ui_actions.is_empty()
+                || (needs_presentation_settlement && settlement_staged)
+                || retirement_repaint
+                || motion_active)
         {
             ui.ctx().request_repaint();
         }

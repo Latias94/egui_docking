@@ -16,6 +16,7 @@ publish = false
 [features]
 default = []
 demo = ["egui_dockspace/wgpu"]
+motion = ["egui_dockspace/motion"]
 
 [dependencies]
 dockspace = { path = "../../crates/dockspace", default-features = false }

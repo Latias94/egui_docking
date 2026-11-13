@@ -16,9 +16,16 @@ struct CustomPanes {
     panes: MagneticPanes,
     guides: HashMap<egui::Id, DropGuide>,
     drawing: GuideDrawing,
+    #[cfg(feature = "motion")]
+    preview: Option<(Rect, Rect)>,
 }
 
 impl PaneView for CustomPanes {
+    #[cfg(feature = "motion")]
+    fn drop_preview_ui(&mut self, ui: &Ui, preview: &crate::DropPreview) {
+        self.preview = Some((preview.rect, preview.presentation_rect));
+        preview.paint(ui);
+    }
     fn title(&self, item: ItemId) -> Option<egui::WidgetText> {
         self.panes.title(item)
     }
@@ -78,7 +85,82 @@ fn custom_panes(drawing: GuideDrawing) -> Box<CustomPanes> {
         panes: MagneticPanes::new(),
         guides: HashMap::new(),
         drawing,
+        #[cfg(feature = "motion")]
+        preview: None,
     })
+}
+
+#[cfg(feature = "motion")]
+#[test]
+fn animated_drop_decoration_retains_canonical_candidate_and_reduced_motion_settles_it() {
+    use crate::motion::MotionPreference;
+
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dock = Dockspace::builder("animated-preview", magnetic_layout())
+        .build()
+        .unwrap();
+    dock.set_motion_preference(MotionPreference::Full);
+    let mut panes = custom_panes(GuideDrawing::Hidden);
+    let target = begin_drag(&context, &mut dock, &mut panes);
+    let feedback = settle_until(8, || {
+        let frame = run_frame(
+            &context,
+            &mut dock,
+            &mut panes,
+            vec![Event::PointerMoved(target)],
+        );
+        (!frame.drop_targets.is_empty()).then_some(frame)
+    });
+    let center_id = feedback
+        .drop_targets
+        .iter()
+        .find(|target| target.direction == DockspaceDropDirection::Center)
+        .unwrap()
+        .widget_id;
+    let center = panes.guides[&center_id].rect.center();
+    let right_id = feedback
+        .drop_targets
+        .iter()
+        .find(|target| target.direction == DockspaceDropDirection::Right)
+        .unwrap()
+        .widget_id;
+    let right = panes.guides[&right_id].rect.center();
+    for _ in 0..16 {
+        run_frame(
+            &context,
+            &mut dock,
+            &mut panes,
+            vec![Event::PointerMoved(center)],
+        );
+    }
+    let before = panes.preview.unwrap().0;
+    panes.preview = None;
+    let moved = run_frame(
+        &context,
+        &mut dock,
+        &mut panes,
+        vec![Event::PointerMoved(right)],
+    );
+    let (candidate, presentation) = panes
+        .preview
+        .expect("the new semantic target paints immediately");
+    assert_ne!(candidate, before);
+    assert_ne!(
+        presentation, candidate,
+        "only decoration follows the target over time"
+    );
+    dock.set_motion_preference(MotionPreference::Reduced);
+    panes.preview = None;
+    let reduced = run_frame(
+        &context,
+        &mut dock,
+        &mut panes,
+        vec![Event::PointerMoved(right)],
+    );
+    let (candidate, presentation) = panes.preview.unwrap();
+    assert_eq!(candidate, presentation);
+    assert_eq!(moved.drop_targets.len(), reduced.drop_targets.len());
 }
 
 #[test]
