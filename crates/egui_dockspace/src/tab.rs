@@ -38,8 +38,11 @@ pub struct TabBarLayout {
 /// The application tab-bar slot currently being rendered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TabBarSlot {
+    /// Fixed slot between the group grip and the tabs or scroll controls.
     Leading,
+    /// Fixed slot after the built-in presentation controls at the bar's right edge.
     Trailing,
+    /// Slot after the last tab, scrolling and clipping with the tab strip.
     AfterTabs,
 }
 
@@ -56,6 +59,7 @@ impl TabBar<'_> {
         TabBarId(self.record.visual_id())
     }
 
+    /// Returns the stable docking root which owns this group.
     #[must_use]
     pub fn root(self) -> RootId {
         self.record.root()
@@ -70,8 +74,11 @@ impl TabBar<'_> {
 /// Resolved defaults which a tab callback can override for one item.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TabVisuals {
+    /// Tab background, before focus cues and the close icon are painted.
     pub fill: Color32,
+    /// Tab outline, painted inside its allocation; `Stroke::NONE` hides it.
     pub stroke: Stroke,
+    /// Rounding shared by the tab background and its focus outline.
     pub corner_radius: CornerRadius,
     /// Fallback used by title spans without an explicit color.
     pub text_color: Color32,
@@ -95,7 +102,9 @@ pub struct TabVisuals {
 /// leave the close-control area outside `content_rect` available to the adapter.
 #[derive(Clone, Debug)]
 pub struct Tab<'a> {
+    /// Stable application identity of this tab's pane.
     pub item: ItemId,
+    /// Group identity shared with the tab-bar layout and rendering callbacks.
     pub bar: TabBarId,
     /// Full tab allocation, before horizontal scrolling clips it.
     pub rect: Rect,
@@ -107,12 +116,15 @@ pub struct Tab<'a> {
     pub content_clip_rect: Rect,
     /// Original shaped title. Use [`Self::paint_title`] to elide it for a subrect.
     pub title: Arc<Galley>,
+    /// Adapter-owned tab interaction, before application content widgets are added.
     pub response: &'a Response,
+    /// Whether this tab is selected in its group, independently of pane focus.
     pub selected: bool,
     /// The selected pane owns observed content focus in the active window.
     pub pane_focused: bool,
     /// Includes both the egui enablement and docking interaction policy.
     pub enabled: bool,
+    /// Resolved appearance; return any changes from [`crate::PaneView::tab_ui`].
     pub visuals: TabVisuals,
 }
 
@@ -180,16 +192,21 @@ pub(crate) fn paint_title(
 ///
 /// The response, hit target, keyboard action and close protocol belong to the
 /// adapter. Change the stroke or paint another icon inside the supplied clip.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct TabClose<'a> {
+    /// Stable application identity of the pane this control would close.
     pub item: ItemId,
     /// Core-owned close-control allocation.
     pub rect: Rect,
     /// Centered icon allocation, independent of the hit target.
     pub icon_rect: Rect,
+    /// Adapter-owned close interaction; custom painting must not consume it again.
     pub response: &'a Response,
+    /// Whether the tab is selected, independently of hover and keyboard focus.
     pub selected: bool,
+    /// Whether the adapter currently allows this control to accept input.
     pub enabled: bool,
+    /// Resolved icon color and line width, before the supplied Ui's opacity.
     pub stroke: Stroke,
 }
 

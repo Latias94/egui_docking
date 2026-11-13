@@ -149,7 +149,7 @@ close cues. Reserve additional content width with `tab_content_width`.
 scrolling `AfterTabs` slot. `tab_close_ui` and `drag_preview_ui` customize the
 close icon and source ghost. `drop_preview_ui` receives the resolved target and
 resulting area. Its default paints the result highlight and future tab shapes
-for merging or reordering, including titles and committed order. Applications can add
+for merging or reordering, including titles and candidate order. Applications can add
 their own colors, icons, outlines or an optional localized `paint_label` hint.
 Selection, dragging, close controls and accessibility
 stay in the adapter. Enable **Custom tabs** in the workbench for a

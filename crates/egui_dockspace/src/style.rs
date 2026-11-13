@@ -187,17 +187,22 @@ pub enum DockDensity {
 /// Keyboard focus on the tab or close control always reveals the icon.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TabCloseVisibility {
+    /// Paint every allocated close icon, including those on inactive tabs.
     Always,
+    /// Paint it for selected tabs and for hovered tabs or close controls.
     #[default]
     SelectedOrHovered,
+    /// Reveal it on tab or close-control hover, in addition to keyboard focus.
     Hovered,
 }
 
 /// Presentation of the whole-group grip. The trailing empty bar remains draggable.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TabGroupGripVisibility {
+    /// Paint every enabled group's leading grip.
     #[default]
     Always,
+    /// Reserve its space, painting it while the enabled tab bar is hovered.
     Hovered,
     /// Reclaims the leading grip's space in core layout.
     Hidden,
@@ -620,28 +625,43 @@ impl Default for DockStyle {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DockStyleError {
     /// A metric is NaN or infinite.
-    NonFinite { field: &'static str },
+    NonFinite {
+        /// Name of the invalid style field.
+        field: &'static str,
+    },
     /// A metric that may be zero is negative.
-    Negative { field: &'static str },
+    Negative {
+        /// Name of the invalid style field.
+        field: &'static str,
+    },
     /// A metric that represents a size is zero or negative.
-    NotPositive { field: &'static str },
+    NotPositive {
+        /// Name of the invalid style field.
+        field: &'static str,
+    },
     /// The requested touch resize hit extent was below 44 logical points.
     TouchResizeHitExtentTooSmall,
     /// A zero edge scroll interval would continuously reschedule work.
     ZeroEdgeScrollInterval,
     /// A configured minimum is greater than its maximum.
     MinimumExceedsMaximum {
+        /// Name of the lower-bound field.
         minimum: &'static str,
+        /// Name of the upper-bound field.
         maximum: &'static str,
     },
     /// A visible control cannot fit within its containing chrome.
     ExtentExceedsContainer {
+        /// Name of the field requesting too much space.
         extent: &'static str,
+        /// Name of the field defining the containing allocation.
         container: &'static str,
     },
     /// An interaction extent is smaller than the visible element it covers.
     HitExtentSmallerThanVisible {
+        /// Name of the interaction-extent field.
         hit_extent: &'static str,
+        /// Name of the visible-extent field which it must cover.
         visible_extent: &'static str,
     },
     /// The initial docking fraction is not strictly between zero and one.

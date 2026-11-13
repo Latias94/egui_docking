@@ -41,11 +41,11 @@ impl DockspacePreviewTabBarPaintRecord<'_> {
     }
 }
 
-/// One member of the future target strip, in committed tab order.
+/// One member of the future target strip, in candidate tab order.
 ///
 /// Members outside the viewport remain enumerable for title/resource lookup and
 /// payload order. Paint only members with [`Self::visible_bounds`]. The clipping
-/// and text allocations use the same layout as the committed target strip.
+/// and text allocations use the same rules as ordinary target tabs.
 /// This preview never grants selection, close, drag or other input authority.
 #[derive(Debug, Clone, Copy)]
 pub struct DockspacePreviewTabPaintRecord<'plan> {
@@ -91,7 +91,7 @@ impl DockspacePreviewTabPaintRecord<'_> {
 
     /// Returns the paintable tab bounds, or `None` for a clipped-out member.
     ///
-    /// A sliver too small to contain the committed tab chrome is also omitted.
+    /// A sliver too small to contain the standard tab chrome is also omitted.
     #[must_use]
     pub const fn visible_bounds(self) -> Option<LogicalRect> {
         self.record.visible_bounds
@@ -103,7 +103,7 @@ impl DockspacePreviewTabPaintRecord<'_> {
         self.record.text_layout_bounds
     }
 
-    /// Returns the title's visible clip, retaining committed close-button spacing.
+    /// Returns the title's visible clip, retaining standard close-button spacing.
     #[must_use]
     pub const fn text_bounds(self) -> Option<LogicalRect> {
         self.record.text_bounds
@@ -131,7 +131,7 @@ impl<'plan> DockspaceDragPreview<'plan> {
             .map(|record| DockspacePreviewTabBarPaintRecord { record })
     }
 
-    /// Enumerates every future target member in committed order, including clipped tabs.
+    /// Enumerates every future target member in candidate order, including clipped tabs.
     ///
     /// Use [`DockspacePreviewTabPaintRecord::is_payload`] to identify all dragged
     /// titles. Bounds and selection are derived from the prevalidated candidate,

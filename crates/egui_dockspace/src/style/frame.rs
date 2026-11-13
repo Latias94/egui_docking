@@ -8,9 +8,13 @@ use egui::{Color32, CornerRadius, Frame, epaint::Shadow};
 /// and floating geometry remain explicit metrics on [`super::DockStyle`].
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct DockFrameVisuals {
+    /// Background fill; `None` follows the current window or popup theme.
     pub fill: Option<Color32>,
+    /// Outline color; border width remains a separate docking metric.
     pub border_color: Option<Color32>,
+    /// Corner rounding; `None` preserves the current egui frame recipe.
     pub corner_radius: Option<CornerRadius>,
+    /// Frame shadow; use `Some(Shadow::NONE)` to remove the theme's shadow.
     pub shadow: Option<Shadow>,
 }
 

@@ -31,6 +31,7 @@ impl PaneResponse {
     /// Do not declare popup, modal, or foreign-overlay controls. The adapter
     /// still checks current-pass registration, layer, enablement and bounds;
     /// a declaration never changes a widget's ordinary egui input handling.
+    /// See [`Self::with_content_ids`] for the registration requirements.
     #[must_use]
     pub fn with_content(self, response: &Response) -> Self {
         self.with_content_ids([response.id])
@@ -41,6 +42,13 @@ impl PaneResponse {
     /// Use this for composite controls whose child responses are created inside
     /// nested egui callbacks. Include only registrations from this pane's
     /// current callback, including any scrolling controls and hover-only content.
+    ///
+    /// The adapter accepts enabled registrations on the pane's own layer. Their
+    /// already-clipped interaction rectangles must be finite, positive, and fully
+    /// contained within the pane's valid content bounds. Hover-only registrations
+    /// keep their original sense and cannot clear an overlapping unknown
+    /// interactive widget. Popup, modal, and foreign-overlay controls must not
+    /// be declared, even when their geometry fits.
     #[must_use]
     pub fn with_content_ids(mut self, ids: impl IntoIterator<Item = Id>) -> Self {
         let mut ids = ids.into_iter();
@@ -86,6 +94,10 @@ pub enum PaneFocusState {
 /// Callbacks run synchronously within the current egui pass. Start background
 /// work in application-owned tasks, apply completed results on the UI thread,
 /// and request a repaint. Do not wait for I/O or retain a [`Ui`] across tasks.
+/// egui may repeat or discard a pass; application state is not rolled back with
+/// the docking frame. Queue commands from callbacks and apply them after the
+/// docking call succeeds, accounting for repeated invocations.
+///
 /// Boxed providers, including borrowed and non-`Send` trait objects, delegate
 /// every callback to their inner provider. Native hosts may add their own
 /// threading and lifetime requirements.
@@ -175,42 +187,34 @@ pub trait PaneView {
 
     /// Renders the application content associated with `item`.
     ///
-    /// The adapter calls this method only for the pane selected by the current
-    /// semantic workspace and proven to occupy the retained semantic content
-    /// slot. Bootstrap, stale, and projection-changing content may use retained
-    /// geometry and a disabled child UI, but [`Ui::is_enabled`] only describes
-    /// egui widget input; it does not isolate arbitrary application mutations in
-    /// this callback. A superseded, relocated, or replacement-epoch pane is
-    /// therefore never invoked through unrelated retained chrome. Once the pane
-    /// projection is current, the child UI remains enabled even when docking
-    /// presentation authority is unavailable.
+    /// Only a currently selected pane whose identity and position match the
+    /// retained content slot is rendered. A relocated or replaced pane is skipped
+    /// until matching geometry is available. Bootstrap, stale, or changing
+    /// layouts may render through a disabled child UI. [`Ui::is_enabled`] controls
+    /// widget input; it does not prevent application state changes. Once pane
+    /// geometry is current, ordinary content remains enabled even when docking
+    /// interaction is unavailable.
     ///
-    /// Caller-owned presentation settlement admits synchronous, append-only
-    /// painting on this Ui's layer and egui's standard [`Ui::dnd_drag_source`]
-    /// preview layer for the actual dragged widget. Its exact suffix is included
-    /// in the complete output proof. Other layers, changes to earlier shapes or
-    /// changes to an existing layer transform make settlement unavailable.
-    /// Respect the supplied opacity and clip, including when a
-    /// source gap omits the pane's pixels during manipulation. Do not defer
-    /// drawing beyond this callback. Application paint callbacks remain subject
-    /// to the host renderer contract; shape comparison cannot inspect them.
+    /// # Painting
     ///
-    /// Return ordinary content registrations from this callback through
-    /// [`PaneResponse`]. Accepted registrations allow docking hover to pass
-    /// through and permit containing-window activation while retaining their
-    /// ordinary egui input. The adapter reads the response while the child UI
-    /// is still alive; application state need not retain these IDs.
+    /// Paint synchronously on the supplied Ui's layer, respecting its opacity
+    /// and clip, including when a drag temporarily hides the source pane. The
+    /// standard [`Ui::dnd_drag_source`] preview layer is also supported for the
+    /// actual dragged widget. Drawing on other layers, changing earlier shapes,
+    /// or modifying an existing layer transform makes caller-owned presentation
+    /// settlement unavailable. Do not defer drawing beyond this callback.
+    /// Application paint callbacks must also honor the host renderer contract;
+    /// shape comparison cannot inspect their rendering.
     ///
-    /// The adapter accepts enabled responses on the child UI's layer, including
-    /// explicitly declared hover-only labels and ordinary content containers.
-    /// Their already-clipped interaction rectangles must be finite, positive,
-    /// and fully contained within the pane's valid content bounds. A hover-only
-    /// declaration preserves its non-interactive sense; it cannot clear an
-    /// overlapping unknown interactive widget. Never declare popup, modal, or
-    /// foreign-overlay widgets, even if their geometry fits.
+    /// # Content input
     ///
-    /// These are explicit host-application ownership facts, not an automatic
-    /// widget-tree resolver or a general inference of platform hit eligibility.
+    /// Return ordinary content registrations through [`PaneResponse`]. Accepted
+    /// registrations allow docking hover and containing-window activation while
+    /// preserving normal widget input. Follow [`PaneResponse::with_content_ids`]
+    /// for eligibility and overlay exclusions. The adapter reads registrations
+    /// before the child UI is dropped; application state need not retain IDs.
+    /// These declarations describe application ownership and do not infer an
+    /// arbitrary widget tree or native receiver.
     fn ui(&mut self, item: ItemId, ui: &mut Ui) -> PaneResponse;
 
     /// Returns the stable egui focus identity registered by `item`'s pane UI.

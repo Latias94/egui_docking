@@ -144,6 +144,8 @@ impl NativeWindowPlacement {
 /// The capability freezes its source membership, order, selection and workspace
 /// version. Moving its former anchor into another group never retargets this
 /// value. Runtime graph identities remain private.
+/// Cloning preserves the same captured group and version; it does not refresh
+/// the capability against a changed workspace.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedTabsGroup {
     pub(crate) authority_domain: EngineAuthorityDomainId,
@@ -418,6 +420,8 @@ pub enum DockspaceActionRejection {
 /// A prepared action preserves the exact published workspace version from
 /// which its stable placement was derived. The core validates its opaque
 /// authority domain before turning it into reducer input.
+/// Preparing or dropping the value does not mutate the workspace. Submission
+/// consumes it; it deliberately implements neither `Clone` nor `Copy`.
 #[derive(Debug)]
 #[must_use = "a prepared docking action must be submitted or deliberately discarded"]
 pub struct PreparedDockAction {

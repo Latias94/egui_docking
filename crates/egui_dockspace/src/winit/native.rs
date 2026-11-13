@@ -95,14 +95,23 @@ pub enum FrameControl {
 /// Durations measure CPU work through the return from `queue.present`. They do
 /// not measure GPU completion, display scanout, or operating-system input delivery.
 pub struct NativeFrameReport<'frame> {
+    /// Context used by the application run which produced this output.
     pub context: &'frame Context,
+    /// Exact renderer disposition already reported to the docking receipt.
     pub presentation: SurfacePresentationResult,
+    /// Renderer diagnostic when the output was dropped, if one is available.
     pub drop_reason: Option<&'static str>,
+    /// Accessibility tree update from this complete output, when generated.
     pub accesskit_update: Option<&'frame egui::accesskit::TreeUpdate>,
+    /// Tessellated paint primitives retained for this renderer attempt.
     pub primitives: &'frame [egui::ClippedPrimitive],
+    /// CPU time spent in [`NativeApp::update`].
     pub update_duration: std::time::Duration,
+    /// CPU time spent tessellating the output's shapes.
     pub tessellation_duration: std::time::Duration,
+    /// CPU time spent in the renderer's paint and presentation attempt.
     pub paint_duration: std::time::Duration,
+    /// Total CPU time from the application update through renderer settlement.
     pub frame_duration: std::time::Duration,
 }
 
@@ -110,6 +119,8 @@ pub struct NativeFrameReport<'frame> {
 ///
 /// The application owns its Dockspace and panes. `update` must return the exact
 /// output of its owned egui run; the runner does not start a second egui run.
+/// [`run_native`] accepts both concrete implementations and borrowed trait
+/// objects, including providers which borrow application state for the run.
 pub trait NativeApp {
     /// Optionally adjusts input before application timing begins.
     fn prepare_input(&mut self, _input: &mut RawInput) -> AppResult<()> {
@@ -136,6 +147,17 @@ pub trait NativeApp {
 /// Those updates still process close and visibility commands on platforms which
 /// withhold redraw events for hidden windows.
 ///
+/// Applications selected at runtime can be passed as borrowed trait objects:
+///
+/// ```no_run
+/// use egui_dockspace::winit::{NativeApp, NativeError, NativeOptions, run_native};
+///
+/// fn launch(app: &mut dyn NativeApp) -> Result<(), NativeError> {
+///     let context = egui::Context::default();
+///     run_native(NativeOptions::default(), context, app)
+/// }
+/// ```
+///
 /// # Errors
 ///
 /// Returns startup failures, application callback failures, unsupported output,
@@ -143,7 +165,7 @@ pub trait NativeApp {
 pub fn run_native(
     options: NativeOptions,
     context: Context,
-    app: &mut impl NativeApp,
+    app: &mut (impl NativeApp + ?Sized),
 ) -> Result<(), NativeError> {
     let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
     let mut runner = Runner {
@@ -195,7 +217,7 @@ struct NativeWindow {
     window: Arc<Window>,
 }
 
-struct Runner<'app, A> {
+struct Runner<'app, A: ?Sized> {
     proxy: EventLoopProxy<UserEvent>,
     context: Context,
     options: NativeOptions,
@@ -205,7 +227,7 @@ struct Runner<'app, A> {
     failure: Option<NativeError>,
 }
 
-impl<A: NativeApp> Runner<'_, A> {
+impl<A: NativeApp + ?Sized> Runner<'_, A> {
     fn open(&mut self, event_loop: &ActiveEventLoop) -> Result<(), NativeError> {
         if self.window.is_some() {
             self.repaint.resume();
@@ -378,7 +400,7 @@ impl<A: NativeApp> Runner<'_, A> {
     }
 }
 
-impl<A: NativeApp> ApplicationHandler<UserEvent> for Runner<'_, A> {
+impl<A: NativeApp + ?Sized> ApplicationHandler<UserEvent> for Runner<'_, A> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if let Err(error) = self.open(event_loop) {
             self.fail(event_loop, error);

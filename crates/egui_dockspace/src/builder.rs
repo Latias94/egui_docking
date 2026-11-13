@@ -14,6 +14,7 @@ use crate::facade::Dockspace;
 use crate::style::DockStyle;
 
 /// Builder for one authoritative egui docking workspace.
+#[must_use = "call build() to validate the configuration and create the docking workspace"]
 pub struct DockspaceBuilder {
     id: Id,
     layout: DockspaceLayout,

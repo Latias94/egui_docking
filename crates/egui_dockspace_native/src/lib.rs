@@ -1,10 +1,10 @@
 //! Fork-backed native adapter for `dockspace`.
 //!
 //! The crate deliberately owns no docking graph, renderer, platform effect
-//! ledger, or presentation state machine. The callback coordinator is an
-//! implementation detail while the native product driver is being completed.
-//! It bridges the renderer-neutral [`dockspace::runtime::DockspaceSession`] and
-//! the pinned eframe 0.37 native host seam.
+//! ledger, or presentation state machine. Its private callback coordinator
+//! bridges the renderer-neutral [`dockspace::runtime::DockspaceSession`] and
+//! the pinned eframe 0.37 native host seam. Applications use [`NativeDockspaceApp`]
+//! to supply panes, window options, and application decisions.
 
 #![forbid(unsafe_code)]
 
