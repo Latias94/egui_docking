@@ -22,12 +22,12 @@ env:
 
 jobs:
   workspace:
-    name: Workspace
+    name: Workspace (Rust 1.100)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: dtolnay/rust-toolchain@1.100.0
         with:
           components: clippy, rustfmt
       - uses: taiki-e/install-action@nextest
@@ -61,9 +61,11 @@ jobs:
         run: cargo test --doc --workspace --all-features --locked
 
   engine-host:
-    name: Independent engine host consumer
+    name: Independent engine host consumer (MSRV)
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      RUSTUP_TOOLCHAIN: 1.95.0
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.95.0
@@ -92,9 +94,11 @@ jobs:
           --example engine_host --locked
 
   official-egui:
-    name: Official egui consumer
+    name: Official egui consumer (MSRV)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      RUSTUP_TOOLCHAIN: 1.95.0
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.95.0
@@ -118,9 +122,11 @@ jobs:
           --features serde --all-targets --locked
 
   native-platform-check:
-    name: Native compile (${{ matrix.os }})
+    name: Native compile (MSRV, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
+    env:
+      RUSTUP_TOOLCHAIN: 1.95.0
     strategy:
       fail-fast: false
       matrix:
@@ -137,12 +143,12 @@ jobs:
           --package egui_dockspace_native --lib --all-features --locked
 
   fork-native:
-    name: Fork-backed native coordinator
+    name: Fork-backed native coordinator (Rust 1.100)
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: dtolnay/rust-toolchain@1.100.0
         with:
           components: rustfmt
       - uses: taiki-e/install-action@nextest

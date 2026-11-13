@@ -301,7 +301,7 @@ impl NativePointerTranslator {
         let translation = self.translate(record, resolve_work_area);
         #[cfg(test)]
         if let Some((ticks, cost)) = &self.translation_clock_cost {
-            let _ = ticks.fetch_update(
+            let _ = ticks.try_update(
                 std::sync::atomic::Ordering::SeqCst,
                 std::sync::atomic::Ordering::SeqCst,
                 |current| Some(current.saturating_add(*cost)),

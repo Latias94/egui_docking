@@ -209,7 +209,7 @@ impl PresentationAllocationIssuer {
     pub(super) fn issue(&self) -> Result<HostPresentationAttemptId, CoreHostFrameError> {
         let previous = self
             .last_attempt
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |last| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |last| {
                 last.checked_add(1)
             })
             .map_err(|_| CoreHostFrameError::PresentationAttemptSpaceExhausted)?;
@@ -225,7 +225,7 @@ impl PresentationAllocationIssuer {
     pub(super) fn issue_output(&self) -> Result<PresentationOutputSerial, EngineError> {
         let previous = self
             .last_output
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |last| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |last| {
                 last.checked_add(1)
             })
             .map_err(|_| EngineError::PresentationOutputSerialExhausted)?;

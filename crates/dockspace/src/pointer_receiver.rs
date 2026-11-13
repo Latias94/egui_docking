@@ -100,7 +100,7 @@ impl PointerReceiverAttemptIssuer {
         }
         let previous = self
             .last_attempt
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |last| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |last| {
                 last.checked_add(1)
             })
             .map_err(|_| PointerReceiverAttemptError::AttemptSpaceExhausted)?;

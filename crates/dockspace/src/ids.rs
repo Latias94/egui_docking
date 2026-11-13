@@ -16,7 +16,7 @@ pub struct EngineAuthorityDomainId(u64);
 impl EngineAuthorityDomainId {
     pub(crate) fn mint() -> Option<Self> {
         static NEXT: AtomicU64 = AtomicU64::new(1);
-        NEXT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(1)
         })
         .ok()
