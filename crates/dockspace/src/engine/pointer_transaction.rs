@@ -2520,12 +2520,27 @@ impl DockEngine {
         if self.viewport.drag_source_input(drag.owner.pointer())
             == Some(crate::platform::NativeDragSourceInput::Preserve)
         {
-            // Input-state observation cannot replace the current edge's independent
-            // delivery/capture facts. Release keeps its validated pre-edge capture.
-            edge.delivery_owner()
-                == Authority::Known(PointerEventDeliveryOwner::Native(binding.window()))
-                && matches!(self.interaction.active_journal_capture_authority(),
-                    Some(Authority::Known(PointerCaptureOwner::Native(current))) if current == binding.window())
+            // Release reports capture after the button transition. Reuse the
+            // release gate for post-edge None after an unknown sample; ordinary
+            // motion still requires the retained exact capture owner.
+            if edge.delivery_owner()
+                != Authority::Known(PointerEventDeliveryOwner::Native(binding.window()))
+            {
+                return false;
+            }
+            if matches!(
+                edge.kind(),
+                PointerEdgeKind::ButtonReleased(PointerButton::Primary)
+                    | PointerEdgeKind::ContactEnded(PointerButton::Primary)
+            ) && edge.capture_owner() == Authority::Known(PointerCaptureOwner::None)
+            {
+                return matches!(
+                    self.journal_capture_action_gate(drag.owner, edge.capture_owner(), true),
+                    Ok(JournalCaptureActionGate::Authorized)
+                );
+            }
+            matches!(self.interaction.active_journal_capture_authority(),
+                Some(Authority::Known(PointerCaptureOwner::Native(current))) if current == binding.window())
         } else {
             true
         }
@@ -2658,16 +2673,19 @@ impl DockEngine {
         let Some(current) = current else {
             return false;
         };
+        let requested = proof.requested_rect();
         // Existing movement has its own sizing rule, with the same exact scene,
         // epoch and bounds checks as placement. An oversized source stays intact.
+        // Reconstruct the movement's canonical corners: subtracting translated
+        // corners can round a valid extent differently from the source extent.
         current.stamp() == proof.scene()
             && proof.scene().requirement().workspace_epoch() == self.version.epoch()
             && current.plan().bounds() == proof.surface_bounds()
             && proof.surface() == origin.surface
             && proof.minimum_size() == origin.minimum_size
-            && proof.requested_rect().width() == origin.source_rect.width()
-            && proof.requested_rect().height() == origin.source_rect.height()
-            && clamp_moved_contained_rect(proof.surface_bounds(), proof.requested_rect())
+            && LogicalRect::from_min_size(requested.min(), origin.source_rect.size())
+                == Ok(requested)
+            && clamp_moved_contained_rect(proof.surface_bounds(), requested)
                 == Ok(proof.clamped_rect())
     }
 

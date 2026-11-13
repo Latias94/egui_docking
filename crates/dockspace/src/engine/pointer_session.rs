@@ -120,7 +120,7 @@ impl DockEngine {
         }
     }
 
-    fn journal_capture_action_gate(
+    pub(super) fn journal_capture_action_gate(
         &self,
         owner: GestureOwner,
         observed: Authority<PointerCaptureOwner>,

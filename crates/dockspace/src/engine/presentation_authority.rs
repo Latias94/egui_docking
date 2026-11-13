@@ -285,6 +285,10 @@ impl DockEngine {
                         .filter(|previous| {
                             previous.plan().contained_projection().is_none()
                                 && previous.plan().resize_projection().is_empty()
+                                // A sampled layout has no valid split partition
+                                // or docking targets until motion settles. It
+                                // cannot become a selection-only target plan.
+                                && previous.plan().partition_available(source.root())
                         })
                         .map(|previous| SelectionRebind {
                             surface,

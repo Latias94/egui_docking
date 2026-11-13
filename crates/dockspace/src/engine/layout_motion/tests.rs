@@ -15,6 +15,8 @@ use crate::runtime::{
 };
 use crate::scene_compiler::{reset_surface_compilation_count, surface_compilation_count};
 
+mod selection_rebind_tests;
+
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(1);
 const A: ItemId = ItemId::new(1);

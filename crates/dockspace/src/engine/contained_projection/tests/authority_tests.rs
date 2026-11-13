@@ -25,6 +25,8 @@ use crate::scene::ContainedLayoutOwner;
 use crate::transition::{SurfaceContributionOutcome, SurfaceContributionRejection};
 use crate::viewport_focus::{FocusCausalStamp, PaneFocusIntentGeneration};
 
+mod edge_boundary_tests;
+
 const PANE_COUNT: usize = 16;
 
 fn core_fixture() -> (DockEngine, TestPresentationHost) {
