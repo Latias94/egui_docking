@@ -522,6 +522,110 @@ fn semantic_resize(fixture: &mut Fixture, target: DockspaceVisualId) -> HostFram
     commit(frame)
 }
 
+#[test]
+fn semantic_endpoints_and_accessible_range_include_nested_touching_minimums() {
+    for adjustment in [
+        SurfaceSplitterAdjustment::Minimum,
+        SurfaceSplitterAdjustment::Maximum,
+    ] {
+        let (mut fixture, initial) = nested_minimum();
+        let target = initial
+            .splitter_at(DockspaceAxis::Horizontal, point(517.0, 128.0))
+            .visual;
+        let before = fixture.session.version();
+        let mut frame = fixture.session.begin_host_frame().unwrap();
+        let plan = frame.paint_plan(SURFACE).unwrap().unwrap();
+        let range = plan.splitter_resize_range(target).unwrap();
+        close(range.value(), 0.5);
+        // C's touching edge reaches its 96-point minimum after only 32 points.
+        // B's own 400-point minimum would incorrectly allow 116 points.
+        close(range.maximum(), 548.0 / 1032.0);
+        assert!(range.minimum() > 0.0 && range.minimum() < range.value());
+        let expected = match adjustment {
+            SurfaceSplitterAdjustment::Minimum => range.minimum(),
+            SurfaceSplitterAdjustment::Maximum => range.maximum(),
+            _ => unreachable!(),
+        };
+        let action = plan
+            .prepare_splitter_adjustment(target, adjustment)
+            .unwrap();
+        frame.submit_surface_action(action).unwrap();
+        measure(&mut frame, fixture.bounds, &fixture.minimums);
+        let report = commit(frame);
+        assert!(report.workspace_changed());
+        assert_eq!(report.before(), before);
+        let (geometry, output) = paint(&mut fixture.session);
+        present(&mut fixture.session, output);
+        let left = geometry.panes[&A].bounds.width();
+        let right = geometry.panes[&B].bounds.width();
+        close(left / (left + right), expected);
+        if adjustment == SurfaceSplitterAdjustment::Maximum {
+            assert_minimum_resized(&geometry);
+        }
+    }
+}
+
+#[test]
+fn junction_endpoints_resize_one_axis_atomically_and_preserve_its_perpendicular_axis() {
+    for axis in [DockspaceAxis::Horizontal, DockspaceAxis::Vertical] {
+        for adjustment in [
+            SurfaceSplitterAdjustment::Minimum,
+            SurfaceSplitterAdjustment::Maximum,
+        ] {
+            let (mut fixture, initial) = nested_junction();
+            let before = fixture.session.version();
+            let target = initial.four_arm_junction();
+            let mut frame = fixture.session.begin_host_frame().unwrap();
+            let plan = frame.paint_plan(SURFACE).unwrap().unwrap();
+            let mut found = None;
+            plan.visit_surface_program(|step| {
+                if let Step::Operation {
+                    operation: Operation::SplitterJunction(junction),
+                    ..
+                } = step
+                    && junction.arm_count() == 4
+                    && junction.hit_bounds().contains(target.center())
+                {
+                    found = Some(junction);
+                }
+                Ok::<(), ()>(())
+            })
+            .unwrap();
+            let junction = found.unwrap();
+            let action = plan
+                .prepare_splitter_junction_adjustment(junction.visual_id(), axis, adjustment)
+                .unwrap();
+            frame.submit_surface_action(action).unwrap();
+            measure(&mut frame, fixture.bounds, &fixture.minimums);
+            let report = commit(frame);
+            // A already starts at its vertical minimum, including tab chrome.
+            let expected_change =
+                axis != DockspaceAxis::Vertical || adjustment != SurfaceSplitterAdjustment::Minimum;
+            assert_eq!(
+                report.workspace_changed(),
+                expected_change,
+                "{axis:?} {adjustment:?}"
+            );
+            assert_eq!(report.before(), before);
+            let (geometry, output) = paint(&mut fixture.session);
+            present(&mut fixture.session, output);
+            for (item, pane) in &initial.panes {
+                let after = geometry.panes[item].bounds;
+                match axis {
+                    DockspaceAxis::Horizontal => {
+                        close(after.y(), pane.bounds.y());
+                        close(after.height(), pane.bounds.height());
+                    }
+                    DockspaceAxis::Vertical => {
+                        close(after.x(), pane.bounds.x());
+                        close(after.width(), pane.bounds.width());
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn assert_pair_initial(geometry: &Geometry) {
     assert_eq!(geometry.splitters.len(), 3);
     geometry.assert_panes(&[

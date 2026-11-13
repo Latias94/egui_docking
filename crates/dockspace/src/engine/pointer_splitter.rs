@@ -3,6 +3,28 @@
 use super::*;
 
 impl DockEngine {
+    pub(super) fn splitter_resize_delta_interval(
+        &self,
+        plan: &PresentationPlan,
+        target: SplitterResizeTarget,
+        axis: Axis,
+    ) -> Option<crate::interaction::ResizeDeltaInterval> {
+        let handles = match target {
+            SplitterResizeTarget::Handle(_) => self.prepare_splitter_resize_handles(plan, target),
+            SplitterResizeTarget::Junction(junction) => {
+                self.prepare_splitter_junction_axis_handles(plan, junction, axis)
+            }
+        }
+        .ok()?;
+        let groups = self
+            .prepare_checked_resize_axis_groups(plan, handles, self.policy_snapshot())
+            .ok()?;
+        groups
+            .into_iter()
+            .find(|group| group.axis == axis)
+            .map(|group| group.common_delta)
+    }
+
     pub(super) fn prepare_journal_splitter_gesture(
         &self,
         presentation: &JournalSurfacePresentation,
@@ -608,6 +630,68 @@ impl DockEngine {
         )
     }
 
+    fn prepare_splitter_junction_axis_handles(
+        &self,
+        plan: &PresentationPlan,
+        junction: crate::scene::SplitterJunctionId,
+        axis: Axis,
+    ) -> Result<Vec<(NodeSource, crate::scene::SplitterRecord)>, InteractionRejection> {
+        let surface = plan.surface();
+        let Some(record) = plan
+            .splitter_junction_records()
+            .iter()
+            .find(|record| record.id() == junction)
+        else {
+            return Err(InteractionRejection::SplitterGestureHitUnavailable { surface });
+        };
+
+        let directions = match axis {
+            crate::graph::Axis::Horizontal => [
+                crate::scene::SplitterJunctionDirection::North,
+                crate::scene::SplitterJunctionDirection::South,
+            ],
+            crate::graph::Axis::Vertical => [
+                crate::scene::SplitterJunctionDirection::East,
+                crate::scene::SplitterJunctionDirection::West,
+            ],
+        };
+        let mut ids = directions
+            .into_iter()
+            .filter_map(|direction| record.id().arm(direction))
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids.dedup();
+        if ids.is_empty() {
+            return Err(InteractionRejection::SplitterGestureHitUnavailable { surface });
+        }
+        let mut handles = Vec::with_capacity(ids.len());
+        for id in ids {
+            let Some(handle) = plan
+                .splitter_record(id)
+                .filter(|splitter| splitter.axis() == axis && splitter.operable())
+            else {
+                return Err(InteractionRejection::SplitterGestureHitUnavailable { surface });
+            };
+            handles.push(handle.clone());
+        }
+
+        let mut sources = Vec::with_capacity(handles.len());
+        for record in handles {
+            let source = match self
+                .workspace
+                .capture_node_source(record.id().root, record.id().split)
+            {
+                Ok(source) => source,
+                Err(error) => {
+                    return Err(InteractionRejection::ResizeRejected(error));
+                }
+            };
+            sources.push((source, record));
+        }
+
+        Ok(sources)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn adjust_splitter_junction_from_candidate(
         &mut self,
@@ -620,72 +704,12 @@ impl DockEngine {
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InteractionOutcome, EngineError> {
-        let surface = painted.stamp().surface();
         let axis = axis.into();
-        let handles = {
-            let Some(record) = painted
-                .plan()
-                .splitter_junction_records()
-                .iter()
-                .find(|record| record.id() == junction)
-            else {
-                return Ok(InteractionOutcome::Rejected(
-                    InteractionRejection::SplitterGestureHitUnavailable { surface },
-                ));
+        let sources =
+            match self.prepare_splitter_junction_axis_handles(painted.plan(), junction, axis) {
+                Ok(sources) => sources,
+                Err(rejection) => return Ok(InteractionOutcome::Rejected(rejection)),
             };
-
-            let directions = match axis {
-                crate::graph::Axis::Horizontal => [
-                    crate::scene::SplitterJunctionDirection::North,
-                    crate::scene::SplitterJunctionDirection::South,
-                ],
-                crate::graph::Axis::Vertical => [
-                    crate::scene::SplitterJunctionDirection::East,
-                    crate::scene::SplitterJunctionDirection::West,
-                ],
-            };
-            let mut ids = directions
-                .into_iter()
-                .filter_map(|direction| record.id().arm(direction))
-                .collect::<Vec<_>>();
-            ids.sort_unstable();
-            ids.dedup();
-            if ids.is_empty() {
-                return Ok(InteractionOutcome::Rejected(
-                    InteractionRejection::SplitterGestureHitUnavailable { surface },
-                ));
-            }
-            let mut handles = Vec::with_capacity(ids.len());
-            for id in ids {
-                let Some(handle) = painted
-                    .plan()
-                    .splitter_record(id)
-                    .filter(|splitter| splitter.axis() == axis && splitter.operable())
-                else {
-                    return Ok(InteractionOutcome::Rejected(
-                        InteractionRejection::SplitterGestureHitUnavailable { surface },
-                    ));
-                };
-                handles.push(handle.clone());
-            }
-            handles
-        };
-
-        let mut sources = Vec::with_capacity(handles.len());
-        for record in handles {
-            let source = match self
-                .workspace
-                .capture_node_source(record.id().root, record.id().split)
-            {
-                Ok(source) => source,
-                Err(error) => {
-                    return Ok(InteractionOutcome::Rejected(
-                        InteractionRejection::ResizeRejected(error),
-                    ));
-                }
-            };
-            sources.push((source, record));
-        }
 
         let groups = match self.prepare_checked_resize_axis_groups(painted.plan(), sources, policy)
         {

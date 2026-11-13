@@ -13,6 +13,9 @@ use crate::{DockStyle, PaneResponse, PaneView};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 
+#[path = "product_splitter_tests.rs"]
+mod splitters;
+
 struct Panes {
     titles: Vec<String>,
     text: String,

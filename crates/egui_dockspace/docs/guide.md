@@ -148,6 +148,12 @@ with `show_single_surface` must bound their own outstanding outputs before
 consuming ordinary pane input; a callback cannot undo input already taken by
 the surrounding egui run.
 
+Splitters support Tab focus, axis-aligned arrow keys and Home/End to reach the
+minimum/maximum position allowed by all touching panes. Junctions expose separate
+horizontal and vertical keyboard controls. Resizing is immediate; there is no
+animation delay on these keyboard actions. AccessKit reports the actual reachable
+range for each separator, including nested pane constraints.
+
 ## Pointer input
 
 The owned run captures the original ordered input batch once, including an

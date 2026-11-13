@@ -45,6 +45,7 @@ mod guides;
 #[cfg(test)]
 mod junction_query_tests;
 mod preview_tabs;
+mod splitter_range;
 mod tab_chrome;
 mod tabs;
 pub use actions::ContainedResizeDirection;
@@ -58,6 +59,7 @@ pub use guides::{
     DropGuidePaintRecord, DropGuideTargetPaintRecord,
 };
 pub use preview_tabs::{DockspacePreviewTabBarPaintRecord, DockspacePreviewTabPaintRecord};
+pub use splitter_range::SurfaceSplitterRange;
 pub use tab_chrome::{
     TabListMenuBackdropPaintRecord, TabListMenuPaintRecord, TabListMenuRowPaintRecord,
     TabStripControlKind, TabStripControlPaintRecord,

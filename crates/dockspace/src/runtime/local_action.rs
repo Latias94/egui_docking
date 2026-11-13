@@ -53,22 +53,17 @@ pub enum SurfaceTabListNavigation {
     Last,
 }
 
-/// Product-facing signed adjustment of one exact splitter.
+/// Product-facing step or constrained endpoint of one exact splitter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SurfaceSplitterAdjustment {
     /// Move the splitter toward the beginning of its axis.
     Decrement,
     /// Move the splitter toward the end of its axis.
     Increment,
-}
-
-impl SurfaceSplitterAdjustment {
-    pub(super) fn direction(self) -> f64 {
-        match self {
-            Self::Decrement => -1.0,
-            Self::Increment => 1.0,
-        }
-    }
+    /// Move to the beginning-most position allowed by the full touching layout.
+    Minimum,
+    /// Move to the end-most position allowed by the full touching layout.
+    Maximum,
 }
 
 /// Product-facing signed adjustment of one contained-floating edge.

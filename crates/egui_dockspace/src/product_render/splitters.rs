@@ -2,7 +2,8 @@
 
 use dockspace::model::DockspaceAxis;
 use dockspace::runtime::{
-    SplitterJunctionPaintRecord, SurfacePaintDisposition, SurfaceSplitterAdjustment,
+    SplitterJunctionPaintRecord, SurfacePaintDisposition, SurfacePaintPlan,
+    SurfaceSplitterAdjustment,
 };
 use egui::accesskit::{Action, Orientation, Role};
 use egui::{CursorIcon, EventFilter, Key, Sense, UiBuilder};
@@ -38,13 +39,13 @@ pub(crate) fn paint_splitter(
         .flatten();
     let response = context.interact_receiver(hit, id, sense, receiver);
     let response = response.on_hover_text(if drag_enabled {
-        "Drag to resize panes. Use Tab to focus, then arrow keys for precise adjustment."
+        "Drag to resize panes. Use Tab to focus, then arrows to adjust or Home/End for limits."
     } else if enabled {
-        "Use Tab to focus, then arrow keys to resize panes. Drag resizing is unavailable in this host."
+        "Use Tab to focus, then arrows or Home/End to resize panes. Drag resizing is unavailable in this host."
     } else {
         "Pane resizing is unavailable."
     });
-    configure_accessibility(context.ui, &response, splitter, enabled);
+    configure_accessibility(context.ui, context.plan, &response, splitter, enabled);
     let focused = enabled && response.has_focus();
     let emphasized = focused || (drag_enabled && response.hovered());
     let paint_omitted = paint.is_source_gap();
@@ -244,12 +245,12 @@ fn junction_axis_response(
         match axis {
             DockspaceAxis::Horizontal => {
                 node.set_label("Resize pane grid horizontally");
-                node.set_description("Use Left and Right Arrow to resize columns");
+                node.set_description("Use Left/Right Arrow to resize columns, Home/End for limits");
                 node.set_orientation(Orientation::Vertical);
             }
             DockspaceAxis::Vertical => {
                 node.set_label("Resize pane grid vertically");
-                node.set_description("Use Up and Down Arrow to resize rows");
+                node.set_description("Use Up/Down Arrow to resize rows, Home/End for limits");
                 node.set_orientation(Orientation::Horizontal);
             }
         }
@@ -295,6 +296,16 @@ fn splitter_adjustment(
                     id.with(("keyboard-adjust", increment)),
                     SurfaceSplitterAdjustment::Increment,
                 ))
+            } else if input.consume_key(egui::Modifiers::NONE, Key::Home) {
+                Some((
+                    id.with(("keyboard-adjust", Key::Home)),
+                    SurfaceSplitterAdjustment::Minimum,
+                ))
+            } else if input.consume_key(egui::Modifiers::NONE, Key::End) {
+                Some((
+                    id.with(("keyboard-adjust", Key::End)),
+                    SurfaceSplitterAdjustment::Maximum,
+                ))
             } else {
                 None
             }
@@ -322,6 +333,7 @@ fn splitter_adjustment(
 
 fn configure_accessibility(
     ui: &egui::Ui,
+    plan: SurfacePaintPlan<'_>,
     response: &egui::Response,
     splitter: dockspace::runtime::SplitterPaintRecord<'_>,
     enabled: bool,
@@ -339,17 +351,10 @@ fn configure_accessibility(
         } else {
             node.set_disabled();
         }
-        let before = splitter.before_bounds();
-        let after = splitter.after_bounds();
-        let (before_extent, after_extent) = match splitter.axis() {
-            DockspaceAxis::Horizontal => (before.width(), after.width()),
-            DockspaceAxis::Vertical => (before.height(), after.height()),
-        };
-        let total = before_extent + after_extent;
-        if total > 0.0 {
-            node.set_numeric_value(before_extent / total);
-            node.set_min_numeric_value(0.0);
-            node.set_max_numeric_value(1.0);
+        if enabled && let Some(range) = plan.splitter_resize_range(splitter.visual_id()) {
+            node.set_numeric_value(range.value());
+            node.set_min_numeric_value(range.minimum());
+            node.set_max_numeric_value(range.maximum());
         }
     });
 }

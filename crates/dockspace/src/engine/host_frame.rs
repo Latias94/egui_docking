@@ -459,6 +459,16 @@ impl DockEngine {
 }
 
 impl<'frame> HostFrameView<'frame> {
+    pub(crate) fn splitter_resize_delta_interval(
+        &self,
+        plan: &PresentationPlan,
+        target: crate::scene::SplitterResizeTarget,
+        axis: Axis,
+    ) -> Option<crate::interaction::ResizeDeltaInterval> {
+        self.engine
+            .splitter_resize_delta_interval(plan, target, axis)
+    }
+
     /// Returns the post-observation workspace visible to this frame.
     #[must_use]
     pub fn workspace(&self) -> &'frame Workspace {

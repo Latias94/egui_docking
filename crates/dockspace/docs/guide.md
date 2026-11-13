@@ -213,6 +213,14 @@ weights, including a gesture which moves away and returns to its starting point.
 An overflowing, underallocated or compressed separator projection cannot begin
 a resize; clipped hit geometry is never substituted for complete layout facts.
 
+Hosts can prepare `SurfaceSplitterAdjustment::Minimum` or `Maximum` for a
+separator or one junction axis, in addition to ordinary `Decrement`/`Increment`
+steps. Endpoints use the same full-layout limits; they do not collapse panes.
+`SurfacePaintPlan::splitter_resize_range` resolves current/minimum/maximum
+fractions for a separator from its uncut geometry and all touching descendants.
+This is an on-demand solver query for numeric accessibility or application
+controls; ordinary drawing does not need to compute it for every separator.
+
 ## Pointer device and event time
 
 Local and native pointer inputs accept `with_metadata(PointerEventMetadata::new(

@@ -140,10 +140,10 @@ pub use paint::{
     SplitterPaintRecord, SurfaceMeasurementRefresh, SurfacePaintDisposition, SurfacePaintPlan,
     SurfacePaintProgramOperation, SurfacePaintProgramRoot, SurfacePaintProgramRootKind,
     SurfacePaintProgramStep, SurfacePaintProgramVisitError, SurfaceProgramExecutionReceipt,
-    SurfaceWork, SurfaceWorkDeferred, TabBarPaintRecord, TabGroupDragRegionKind,
-    TabGroupDragRegionPaintRecord, TabListMenuBackdropPaintRecord, TabListMenuPaintRecord,
-    TabListMenuRowPaintRecord, TabPaintRecord, TabStripControlKind, TabStripControlPaintRecord,
-    TabStripMemberPaintRecord, TabStripMemberVisibility,
+    SurfaceSplitterRange, SurfaceWork, SurfaceWorkDeferred, TabBarPaintRecord,
+    TabGroupDragRegionKind, TabGroupDragRegionPaintRecord, TabListMenuBackdropPaintRecord,
+    TabListMenuPaintRecord, TabListMenuRowPaintRecord, TabPaintRecord, TabStripControlKind,
+    TabStripControlPaintRecord, TabStripMemberPaintRecord, TabStripMemberVisibility,
 };
 #[cfg(feature = "serde")]
 pub use persistence::{

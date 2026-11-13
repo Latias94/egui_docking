@@ -362,16 +362,22 @@ impl SurfacePaintPlan<'_> {
         let VisualIdentity::Splitter(id) = splitter.0 else {
             return None;
         };
-        self.plan
+        let record = self
+            .plan
             .splitter_record(id)
             .filter(|record| record.operable())?;
+        let delta = self.splitter_adjustment_delta(
+            crate::scene::SplitterResizeTarget::Handle(id),
+            record.axis(),
+            adjustment,
+        )?;
         Some(PreparedSurfaceAction::adjust_splitter(
             self.authority_domain,
             self.version,
             self.scene,
             self.frozen_action_witness()?,
             id,
-            self.splitter_keyboard_step * adjustment.direction(),
+            delta,
         ))
     }
 
@@ -392,6 +398,11 @@ impl SurfacePaintPlan<'_> {
             .find(|record| record.visual_id() == junction)?;
         self.splitter_junction_axis_operable(record, axis)
             .then_some(())?;
+        let delta = self.splitter_adjustment_delta(
+            crate::scene::SplitterResizeTarget::Junction(id),
+            axis.into(),
+            adjustment,
+        )?;
         Some(PreparedSurfaceAction::adjust_splitter_junction(
             self.authority_domain,
             self.version,
@@ -399,7 +410,7 @@ impl SurfacePaintPlan<'_> {
             self.frozen_action_witness()?,
             id,
             axis,
-            self.splitter_keyboard_step * adjustment.direction(),
+            delta,
         ))
     }
 
