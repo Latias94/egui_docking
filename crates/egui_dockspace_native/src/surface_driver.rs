@@ -1832,6 +1832,10 @@ impl<P: PaneView> NativeRuntimeState<P> {
         if self.shutdown.is_some() {
             return;
         }
+        eprintln!(
+            "Native dockspace stopped — {}\n{error:#?}",
+            native_error_chain(&error)
+        );
         self.owned_update = None;
         self.root_placements
             .clear(&self.coordinator.dispatch_bridge());
@@ -1991,25 +1995,17 @@ impl<P: PaneView> NativeRuntimeState<P> {
             self.stop_current_output(error);
             return;
         };
+        eprintln!(
+            "Native dockspace cleanup failed — {}\n{error:#?}",
+            native_error_chain(&error)
+        );
         shutdown.cleanup_errors.push(error);
     }
 
     pub(crate) fn render_error(&self, ui: &mut egui::Ui, presentation: NativeErrorPresentation) {
         let primary = self.shutdown.as_ref().map_or_else(
             || "unknown native runtime error".to_owned(),
-            |shutdown| {
-                let summary = shutdown.primary.to_string();
-                let mut cause: &dyn std::error::Error = &shutdown.primary;
-                while let Some(source) = cause.source() {
-                    cause = source;
-                }
-                let detail = cause.to_string();
-                if detail == summary {
-                    summary
-                } else {
-                    format!("{summary}: {detail}")
-                }
-            },
+            |shutdown| native_error_chain(&shutdown.primary),
         );
         let cleanup_count = self
             .shutdown
@@ -2021,6 +2017,20 @@ impl<P: PaneView> NativeRuntimeState<P> {
             cleanup.as_deref().unwrap_or_default()
         );
         paint_native_error_status(ui, presentation, &message);
+    }
+}
+
+fn native_error_chain(error: &NativeRuntimeError) -> String {
+    let summary = error.to_string();
+    let mut cause: &dyn std::error::Error = error;
+    while let Some(source) = cause.source() {
+        cause = source;
+    }
+    let detail = cause.to_string();
+    if detail == summary {
+        summary
+    } else {
+        format!("{summary}: {detail}")
     }
 }
 

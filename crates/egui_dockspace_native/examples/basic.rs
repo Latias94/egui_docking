@@ -38,10 +38,14 @@ mod command_smoke;
 mod docking_smoke;
 #[path = "basic/layout.rs"]
 mod layout;
+#[path = "basic/operation_log.rs"]
+mod operation_log;
 #[path = "basic/smoke.rs"]
 mod smoke;
 
 fn main() -> eframe::Result {
+    let operation_log = operation_log::OperationLog::from_args()
+        .map_err(|error| eframe::Error::AppCreation(Box::new(error)))?;
     let mut policy = DockPolicy::default();
     policy.set_allow_native_surfaces(true);
     policy.set_close_capability(CloseCapability::DeferredAllowed);
@@ -82,7 +86,7 @@ fn main() -> eframe::Result {
     #[cfg(not(feature = "serde"))]
     let session = DockspaceSession::from_layout(default_layout.clone(), policy)
         .expect("the static native example layout is valid");
-    let dockspace = NativeDockspaceApp::new(
+    let mut dockspace = NativeDockspaceApp::new(
         egui::Id::unique("native-dockspace-example"),
         session,
         SURFACE,
@@ -90,6 +94,20 @@ fn main() -> eframe::Result {
         DockStyle::default(),
     )
     .expect("the native coordinator initializes");
+    if let Some(log) = &operation_log {
+        log.record(
+            "initial-layout",
+            dockspace.with_view(|view| format!("{view:?}")),
+        );
+        let log = log.clone();
+        dockspace = dockspace.with_notification_handler(move |notification, runtime| {
+            log.record("commit", format!("{notification:?}"));
+            log.record(
+                "layout-current",
+                runtime.with_view(|view| format!("{view:?}")),
+            );
+        });
+    }
     let native_host = dockspace.native_host_handler();
     let app = NativeExampleApp {
         dockspace,
@@ -105,6 +123,7 @@ fn main() -> eframe::Result {
         smoke: smoke.then(smoke::EditorSmoke::new),
         docking_smoke: docking_smoke.then(docking_smoke::DockingSmoke::new),
         command_smoke: command_smoke.then(command_smoke::CommandSmoke::new),
+        operation_log,
     };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 820.0]),
@@ -116,6 +135,9 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |creation| {
             creation.egui_ctx.set_theme(egui::Theme::Light);
+            if let Some(log) = &app.operation_log {
+                log.install(&creation.egui_ctx);
+            }
             if let Some(smoke) = &app.docking_smoke {
                 smoke.install(&creation.egui_ctx);
             }
@@ -138,6 +160,7 @@ struct NativeExampleApp {
     smoke: Option<smoke::EditorSmoke>,
     docking_smoke: Option<docking_smoke::DockingSmoke>,
     command_smoke: Option<command_smoke::CommandSmoke>,
+    operation_log: Option<operation_log::OperationLog>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -173,6 +196,9 @@ impl eframe::App for NativeExampleApp {
             self.show_controls(ui);
         });
         <NativeDockspaceApp<ExamplePanes> as eframe::App>::ui(&mut self.dockspace, ui, frame);
+        if let Some(log) = &self.operation_log {
+            log.observe(&self.dockspace);
+        }
         if let Some(mut smoke) = self.smoke.take() {
             smoke.advance(self, ui.ctx());
             self.smoke = Some(smoke);
@@ -444,6 +470,9 @@ impl NativeExampleApp {
         let Some(status) = self.dockspace.take_action_status() else {
             return;
         };
+        if let Some(log) = &self.operation_log {
+            log.record("action-result", format!("{status:?}"));
+        }
         match (self.action, status) {
             (
                 ExampleActionState::AwaitingTearOffOutcome,

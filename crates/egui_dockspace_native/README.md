@@ -27,6 +27,20 @@ Use **Move to New Window** and **Dock Back** to explore the native lifecycle.
 Add `--features serde` for application-owned named layout presets. These presets
 live in the example process; pane data stays separate from layout documents.
 
+For a docking or resize report, enable the example's operation log:
+
+```sh
+cargo run --manifest-path integration/egui-fork-workspace/Cargo.toml -p egui_dockspace_native --example basic --locked -- --event-log native-dockspace.log
+```
+
+Choose a new file for each run; an existing file is never overwritten. The log
+records surface/viewport identities and geometry, pointer buttons, sampled pointer
+positions, focus and modifier changes, Escape, action results and full error
+details. Notifications include the current committed layout when observed;
+these snapshots are not a historical replay recording. Text entry and pane
+content are omitted. Fatal runtime errors print to the terminal once, followed
+by any cleanup errors, even without `--event-log`.
+
 The [platform matrix](../../docs/PLATFORM_SUPPORT.md) distinguishes programmatic
 window operations from physical cross-window dragging. Linux X11 has a finite
 qualified physical-input profile. macOS/Windows physical drag-out and arbitrary

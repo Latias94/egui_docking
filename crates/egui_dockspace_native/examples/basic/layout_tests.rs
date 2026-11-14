@@ -52,6 +52,7 @@ fn app_with_session(
         smoke: None,
         docking_smoke: None,
         command_smoke: None,
+        operation_log: None,
     }
 }
 

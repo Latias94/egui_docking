@@ -130,6 +130,12 @@ This workspace pins eframe/winit forks and remains separate from the official
 egui adapter. It does not require changes to the official workspace's dependency
 sources.
 
+To diagnose a docking or resize failure, append
+`-- --event-log native-dockspace.log` to the native editor command. The file must
+be new. It records pointer/focus observations, committed layout snapshots and
+fatal error details without typed text or pane content. See the
+[native README](../crates/egui_dockspace_native/README.md#run-the-editor) for details.
+
 For the smaller Sun-and-planets multiview example:
 
 ```sh

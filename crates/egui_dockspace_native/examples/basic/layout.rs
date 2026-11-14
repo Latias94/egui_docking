@@ -531,6 +531,12 @@ impl NativeExampleApp {
         operation: &'static str,
         request: Result<(), E>,
     ) {
+        if let Some(log) = &self.operation_log {
+            match &request {
+                Ok(()) => log.record("action-request", format!("{operation}: accepted")),
+                Err(error) => log.record("action-request", format!("{operation}: {error}")),
+            }
+        }
         match request {
             Ok(()) => {
                 self.action = ExampleActionState::AwaitingLayoutOutcome(operation);
