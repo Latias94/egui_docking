@@ -2,8 +2,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::platform_provider::PlatformObservationLease;
-use dockspace::backend_ingress::BackendIngressRecorder;
+use crate::platform::provider::PlatformObservationLease;
+use dockspace::engine::transition::{EngineTransition, PresentationHostRetirementOutcome};
+use dockspace::engine::transition::{InputPriority, SurfaceContributionOutcome};
 use dockspace::engine::{
     BackendIngressProgress, CoreHostFrame, CoreHostFrameError, CoreHostFramePrelude,
     CoreHostPresentationFrame, DockEngine, EngineError, EngineInput, HostPresentationDisposition,
@@ -11,30 +12,29 @@ use dockspace::engine::{
 };
 use dockspace::geometry::{LogicalRect, LogicalSize};
 use dockspace::ids::{SourceSequence, StableInputSourceId, SurfaceId};
-use dockspace::intent::{Authority, AuthorityUnavailableReason};
+use dockspace::input::ingress::BackendIngressRecorder;
+use dockspace::input::intent::{Authority, AuthorityUnavailableReason};
+use dockspace::input::journal::{PointerEdgeJournal, PointerEdgeSequence};
+use dockspace::input::receiver::PointerReceiverReceiptBatch;
+use dockspace::platform::viewport::{
+    CapabilityObservationGeneration, InventoryObservationGeneration, WorkAreaObservationGeneration,
+};
 use dockspace::platform::{
     CapabilityRosterObservation, ObservedWindow, ObservedWorkArea, PlatformCapabilities,
     WindowInventoryObservation, WorkAreaRosterObservation,
 };
-use dockspace::pointer_journal::{PointerEdgeJournal, PointerEdgeSequence};
-use dockspace::pointer_receiver::PointerReceiverReceiptBatch;
-use dockspace::presentation_observation::{
+use dockspace::presentation::manifest::SceneRequirementManifest;
+use dockspace::presentation::manifest::{
+    Measurement, MeasurementUnavailableReason, SurfaceMeasurements, TabIntrinsic,
+    TabListMenuMetrics, TabStripControlMetrics, TabStripMetrics,
+};
+use dockspace::presentation::observation::{
     HostPresentationCaptureGeneration, HostPresentationEmission, HostPresentationObservation,
     HostPresentationObservationEntry, HostPresentationObservationOutcome, HostPresentationOutput,
     HostPresentationProgress, HostPresentationStreamId, HostPresentationStreamObservation,
     PresentationHostLease, PresentationHostRetirementReason,
 };
-use dockspace::scene::{PresentationPlan, SurfaceScene, SurfaceSceneStamp};
-use dockspace::scene_manifest::SceneRequirementManifest;
-use dockspace::scene_manifest::{
-    Measurement, MeasurementUnavailableReason, SurfaceMeasurements, TabIntrinsic,
-    TabListMenuMetrics, TabStripControlMetrics, TabStripMetrics,
-};
-use dockspace::transition::{EngineTransition, PresentationHostRetirementOutcome};
-use dockspace::transition::{InputPriority, SurfaceContributionOutcome};
-use dockspace::viewport::{
-    CapabilityObservationGeneration, InventoryObservationGeneration, WorkAreaObservationGeneration,
-};
+use dockspace::presentation::scene::{PresentationPlan, SurfaceScene, SurfaceSceneStamp};
 
 pub fn known_capability_observation(
     generation: u64,
@@ -1200,7 +1200,7 @@ fn reduce_surface_projection_with(
                 .iter()
                 .any(|outcome| matches!(
                 outcome,
-                dockspace::presentation_observation::HostPresentationObservationOutcome::Retired {
+                dockspace::presentation::observation::HostPresentationObservationOutcome::Retired {
                     promotion_eligible: true,
                     ..
                 }
@@ -1296,7 +1296,7 @@ pub fn publish_surfaces_batch(
         .iter()
         .all(|outcome| matches!(
             outcome,
-            dockspace::presentation_observation::HostPresentationObservationOutcome::Retired { .. }
+            dockspace::presentation::observation::HostPresentationObservationOutcome::Retired { .. }
         )));
     outputs
         .into_iter()

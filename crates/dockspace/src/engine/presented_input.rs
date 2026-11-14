@@ -83,7 +83,8 @@ impl DockEngine {
                 .root_fingerprint(root)
                 .is_ok_and(|current| frozen.presentation_topology_eq(&current))
                 && frozen.0.nodes.iter().all(|node| {
-                    let crate::command::FingerprintNode::Split { weight_bits, .. } = &node.node
+                    let crate::graph::command::FingerprintNode::Split { weight_bits, .. } =
+                        &node.node
                     else {
                         return true;
                     };
@@ -109,14 +110,17 @@ impl DockEngine {
 
     fn presented_root_owner_is_current(&self, plan: &PresentationPlan, root: RootId) -> bool {
         match self.workspace.presentation_for_root(root) {
-            Some(crate::RootPresentationOwner::Main { surface }) => {
+            Some(crate::graph::workspace::RootPresentationOwner::Main { surface }) => {
                 surface == plan.surface()
                     && !plan
                         .contained_records()
                         .iter()
                         .any(|record| record.root() == root)
             }
-            Some(crate::RootPresentationOwner::Contained { surface, floating }) => {
+            Some(crate::graph::workspace::RootPresentationOwner::Contained {
+                surface,
+                floating,
+            }) => {
                 surface == plan.surface()
                     && plan
                         .contained_record(floating)
@@ -136,13 +140,13 @@ impl DockEngine {
         if !self.presented_layering_is_current(plan) {
             return false;
         }
-        let item_is_current = |tab: crate::scene::TabSceneId| {
+        let item_is_current = |tab: crate::presentation::scene::TabSceneId| {
             self.workspace
                 .locate_item_by_id(tab.item)
                 .is_some_and(|(root, tabs, _)| root == tab.root && tabs == tab.tabs)
                 && self.presented_root_owner_is_current(plan, tab.root)
         };
-        let bar_is_current = |bar: crate::scene::TabBarSceneId| {
+        let bar_is_current = |bar: crate::presentation::scene::TabBarSceneId| {
             let Some(record) = plan
                 .tab_bar_records()
                 .iter()
@@ -196,14 +200,14 @@ impl DockEngine {
                 self.presented_root_structure_is_current(plan, cluster.root)
             }
             PresentationHitRegionKind::DropTarget(target) => match target {
-                crate::drop_target::DropTargetId::SurfaceBackground { surface } => self
+                crate::interaction::targeting::targets::DropTargetId::SurfaceBackground { surface } => self
                     .workspace
                     .surface(surface)
                     .is_some_and(|presentation| presentation.main_root.is_none()),
-                crate::drop_target::DropTargetId::TabGap { root, .. }
-                | crate::drop_target::DropTargetId::Center { root, .. }
-                | crate::drop_target::DropTargetId::InnerEdge { root, .. }
-                | crate::drop_target::DropTargetId::OuterEdge { root, .. } => {
+                crate::interaction::targeting::targets::DropTargetId::TabGap { root, .. }
+                | crate::interaction::targeting::targets::DropTargetId::Center { root, .. }
+                | crate::interaction::targeting::targets::DropTargetId::InnerEdge { root, .. }
+                | crate::interaction::targeting::targets::DropTargetId::OuterEdge { root, .. } => {
                     self.presented_root_structure_is_current(plan, root)
                 }
             },

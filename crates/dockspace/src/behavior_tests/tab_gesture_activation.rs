@@ -1,23 +1,25 @@
 use super::support;
 
-use dockspace::command::MovePayload;
 use dockspace::engine::DockEngine;
+use dockspace::engine::transition::EngineTransition;
 use dockspace::geometry::{LogicalPoint, LogicalRect};
+use dockspace::graph::command::MovePayload;
 use dockspace::graph::{ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
-use dockspace::intent::{Authority, PointerButton, PointerId, SurfacePointer, TabGestureSource};
-use dockspace::interaction::{InteractionOutcome, InteractionStatus};
-use dockspace::pointer_journal::{
+use dockspace::input::intent::{
+    Authority, PointerButton, PointerId, SurfacePointer, TabGestureSource,
+};
+use dockspace::input::journal::{
     PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
     PointerEdgeSequence, SurfaceLocalPointerEndpoint, SurfaceLocalPointerScope,
 };
-use dockspace::pointer_receiver::{
+use dockspace::input::receiver::{
     PointerReceiverDelivery, PointerReceiverDeliveryDisposition, PointerReceiverObservation,
     PointerReceiverProbeReceipt, PointerReceiverReceiptBatch, PresentedPointerReceiverObservation,
 };
-use dockspace::presentation_hit::PresentationHitRegionKind;
-use dockspace::scene::{SurfaceSceneStamp, TabBarSceneId, TabGroupDragRegionKind};
-use dockspace::transition::EngineTransition;
+use dockspace::interaction::{InteractionOutcome, InteractionStatus};
+use dockspace::presentation::hit::PresentationHitRegionKind;
+use dockspace::presentation::scene::{SurfaceSceneStamp, TabBarSceneId, TabGroupDragRegionKind};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const MAIN_ROOT: RootId = RootId::new(10);
@@ -267,8 +269,8 @@ fn rear_contained_item_atomically_raises_and_arms() {
     );
     assert!(transition.events().iter().any(|event| matches!(
         event.kind(),
-        dockspace::event::WorkspaceEventKind::CommandCommitted(
-            dockspace::command::CommandOutcome::ContainedRaised {
+        dockspace::engine::event::WorkspaceEventKind::CommandCommitted(
+            dockspace::graph::command::CommandOutcome::ContainedRaised {
                 floating: REAR_FLOATING,
                 changed: true,
                 ..
@@ -364,8 +366,8 @@ fn inactive_tab_selection_and_drag_arm_publish_atomically_at_one_revision() {
             .iter()
             .filter(|event| matches!(
                 event.kind(),
-                dockspace::event::WorkspaceEventKind::CommandCommitted(
-                    dockspace::command::CommandOutcome::Selected {
+                dockspace::engine::event::WorkspaceEventKind::CommandCommitted(
+                    dockspace::graph::command::CommandOutcome::Selected {
                         item: INACTIVE_MAIN_ITEM,
                         changed: true,
                         ..

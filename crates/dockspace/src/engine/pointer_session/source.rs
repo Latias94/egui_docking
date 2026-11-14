@@ -46,8 +46,8 @@ impl DockEngine {
         let Some(record) = self.viewport.viewport(drag.source_surface) else {
             return NativeDragSourceInput::Preserve;
         };
-        if record.ownership() != crate::viewport_registry::ViewportOwnership::RuntimeOwned
-            || record.role() != crate::viewport::ViewportRole::Child
+        if record.ownership() != crate::platform::registry::ViewportOwnership::RuntimeOwned
+            || record.role() != crate::platform::viewport::ViewportRole::Child
         {
             // An external window may contain application UI outside this dockspace.
             return NativeDragSourceInput::Preserve;
@@ -260,7 +260,7 @@ impl DockEngine {
             return true;
         };
         self.workspace.presentation_for_root(origin.root)
-            == Some(crate::RootPresentationOwner::Contained {
+            == Some(crate::graph::workspace::RootPresentationOwner::Contained {
                 surface: origin.surface,
                 floating: origin.floating,
             })
@@ -275,7 +275,7 @@ impl DockEngine {
     pub(in crate::engine) fn valid_core_contained_command(
         &self,
         drag: &crate::interaction::ActiveDrag,
-        proposal: crate::intent::ContainedTearOffProposal,
+        proposal: crate::input::intent::ContainedTearOffProposal,
         command: &WorkspaceCommand,
         authority: ContainedPlacementAuthority,
     ) -> bool {
@@ -306,7 +306,7 @@ impl DockEngine {
     pub(in crate::engine) fn valid_contained_command_structure(
         &self,
         drag: &crate::interaction::ActiveDrag,
-        proposal: crate::intent::ContainedTearOffProposal,
+        proposal: crate::input::intent::ContainedTearOffProposal,
         command: &WorkspaceCommand,
     ) -> bool {
         match command {
@@ -333,7 +333,7 @@ impl DockEngine {
                         }
                 });
                 let owner_matches = self.workspace.presentation_for_root(origin.root)
-                    == Some(crate::RootPresentationOwner::Contained {
+                    == Some(crate::graph::workspace::RootPresentationOwner::Contained {
                         surface: origin.surface,
                         floating: origin.floating,
                     });
@@ -417,7 +417,7 @@ impl DockEngine {
         &self,
         source: &NodeSource,
         target: RootPresentationTarget,
-        proposal: crate::intent::ContainedTearOffProposal,
+        proposal: crate::input::intent::ContainedTearOffProposal,
     ) -> bool {
         let RootPresentationTarget::Contained {
             surface,
@@ -438,13 +438,13 @@ impl DockEngine {
             return false;
         }
         match self.workspace.presentation_for_root(source.root()) {
-            Some(crate::RootPresentationOwner::Main {
+            Some(crate::graph::workspace::RootPresentationOwner::Main {
                 surface: source_surface,
             }) => {
                 self.workspace.surface(source_surface).is_some()
                     && self.workspace.contained_floating(floating).is_none()
             }
-            Some(crate::RootPresentationOwner::Contained {
+            Some(crate::graph::workspace::RootPresentationOwner::Contained {
                 surface: source_surface,
                 floating: source_floating,
             }) => {
@@ -463,7 +463,7 @@ impl DockEngine {
         &self,
         drag: &crate::interaction::ActiveDrag,
         current_pointer: SurfacePointer,
-        local_candidate: Option<&crate::scene::SurfacePlanScene>,
+        local_candidate: Option<&crate::presentation::scene::SurfacePlanScene>,
     ) -> CoreContainedCandidate {
         let (root, floating, source_rect, initial_pointer, minimum_size, position) =
             match &drag.origin {
@@ -524,7 +524,7 @@ impl DockEngine {
                 return CoreContainedCandidate::None;
             }
         };
-        CoreContainedCandidate::Proposal(crate::intent::ContainedTearOffProposal::new(
+        CoreContainedCandidate::Proposal(crate::input::intent::ContainedTearOffProposal::new(
             root, floating, placement, position,
         ))
     }
@@ -534,18 +534,18 @@ impl DockEngine {
     pub(in crate::engine) fn validate_payload(
         &self,
         payload: &MovePayload,
-    ) -> Result<(), crate::error::CommandError> {
+    ) -> Result<(), crate::graph::error::CommandError> {
         self.validate_payload_with_index(payload, None)
     }
 
     pub(in crate::engine) fn validate_payload_with_index(
         &self,
         payload: &MovePayload,
-        index: Option<&crate::workspace::WorkspaceIndex>,
-    ) -> Result<(), crate::error::CommandError> {
-        use crate::error::ReferenceRole;
+        index: Option<&crate::graph::workspace::WorkspaceIndex>,
+    ) -> Result<(), crate::graph::error::CommandError> {
+        use crate::graph::error::ReferenceRole;
 
-        let verify = |root, node, expected: &crate::command::RootReference| match index {
+        let verify = |root, node, expected: &crate::graph::command::RootReference| match index {
             Some(index) => index.verify_reference(
                 &self.workspace,
                 self.version,
@@ -582,17 +582,17 @@ impl DockEngine {
                 match self.workspace.node(source.node()) {
                     Some(crate::graph::Node::Tabs { items, .. }) if !items.is_empty() => {}
                     Some(crate::graph::Node::Tabs { .. }) => {
-                        return Err(crate::error::CommandError::EmptyPayload {
+                        return Err(crate::graph::error::CommandError::EmptyPayload {
                             node: source.node(),
                         });
                     }
                     Some(crate::graph::Node::Split { .. }) => {
-                        return Err(crate::error::CommandError::NodeIsNotTabs {
+                        return Err(crate::graph::error::CommandError::NodeIsNotTabs {
                             node: source.node(),
                         });
                     }
                     None => {
-                        return Err(crate::error::CommandError::MissingNode {
+                        return Err(crate::graph::error::CommandError::MissingNode {
                             role: ReferenceRole::Source,
                             node: source.node(),
                         });
@@ -606,7 +606,7 @@ impl DockEngine {
                     .collect_items_in_subtree(source.node())
                     .is_empty()
                 {
-                    return Err(crate::error::CommandError::EmptyPayload {
+                    return Err(crate::graph::error::CommandError::EmptyPayload {
                         node: source.node(),
                     });
                 }
@@ -617,9 +617,9 @@ impl DockEngine {
 
     pub(in crate::engine) fn validate_node_source(
         &self,
-        source: &crate::command::NodeSource,
-    ) -> Result<(), crate::error::CommandError> {
-        use crate::error::ReferenceRole;
+        source: &crate::graph::command::NodeSource,
+    ) -> Result<(), crate::graph::error::CommandError> {
+        use crate::graph::error::ReferenceRole;
 
         self.workspace.verify_reference(
             source.root(),
@@ -671,7 +671,7 @@ impl DockEngine {
     pub(in crate::engine) fn contained_presentation_command(
         &self,
         payload: &MovePayload,
-        proposal: crate::intent::ContainedTearOffProposal,
+        proposal: crate::input::intent::ContainedTearOffProposal,
         complete_root: Option<NodeSource>,
         frozen_origin: Option<&FrozenContainedDragOrigin>,
     ) -> Option<WorkspaceCommand> {
@@ -679,7 +679,7 @@ impl DockEngine {
             && let Some(current) = self.workspace.contained_floating(proposal.floating())
             && current.root == source.root()
             && self.workspace.presentation_for_root(source.root())
-                == Some(crate::RootPresentationOwner::Contained {
+                == Some(crate::graph::workspace::RootPresentationOwner::Contained {
                     surface: proposal.surface(),
                     floating: proposal.floating(),
                 })
@@ -725,7 +725,7 @@ impl DockEngine {
     pub(in crate::engine) fn complete_root_source(
         &self,
         payload: &MovePayload,
-    ) -> Result<Option<crate::command::NodeSource>, crate::error::CommandError> {
+    ) -> Result<Option<crate::graph::command::NodeSource>, crate::graph::error::CommandError> {
         let root = match payload {
             MovePayload::Item(source) => source.root(),
             MovePayload::Tabs(source) | MovePayload::Subtree(source) => source.root(),
@@ -733,7 +733,7 @@ impl DockEngine {
         let record = self
             .workspace
             .root(root)
-            .ok_or(crate::error::CommandError::MissingRoot { root })?;
+            .ok_or(crate::graph::error::CommandError::MissingRoot { root })?;
         let complete = match payload {
             MovePayload::Item(_) => self.workspace.item_move_removes_root(
                 root,
@@ -768,8 +768,10 @@ impl DockEngine {
         root: crate::ids::RootId,
     ) -> Option<crate::ids::SurfaceId> {
         match self.workspace.presentation_for_root(root)? {
-            crate::RootPresentationOwner::Main { surface }
-            | crate::RootPresentationOwner::Contained { surface, .. } => Some(surface),
+            crate::graph::workspace::RootPresentationOwner::Main { surface }
+            | crate::graph::workspace::RootPresentationOwner::Contained { surface, .. } => {
+                Some(surface)
+            }
         }
     }
 }

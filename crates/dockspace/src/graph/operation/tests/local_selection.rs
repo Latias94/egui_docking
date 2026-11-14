@@ -1,5 +1,5 @@
 use super::*;
-use crate::drop_resolver::structural_work;
+use crate::interaction::targeting::resolver::structural_work;
 use proptest::prelude::*;
 
 fn selection_fixture() -> Workspace {

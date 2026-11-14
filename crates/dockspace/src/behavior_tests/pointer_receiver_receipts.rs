@@ -4,14 +4,14 @@ use dockspace::engine::DockEngine;
 use dockspace::geometry::{LogicalPoint, LogicalRect};
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, RootId, SurfaceId};
-use dockspace::pointer_receiver::{
+use dockspace::input::receiver::{
     PointerReceiverDelivery, PointerReceiverDeliveryDisposition, PointerReceiverHoverHit,
     PointerReceiverHoverHitDisposition, PointerReceiverObservation,
     PointerReceiverObservationError, PointerReceiverProbe, PointerReceiverProbeReceipt,
     PointerReceiverUnknownReason, PresentedPointerReceiverObservation,
 };
 use dockspace::policy::DockPolicy;
-use dockspace::presentation_hit::{PresentationHitRegionKind, PresentationPointerLane};
+use dockspace::presentation::hit::{PresentationHitRegionKind, PresentationPointerLane};
 use support::{TestPresentationHost, publish_surface};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);

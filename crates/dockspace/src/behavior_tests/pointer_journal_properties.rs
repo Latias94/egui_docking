@@ -1,17 +1,17 @@
 use super::support;
 
-use dockspace::command::WorkspaceCommand;
 use dockspace::engine::{CoreHostFrame, CoreHostFrameError, DockEngine, EngineError, EngineInput};
 use dockspace::geometry::{LogicalPoint, LogicalRect};
+use dockspace::graph::command::WorkspaceCommand;
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, NodeId, RootId, SourceSequence, StableInputSourceId, SurfaceId};
-use dockspace::intent::{Authority, PointerId};
-use dockspace::pointer_journal::{
+use dockspace::input::intent::{Authority, PointerId};
+use dockspace::input::journal::{
     PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
     PointerEdgeSequence, PointerStreamCancelReason, SurfaceLocalPointerEndpoint,
     SurfaceLocalPointerProvider, SurfaceLocalPointerProviderError, SurfaceLocalPointerScope,
 };
-use dockspace::pointer_receiver::{
+use dockspace::input::receiver::{
     PointerReceiverObservation, PointerReceiverReceiptBatch, PointerReceiverReceiptValidationError,
     PointerReceiverUnknownReason,
 };
@@ -129,7 +129,7 @@ fn finish(
     engine: &mut DockEngine,
     host: &mut TestPresentationHost,
     mut frame: CoreHostFrame,
-) -> dockspace::transition::EngineTransition {
+) -> dockspace::engine::transition::EngineTransition {
     complete_host_frame_with_retained_or_unavailable(engine, &mut frame);
     host.finish(frame, engine)
 }

@@ -8,12 +8,12 @@ use crate::model::{
 };
 use crate::motion::{MotionFrame, MotionMode, MotionPreference, MotionSettings};
 use crate::policy::DockPolicy;
+use crate::presentation::compiler::{reset_surface_compilation_count, surface_compilation_count};
 use crate::runtime::{
     DockspaceReceiverDescriptor, DockspaceSession, PaintedSurfaceOutput,
     SurfacePaintProgramOperation as Operation, SurfacePaintProgramStep as Step,
     SurfacePresentationResult, SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
-use crate::scene_compiler::{reset_surface_compilation_count, surface_compilation_count};
 
 mod selection_rebind_tests;
 
@@ -490,14 +490,14 @@ fn sixteen_and_sixty_four_pane_animation_ticks_reuse_target_topology() {
         let (_, output) = paint_large(&mut session, 1000);
         present(&mut session, output);
         reset_surface_compilation_count();
-        crate::drop_resolver::structural_work::reset();
+        crate::interaction::targeting::resolver::structural_work::reset();
         for now in [1010, 1020, 1050] {
             let (_, output) = paint_large(&mut session, now);
             present(&mut session, output);
         }
         assert!(session.surface_motion_is_active(SURFACE));
         assert_eq!(surface_compilation_count(), 0);
-        let work = crate::drop_resolver::structural_work::snapshot();
+        let work = crate::interaction::targeting::resolver::structural_work::snapshot();
         assert_eq!(work.root_fingerprint_builds, 0);
         assert_eq!(work.root_fingerprint_node_visits, 0);
     }

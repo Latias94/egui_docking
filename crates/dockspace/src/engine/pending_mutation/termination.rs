@@ -1,7 +1,7 @@
 //! One ownership-consuming cancellation path for released pointer transactions.
 
 use super::*;
-use crate::event::PendingReductionCause;
+use crate::engine::event::PendingReductionCause;
 
 impl DockEngine {
     pub(in crate::engine) fn cancel_pending_release_obligations_caused(

@@ -2,13 +2,13 @@
 
 use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize};
 use crate::ids::SurfaceId;
-use crate::intent::{
+use crate::input::intent::{
     ContainedHorizontalResizeEdge, ContainedPlacementUnavailable, ContainedResizeEdges,
     ContainedTransformKind, ContainedVerticalResizeEdge,
 };
+use crate::input::journal::{DesktopRouteValidation, PointerProviderScope, ValidatedDesktopRoute};
 use crate::interaction::{ActiveContainedTransform, ManipulationPositionKey};
-use crate::pointer_journal::{DesktopRouteValidation, PointerProviderScope, ValidatedDesktopRoute};
-use crate::scene::ContainedResizeDirection;
+use crate::presentation::scene::ContainedResizeDirection;
 
 pub(super) fn clamp_contained_rect(
     surface: SurfaceId,
@@ -136,7 +136,7 @@ pub(super) fn contained_manipulation_point(
     position: ManipulationPositionKey,
     surface: SurfaceId,
 ) -> Option<LogicalPoint> {
-    use crate::intent::Authority;
+    use crate::input::intent::Authority;
 
     match position {
         ManipulationPositionKey::JournalHost { manipulation, .. } => manipulation
@@ -404,7 +404,7 @@ fn contained_resize_axis(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::intent::Authority;
+    use crate::input::intent::Authority;
 
     fn rect(x: f64, y: f64, width: f64, height: f64) -> LogicalRect {
         LogicalRect::new(x, y, width, height).unwrap()

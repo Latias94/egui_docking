@@ -1,16 +1,18 @@
 use super::support;
 
-use dockspace::command::Edge;
-use dockspace::drop_guide::{
-    DropGuideClusterId, DropGuideClusterRecord, DropGuideScope, DropGuideSlot,
-};
-use dockspace::drop_target::{DropTargetAvailability, DropTargetId, DropTargetUnavailable};
 use dockspace::engine::DockEngine;
 use dockspace::geometry::LogicalRect;
+use dockspace::graph::command::Edge;
 use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace, WorkspaceBuilder};
 use dockspace::ids::{ItemId, NodeId, RootId, SurfaceId};
+use dockspace::interaction::targeting::guide::{
+    DropGuideClusterId, DropGuideClusterRecord, DropGuideScope, DropGuideSlot,
+};
+use dockspace::interaction::targeting::targets::{
+    DropTargetAvailability, DropTargetId, DropTargetUnavailable,
+};
 use dockspace::policy::DockPolicy;
-use dockspace::scene::PresentationPlan;
+use dockspace::presentation::scene::PresentationPlan;
 
 const SPLIT_ROOT: RootId = RootId::new(1);
 const SINGLE_ROOT: RootId = RootId::new(2);

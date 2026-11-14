@@ -2,10 +2,10 @@
 
 use crate::geometry::LogicalRect;
 use crate::ids::{ItemId, RootId, SurfaceId};
-use crate::scene::{
+use crate::presentation::scene::{
     TabListMenuBackdropRecord, TabListMenuRecord, TabListMenuRowRecord, TabStripControlRecord,
 };
-use crate::tab_strip::{TabListMenuSessionId, TabStripControlId};
+use crate::presentation::tab_strip::{TabListMenuSessionId, TabStripControlId};
 
 use super::{DockspacePaintLayer, DockspaceVisualId, VisualIdentity};
 

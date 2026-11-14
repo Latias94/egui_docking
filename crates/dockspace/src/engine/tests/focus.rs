@@ -1,8 +1,8 @@
 //! Pane focus, reveal, payload focus, and effect acknowledgement tests.
 
 use super::*;
-use crate::pointer_journal::{AnyButtonDownAuthority, PointerStateObservation};
-use crate::viewport_focus::{
+use crate::input::journal::{AnyButtonDownAuthority, PointerStateObservation};
+use crate::platform::focus::{
     CurrentUiFocus, HostFocusObservation, HostFocusState, PaneFocusObservationRejection,
 };
 
@@ -345,7 +345,7 @@ fn publish_focus_snapshot(
             ObservedWindow::new(fixture.binding).with_presentation_observation(
                 WindowPresentationObservation::new(
                     fixture.binding,
-                    crate::viewport::PresentationObservationGeneration::new(
+                    crate::platform::viewport::PresentationObservationGeneration::new(
                         fixture.focus_generation,
                     ),
                     Authority::Known(WindowPresentationState::Visible),
@@ -536,7 +536,7 @@ fn focus_effect_fixture() -> FocusEffectFixture {
 fn publish_effect_focus_snapshot(
     fixture: &mut FocusEffectFixture,
     focused: Authority<GlobalFocusedWindow>,
-    acknowledged_effect: Authority<Option<crate::effect::EffectId>>,
+    acknowledged_effect: Authority<Option<crate::platform::effect::EffectId>>,
 ) -> EngineTransition {
     fixture.focus_generation += 1;
     publish_effect_focus_snapshot_at(
@@ -551,7 +551,7 @@ fn publish_effect_focus_snapshot_at(
     fixture: &mut FocusEffectFixture,
     generation: u64,
     focused: Authority<GlobalFocusedWindow>,
-    acknowledged_effect: Authority<Option<crate::effect::EffectId>>,
+    acknowledged_effect: Authority<Option<crate::platform::effect::EffectId>>,
 ) -> EngineTransition {
     let mut capabilities = PlatformCapabilities::default();
     capabilities.set_authoritative_inventory(PlatformCapability::Supported);
@@ -571,14 +571,14 @@ fn publish_effect_focus_snapshot_at(
             ObservedWindow::new(fixture.binding_a).with_presentation_observation(
                 WindowPresentationObservation::new(
                     fixture.binding_a,
-                    crate::viewport::PresentationObservationGeneration::new(generation),
+                    crate::platform::viewport::PresentationObservationGeneration::new(generation),
                     Authority::Known(WindowPresentationState::Visible),
                 ),
             ),
             ObservedWindow::new(fixture.binding_b).with_presentation_observation(
                 WindowPresentationObservation::new(
                     fixture.binding_b,
-                    crate::viewport::PresentationObservationGeneration::new(generation),
+                    crate::platform::viewport::PresentationObservationGeneration::new(generation),
                     Authority::Known(WindowPresentationState::Visible),
                 ),
             ),
@@ -606,8 +606,8 @@ fn request_focus_effect(
     binding: ViewportBinding,
     focus: PanelFocus,
 ) -> (
-    crate::effect::EffectId,
-    crate::viewport_focus::ActivationGeneration,
+    crate::platform::effect::EffectId,
+    crate::platform::focus::ActivationGeneration,
 ) {
     let expected = fixture.engine.version();
     let transition = submit_test_input(
@@ -631,7 +631,7 @@ fn request_focus_effect(
         .platform_effects()
         .iter()
         .find_map(|request| match request.effect() {
-            crate::effect::PlatformEffect::RequestFocus {
+            crate::platform::effect::PlatformEffect::RequestFocus {
                 binding: requested, ..
             } if *requested == binding => Some(request.id()),
             _ => None,
@@ -676,7 +676,7 @@ fn programmatic_selection_activates_an_existing_native_window_before_pane_focus(
         .find(|request| {
             matches!(
                 request.effect(),
-                crate::effect::PlatformEffect::RequestFocus { binding, .. } if *binding == binding_b
+                crate::platform::effect::PlatformEffect::RequestFocus { binding, .. } if *binding == binding_b
             )
         })
         .expect("selecting a pane in another native window must request that exact window's focus")
@@ -727,7 +727,9 @@ fn programmatic_selection_activates_an_existing_native_window_before_pane_focus(
     );
 }
 
-fn observed_focus_effect_ids(transition: &EngineTransition) -> Vec<crate::effect::EffectId> {
+fn observed_focus_effect_ids(
+    transition: &EngineTransition,
+) -> Vec<crate::platform::effect::EffectId> {
     transition
         .focus_delta()
         .effects()
@@ -735,19 +737,19 @@ fn observed_focus_effect_ids(transition: &EngineTransition) -> Vec<crate::effect
         .filter_map(|change| {
             change
                 .observed()
-                .map(crate::viewport_focus::ObservedPlatformFocusEffect::effect)
+                .map(crate::platform::focus::ObservedPlatformFocusEffect::effect)
         })
         .collect()
 }
 
-fn assert_focus_effect_observed(engine: &DockEngine, effect: crate::effect::EffectId) {
+fn assert_focus_effect_observed(engine: &DockEngine, effect: crate::platform::effect::EffectId) {
     assert!(matches!(
         engine
             .viewport()
             .effects()
             .record(effect)
-            .map(crate::effect::EffectRecord::phase),
-        Some(crate::effect::EffectPhase::ObservedApplied { .. })
+            .map(crate::platform::effect::EffectRecord::phase),
+        Some(crate::platform::effect::EffectPhase::ObservedApplied { .. })
     ));
 }
 
@@ -773,7 +775,7 @@ fn late_superseded_focus_ack_settles_only_its_effect_before_successor_completion
             .engine
             .viewport_focus()
             .pending_activation()
-            .map(crate::viewport_focus::PendingViewportActivation::generation),
+            .map(crate::platform::focus::PendingViewportActivation::generation),
         Some(activation_b),
         "late predecessor acknowledgement must not complete or cancel the successor"
     );
@@ -836,14 +838,14 @@ fn one_envelope_can_settle_late_predecessor_and_complete_current_target() {
     assert_eq!(
         transition.focus_delta().effects()[0]
             .observed()
-            .map(crate::viewport_focus::ObservedPlatformFocusEffect::evidence),
-        Some(crate::viewport_focus::PlatformFocusEvidence::ExactEffectAcknowledgement)
+            .map(crate::platform::focus::ObservedPlatformFocusEffect::evidence),
+        Some(crate::platform::focus::PlatformFocusEvidence::ExactEffectAcknowledgement)
     );
     assert_eq!(
         transition.focus_delta().effects()[1]
             .observed()
-            .map(crate::viewport_focus::ObservedPlatformFocusEffect::evidence),
-        Some(crate::viewport_focus::PlatformFocusEvidence::NewerMatchingObservation)
+            .map(crate::platform::focus::ObservedPlatformFocusEffect::evidence),
+        Some(crate::platform::focus::PlatformFocusEvidence::NewerMatchingObservation)
     );
     let intent = fixture
         .engine
@@ -866,7 +868,7 @@ fn wrong_stale_incarnation_and_duplicate_focus_acks_do_not_settle_again() {
     let wrong = publish_effect_focus_snapshot(
         &mut fixture,
         Authority::Known(GlobalFocusedWindow::Foreign),
-        Authority::Known(Some(crate::effect::EffectId::new(9_999))),
+        Authority::Known(Some(crate::platform::effect::EffectId::new(9_999))),
     );
     assert!(observed_focus_effect_ids(&wrong).is_empty());
     assert_eq!(
@@ -875,8 +877,8 @@ fn wrong_stale_incarnation_and_duplicate_focus_acks_do_not_settle_again() {
             .viewport()
             .effects()
             .record(effect_a)
-            .map(crate::effect::EffectRecord::phase),
-        Some(crate::effect::EffectPhase::Requested)
+            .map(crate::platform::effect::EffectRecord::phase),
+        Some(crate::platform::effect::EffectPhase::Requested)
     );
 
     let stale_generation = fixture.focus_generation - 1;
@@ -893,8 +895,8 @@ fn wrong_stale_incarnation_and_duplicate_focus_acks_do_not_settle_again() {
             .viewport()
             .effects()
             .record(effect_a)
-            .map(crate::effect::EffectRecord::phase),
-        Some(crate::effect::EffectPhase::Requested)
+            .map(crate::platform::effect::EffectRecord::phase),
+        Some(crate::platform::effect::EffectPhase::Requested)
     );
 
     let first = publish_effect_focus_snapshot(
@@ -914,7 +916,7 @@ fn wrong_stale_incarnation_and_duplicate_focus_acks_do_not_settle_again() {
             .engine
             .viewport_focus()
             .pending_activation()
-            .map(crate::viewport_focus::PendingViewportActivation::generation),
+            .map(crate::platform::focus::PendingViewportActivation::generation),
         Some(activation_b)
     );
 
@@ -942,8 +944,8 @@ fn wrong_stale_incarnation_and_duplicate_focus_acks_do_not_settle_again() {
             .viewport()
             .effects()
             .record(stale_effect)
-            .map(crate::effect::EffectRecord::phase),
-        Some(crate::effect::EffectPhase::Requested)
+            .map(crate::platform::effect::EffectRecord::phase),
+        Some(crate::platform::effect::EffectPhase::Requested)
     );
 }
 
@@ -1481,7 +1483,7 @@ fn physical_focus_return_preserves_history_until_an_explicit_pane_activation() {
     assert_eq!(intent.native_guard(), Some(binding));
     assert_eq!(
         intent.source(),
-        crate::viewport_focus::PaneFocusIntentSource::ExplicitViewportActivation
+        crate::platform::focus::PaneFocusIntentSource::ExplicitViewportActivation
     );
 }
 
@@ -1563,7 +1565,7 @@ fn joined_focus_restore_fixture(
         vec![ObservedWindow::new(binding).with_presentation_observation(
             WindowPresentationObservation::new(
                 binding,
-                crate::viewport::PresentationObservationGeneration::new(1),
+                crate::platform::viewport::PresentationObservationGeneration::new(1),
                 Authority::Known(WindowPresentationState::Visible),
             ),
         )],
@@ -1728,7 +1730,7 @@ fn joined_native_window_focus_does_not_choose_a_pane_from_pointer_button_authori
         assert_eq!(intent.native_guard(), Some(fixture.binding));
         assert_eq!(
             intent.source(),
-            crate::viewport_focus::PaneFocusIntentSource::ExplicitViewportActivation
+            crate::platform::focus::PaneFocusIntentSource::ExplicitViewportActivation
         );
         assert!(activated.focus_delta().pane_intent().is_some());
     }
@@ -1951,7 +1953,7 @@ fn private_focus_generations_do_not_publish_state_or_focus_delta() {
     assert_eq!(
         activation.outcome(),
         ActivationStartOutcome::Suppressed(
-            crate::viewport_focus::ActivationSuppression::StaleBinding
+            crate::platform::focus::ActivationSuppression::StaleBinding
         )
     );
     assert!(transition.focus_delta().is_empty());
@@ -1988,7 +1990,7 @@ fn action_batch_barrier_allows_an_unrelated_target_mutation() {
             InputSequence::new(1),
             &WorkspaceCommand::Open {
                 item: ItemId::new(99),
-                target: crate::command::DockTarget::Center(target),
+                target: crate::graph::command::DockTarget::Center(target),
             },
             Some(&barrier),
             &mut events,

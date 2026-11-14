@@ -2,18 +2,18 @@
 
 use super::*;
 
-use crate::frame::{NativeCreatePhase, NativeCreateRequest};
 use crate::geometry::PhysicalPoint;
+use crate::input::journal::{
+    DesktopRouteFact, DesktopWorkAreaRoute, PointerEventDeliveryOwner, PointerInputLease,
+};
+use crate::input::receiver::PointerReceiverProbeRequest;
 use crate::interaction::{InteractionEventKind, PreviewVisual};
 use crate::model::LogicalSurfaceRejection;
+use crate::platform::frame::{NativeCreatePhase, NativeCreateRequest};
+use crate::platform::viewport::InputObservationGeneration;
 use crate::platform::{
     InputEffectAcknowledgement, NativeDragSourceInput, WindowInputObservation, WindowInputState,
 };
-use crate::pointer_journal::{
-    DesktopRouteFact, DesktopWorkAreaRoute, PointerEventDeliveryOwner, PointerInputLease,
-};
-use crate::pointer_receiver::PointerReceiverProbeRequest;
-use crate::viewport::InputObservationGeneration;
 
 #[derive(Clone, Copy)]
 enum PartialPayload {
@@ -37,12 +37,12 @@ fn reserve_partial_source(
     );
     let surface = SurfaceId::new(child_id);
     let root = RootId::new(child_id);
-    let converted = crate::surface_recovery::ConvertedMainRecovery::new(
+    let converted = crate::engine::surface_recovery::ConvertedMainRecovery::new(
         root,
         FloatingPresentationId::new(child_id),
         LogicalSize::new(0.0, 0.0).expect("recovery minimum must be valid"),
     );
-    let proposal = crate::frame::NativeCreateProposal::new(
+    let proposal = crate::platform::frame::NativeCreateProposal::new(
         surface,
         PhysicalRect::new(500.0, 0.0, 300.0, 220.0).expect("child placement must be valid"),
         converted,
@@ -510,7 +510,7 @@ fn native_drag_reservation_fixture() -> (BackgroundFixture, PointerInputLease, D
         ))
         .with_presentation_observation(WindowPresentationObservation::new(
             binding,
-            crate::viewport::PresentationObservationGeneration::new(2),
+            crate::platform::viewport::PresentationObservationGeneration::new(2),
             Authority::Known(WindowPresentationState::Visible),
         ));
     let snapshot = test_platform_snapshot(

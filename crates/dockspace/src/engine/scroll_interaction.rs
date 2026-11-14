@@ -1,7 +1,7 @@
 //! Ordered, device-independent scroll interaction state.
 
 use super::*;
-use crate::pointer_journal::ScrollModifiers;
+use crate::input::journal::ScrollModifiers;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct ScrollSequenceKey {
@@ -88,7 +88,7 @@ impl ScrollReceiverGeometry {
         }
     }
 
-    const fn primary_component(self, vector: crate::pointer_journal::FiniteScrollVector) -> f64 {
+    const fn primary_component(self, vector: crate::input::journal::FiniteScrollVector) -> f64 {
         match self {
             Self::TabStrip { .. } => {
                 if vector.x() != 0.0 {
@@ -111,7 +111,7 @@ impl ScrollReceiverGeometry {
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct ScrollOwner {
     receiver: PresentationHitRegionId,
-    hit: crate::presentation_hit::PresentationHitRegion,
+    hit: crate::presentation::hit::PresentationHitRegion,
     endpoint: ScrollDeliveryEndpoint,
     popup_routing: PopupRoutingRevision,
     policy: PolicyRevision,
@@ -146,7 +146,7 @@ struct ActiveScrollSession {
     id: ScrollSessionId,
     // Preserve the initial native delivery through semantic termination. The
     // receiver or its geometry may already be unavailable when the window dies.
-    native_delivery_binding: Option<crate::viewport::WindowBinding>,
+    native_delivery_binding: Option<crate::platform::viewport::WindowBinding>,
     disposition: ActiveScrollDisposition,
 }
 
@@ -159,8 +159,8 @@ pub(super) struct ScrollInteractionState {
 
 impl ScrollInteractionState {
     #[cfg(test)]
-    pub(super) fn retention_manifest(&self) -> crate::retention::ScrollRetentionManifest {
-        crate::retention::ScrollRetentionManifest::new(
+    pub(super) fn retention_manifest(&self) -> crate::engine::resources::ScrollRetentionManifest {
+        crate::engine::resources::ScrollRetentionManifest::new(
             self.active.len(),
             self.token_watermarks.len(),
         )
@@ -453,7 +453,7 @@ impl DockEngine {
                         ScrollTerminationReason::StreamCancelled
                     } else {
                         ScrollTerminationReason::Cancelled(
-                            crate::pointer_journal::ScrollCancelReason::BindingRetired,
+                            crate::input::journal::ScrollCancelReason::BindingRetired,
                         )
                     },
                 },
@@ -788,7 +788,7 @@ impl DockEngine {
         cause: ReductionCause,
         stream: PointerStreamId,
         scroll: ScrollEdge,
-        reason: crate::pointer_journal::ScrollCancelReason,
+        reason: crate::input::journal::ScrollCancelReason,
     ) -> Result<Vec<InteractionOutcome>, EngineError> {
         let token = scroll
             .sequence()
@@ -809,7 +809,7 @@ impl DockEngine {
         } else {
             self.terminate_scroll_session(cause, key, ScrollTerminationReason::Cancelled(reason))?
         };
-        if reason != crate::pointer_journal::ScrollCancelReason::BindingRetired {
+        if reason != crate::input::journal::ScrollCancelReason::BindingRetired {
             self.finish_scroll_provider_terminal(cause, key)?;
         }
         Ok(outcomes)
@@ -1482,7 +1482,7 @@ impl DockEngine {
     }
 }
 
-fn menu_line_extent(record: &crate::scene::TabListMenuRecord) -> Option<f64> {
+fn menu_line_extent(record: &crate::presentation::scene::TabListMenuRecord) -> Option<f64> {
     match record.rows() {
         [first, second, ..] => {
             let pitch = (second.bounds().y() - first.bounds().y()).abs();
@@ -1498,7 +1498,7 @@ fn menu_line_extent(record: &crate::scene::TabListMenuRecord) -> Option<f64> {
 
 pub(super) fn scroll_receiver_probe_vector(
     scroll: ScrollEdge,
-) -> Option<crate::pointer_journal::FiniteScrollVector> {
+) -> Option<crate::input::journal::FiniteScrollVector> {
     let delta = scroll.delta()?;
     if matches!(
         delta,
@@ -1519,13 +1519,13 @@ pub(super) fn scroll_receiver_probe_vector(
 }
 
 fn core_scroll_vector(
-    vector: crate::pointer_journal::FiniteScrollVector,
+    vector: crate::input::journal::FiniteScrollVector,
     modifiers: ScrollModifiers,
-) -> Result<crate::pointer_journal::FiniteScrollVector, crate::pointer_journal::ScrollEdgeError> {
+) -> Result<crate::input::journal::FiniteScrollVector, crate::input::journal::ScrollEdgeError> {
     if !modifiers.shift() {
         return Ok(vector);
     }
-    crate::pointer_journal::FiniteScrollVector::new(vector.x() + vector.y(), 0.0)
+    crate::input::journal::FiniteScrollVector::new(vector.x() + vector.y(), 0.0)
 }
 
 const fn scroll_session_receiver(session: ActiveScrollSession) -> Option<PresentationHitRegionId> {
@@ -1536,7 +1536,9 @@ const fn scroll_session_receiver(session: ActiveScrollSession) -> Option<Present
     }
 }
 
-fn native_scroll_delivery_binding(edge: &PointerEdge) -> Option<crate::viewport::WindowBinding> {
+fn native_scroll_delivery_binding(
+    edge: &PointerEdge,
+) -> Option<crate::platform::viewport::WindowBinding> {
     match edge.delivery_owner() {
         Authority::Known(PointerEventDeliveryOwner::Native(binding)) => Some(binding),
         Authority::Known(_) | Authority::Unknown(_) => None,
@@ -1585,7 +1587,7 @@ fn scroll_invariant(cause: ReductionCause, detail: impl Into<String>) -> EngineE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::intent::PointerId;
+    use crate::input::intent::PointerId;
 
     #[test]
     fn host_local_locked_scroll_accepts_unknown_routes_through_its_terminal_edge() {
@@ -1594,11 +1596,11 @@ mod tests {
             complete_host_frame_with_retained_or_unavailable, measurements, publish_surface_with,
         };
         use crate::graph::{Node, RootRecord, SurfacePresentation, Workspace};
-        use crate::intent::AuthorityUnavailableReason;
-        use crate::pointer_journal::{
+        use crate::input::intent::AuthorityUnavailableReason;
+        use crate::input::journal::{
             FiniteScrollVector, HostLocalPointerRoute, PointerEdgeJournal, ScrollMomentum,
         };
-        use crate::pointer_receiver::{
+        use crate::input::receiver::{
             PointerReceiverDelivery, PointerReceiverReceiptBatch, PointerReceiverUnknownReason,
             PresentedPointerReceiverObservation,
         };
@@ -1844,7 +1846,7 @@ mod tests {
 
     #[test]
     fn shift_projection_keeps_raw_f64_precision_in_core() {
-        let raw = crate::pointer_journal::FiniteScrollVector::new(16_777_217.25, -16_777_216.0)
+        let raw = crate::input::journal::FiniteScrollVector::new(16_777_217.25, -16_777_216.0)
             .expect("the raw scroll vector is finite");
         let projected = core_scroll_vector(raw, ScrollModifiers::new(true, false, false, false))
             .expect("the projected scroll vector is finite");
@@ -1895,7 +1897,7 @@ mod tests {
         assert!(state.retire_provider(lease).is_empty());
         assert_eq!(
             state.retention_manifest(),
-            crate::retention::ScrollRetentionManifest::default()
+            crate::engine::resources::ScrollRetentionManifest::default()
         );
     }
 
@@ -1944,7 +1946,7 @@ mod tests {
         assert!(state.retire_provider(lease).is_empty());
         assert_eq!(
             state.retention_manifest(),
-            crate::retention::ScrollRetentionManifest::default()
+            crate::engine::resources::ScrollRetentionManifest::default()
         );
     }
 

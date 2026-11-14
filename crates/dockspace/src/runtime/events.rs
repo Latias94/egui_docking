@@ -1,12 +1,12 @@
 //! Stable product notifications projected from committed workspace events.
 
-use crate::command::{CloseCommitOutcome, CommandOutcome};
-use crate::event::{WorkspaceEvent, WorkspaceEventKind};
+use crate::engine::event::{WorkspaceEvent, WorkspaceEventKind};
+use crate::engine::transition::{EngineTransition, InputOutcome, WorkspaceVersion};
+use crate::graph::command::{CloseCommitOutcome, CommandOutcome};
 use crate::ids::{
     EngineAuthorityDomainId, FloatingPresentationId, ItemId, ReducerTickId, RootId, SurfaceId,
 };
 use crate::model::DockspaceActionOutcome;
-use crate::transition::{EngineTransition, InputOutcome, WorkspaceVersion};
 
 use super::DockspaceCloseOutcome;
 

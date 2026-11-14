@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 
 use dockspace::geometry::LogicalRect;
+use dockspace::graph::validation::{PresentationLocation, WorkspaceValidationError};
 use dockspace::graph::{
     Axis, ContainedFloating, Node, RootRecord, SplitWeight, SurfacePresentation, Workspace,
 };
 use dockspace::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
-use dockspace::validation::{PresentationLocation, WorkspaceValidationError};
 
 fn logical_rect() -> LogicalRect {
     LogicalRect::new(12.0, 18.0, 320.0, 240.0).expect("test rectangle is finite and non-negative")

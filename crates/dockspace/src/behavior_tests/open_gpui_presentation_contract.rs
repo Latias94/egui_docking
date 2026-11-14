@@ -1,30 +1,32 @@
 use super::support;
 
-use dockspace::command::Edge;
-use dockspace::drop_guide::{DropGuideScope, DropGuideSlot};
-use dockspace::drop_target::DropTargetId;
+use dockspace::engine::transition::{EngineTransition, InputOutcome};
 use dockspace::engine::{CoreHostFrame, DockEngine, EngineInput};
 use dockspace::geometry::{LogicalPoint, LogicalRect};
+use dockspace::graph::command::Edge;
 use dockspace::graph::{Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{
     FloatingPresentationId, ItemId, NodeId, RootId, StableInputSourceId, SurfaceId,
 };
-use dockspace::intent::{Authority, PointerButton, PointerId};
-use dockspace::interaction::InteractionOutcome;
-use dockspace::pointer_journal::{
+use dockspace::input::intent::{Authority, PointerButton, PointerId};
+use dockspace::input::journal::{
     PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
     PointerEdgeSequence, SurfaceLocalPointerEndpoint, SurfaceLocalPointerProvider,
     SurfaceLocalPointerScope,
 };
-use dockspace::pointer_receiver::{
+use dockspace::input::receiver::{
     PointerReceiverDelivery, PointerReceiverDeliveryDisposition, PointerReceiverObservation,
     PointerReceiverProbeReceipt, PointerReceiverReceipt, PointerReceiverReceiptBatch,
     PresentedPointerReceiverObservation,
 };
+use dockspace::interaction::InteractionOutcome;
+use dockspace::interaction::targeting::guide::{DropGuideScope, DropGuideSlot};
+use dockspace::interaction::targeting::targets::DropTargetId;
 use dockspace::policy::DockPolicy;
-use dockspace::presentation_hit::{PresentationHitRegionId, PresentationHitRegionKind};
-use dockspace::scene::{ContainedResizeDirection, PresentationPlan, SplitterSceneId, TabSceneId};
-use dockspace::transition::{EngineTransition, InputOutcome};
+use dockspace::presentation::hit::{PresentationHitRegionId, PresentationHitRegionKind};
+use dockspace::presentation::scene::{
+    ContainedResizeDirection, PresentationPlan, SplitterSceneId, TabSceneId,
+};
 use support::{
     MeasurementProfile, TestPresentationHost, complete_host_frame_with_current_outputs,
     complete_host_frame_with_retained_or_unavailable, measurements, submit_input,
@@ -282,7 +284,7 @@ fn republish_surface_with_active_pointer(
 fn adjust_splitter(
     engine: &mut DockEngine,
     host: &mut TestPresentationHost,
-    scene: dockspace::scene::SurfaceSceneStamp,
+    scene: dockspace::presentation::scene::SurfaceSceneStamp,
     splitter: SplitterSceneId,
     delta: f64,
 ) -> InteractionOutcome {
@@ -829,7 +831,7 @@ fn junction_resize_updates_and_commits_both_axes_atomically() {
     let InteractionOutcome::ResizeDelivered {
         session: actual,
         outcome:
-            dockspace::command::CommandOutcome::SplitsResized {
+            dockspace::graph::command::CommandOutcome::SplitsResized {
                 splits: committed,
                 changed: true,
             },

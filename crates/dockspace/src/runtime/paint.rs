@@ -3,26 +3,26 @@
 use std::collections::HashSet;
 use std::fmt;
 
-use crate::drop_guide::DropGuideClusterId;
-use crate::drop_resolver::DropAffordance;
-use crate::drop_target::{DropTargetId, SceneLayerKey};
 use crate::engine::SurfaceContributionToken;
 use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize, PhysicalRect};
 use crate::graph::Axis;
 use crate::ids::{FloatingPresentationId, HostPresentationAttemptId, ItemId, RootId, SurfaceId};
+use crate::interaction::targeting::guide::DropGuideClusterId;
+use crate::interaction::targeting::resolver::DropAffordance;
+use crate::interaction::targeting::targets::{DropTargetId, SceneLayerKey};
 use crate::interaction::{
     ContainedTransformPreview, GestureCancelDelivery, InteractionPreview, PreviewVisual,
 };
 use crate::model::{DockspaceActionRejection, DockspaceAxis, ProductAction};
-use crate::presentation_hit::{
+use crate::presentation::hit::{
     PresentationHitRegion, PresentationHitRegionId, PresentationHitRegionKind,
     PresentationPointerLane, PresentationPointerLanes,
 };
-use crate::presentation_observation::{
+use crate::presentation::observation::{
     HostInteractionPresentation, SurfacePresentationOutputTicket,
 };
-pub use crate::scene::TabGroupDragRegionKind;
-use crate::scene::{
+pub use crate::presentation::scene::TabGroupDragRegionKind;
+use crate::presentation::scene::{
     ContainedLayoutOwner, ContainedRecord, ContainedResizeRecord, PresentationMenuAnchorHost,
     PresentationMenuAnchorRecord, PresentationPlan, ResolvedSurfaceProgramOperation,
     ResolvedSurfaceProgramRoot, ResolvedSurfaceProgramStep, SplitterJunctionDirection,
@@ -30,8 +30,10 @@ use crate::scene::{
     TabBarSceneId, TabSceneId,
 };
 #[cfg(test)]
-use crate::scene::{SurfaceProgramRootOperation, SurfaceProgramRootPresentation};
-use crate::tab_strip::{PopupRoutingRevision, TabListMenuSessionId, TabStripControlId};
+use crate::presentation::scene::{SurfaceProgramRootOperation, SurfaceProgramRootPresentation};
+use crate::presentation::tab_strip::{
+    PopupRoutingRevision, TabListMenuSessionId, TabStripControlId,
+};
 
 use super::{
     DockspaceHostFrame, DockspaceInteractionError, DockspacePaneFocusObservation,
@@ -112,7 +114,7 @@ pub struct DockspaceContentId {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum VisualIdentity {
-    Pane(crate::scene::PaneSceneId),
+    Pane(crate::presentation::scene::PaneSceneId),
     Tab(TabSceneId),
     TabBar(TabBarSceneId),
     TabGroupDragRegion {
@@ -203,7 +205,7 @@ impl SurfacePaintDisposition {
 }
 
 impl DockspaceVisualId {
-    pub(super) const fn from_pane_scene(id: crate::scene::PaneSceneId) -> Self {
+    pub(super) const fn from_pane_scene(id: crate::presentation::scene::PaneSceneId) -> Self {
         Self(VisualIdentity::Pane(id))
     }
 
@@ -340,7 +342,7 @@ impl DockspaceReceiverDescriptor {
             lanes,
             role: receiver_role(region.kind())?,
             bounds,
-            center: crate::scene::paint_receiver_center(bounds)?,
+            center: crate::presentation::scene::paint_receiver_center(bounds)?,
         })
     }
 
@@ -944,7 +946,7 @@ pub enum DockspacePresentationCommandUnavailable {
 pub struct PresentationCommandPaintRecord {
     authority_domain: crate::ids::EngineAuthorityDomainId,
     version: crate::model::WorkspaceVersion,
-    scene: crate::scene::SurfaceSceneStamp,
+    scene: crate::presentation::scene::SurfaceSceneStamp,
     surface: SurfaceId,
     root: RootId,
     kind: DockspacePresentationCommandKind,
@@ -956,7 +958,7 @@ impl PresentationCommandPaintRecord {
     fn ready(
         authority_domain: crate::ids::EngineAuthorityDomainId,
         version: crate::model::WorkspaceVersion,
-        scene: crate::scene::SurfaceSceneStamp,
+        scene: crate::presentation::scene::SurfaceSceneStamp,
         root: RootId,
         kind: DockspacePresentationCommandKind,
         action: ProductAction,
@@ -976,7 +978,7 @@ impl PresentationCommandPaintRecord {
     fn unavailable(
         authority_domain: crate::ids::EngineAuthorityDomainId,
         version: crate::model::WorkspaceVersion,
-        scene: crate::scene::SurfaceSceneStamp,
+        scene: crate::presentation::scene::SurfaceSceneStamp,
         root: RootId,
         kind: DockspacePresentationCommandKind,
         reason: DockspacePresentationCommandUnavailable,
@@ -1059,12 +1061,12 @@ pub struct SurfacePaintPlan<'frame> {
     pub(super) attempt: HostPresentationAttemptId,
     pub(super) authority_domain: crate::ids::EngineAuthorityDomainId,
     pub(super) version: crate::model::WorkspaceVersion,
-    pub(super) scene: crate::scene::SurfaceSceneStamp,
+    pub(super) scene: crate::presentation::scene::SurfaceSceneStamp,
     pub(super) output: SurfacePresentationOutputTicket,
     pub(super) contribution: SurfaceContributionToken,
     pub(super) interaction: HostInteractionPresentation,
     pub(super) plan: &'frame PresentationPlan,
-    pub(super) hit_manifest: &'frame crate::presentation_hit::PresentationHitManifest,
+    pub(super) hit_manifest: &'frame crate::presentation::hit::PresentationHitManifest,
     pub(super) splitter_keyboard_step: f64,
     pub(super) gesture_cancel_delivery: Option<GestureCancelDelivery>,
     pub(super) drop_affordance: Option<&'frame DropAffordance>,
@@ -1074,7 +1076,7 @@ pub struct SurfacePaintPlan<'frame> {
     pub(super) pane_focus_request: Option<DockspacePaneFocusRequest>,
     pub(super) candidate: crate::engine::HostFrameView<'frame>,
     pub(super) program_valid: bool,
-    pub(super) program_link: Option<&'frame crate::scene::SurfacePaintProgramLink>,
+    pub(super) program_link: Option<&'frame crate::presentation::scene::SurfacePaintProgramLink>,
 }
 
 /// Opaque receipt that a host accepted one exact program from beginning to end.
@@ -1809,7 +1811,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
 
     #[cfg(test)]
     fn validate_surface_program(&self) -> bool {
-        crate::scene::validate_surface_paint_program(self.plan, self.hit_manifest)
+        crate::presentation::scene::validate_surface_paint_program(self.plan, self.hit_manifest)
     }
 
     fn resolve_surface_program_step(
@@ -1882,7 +1884,8 @@ impl<'frame> SurfacePaintPlan<'frame> {
                         return Err(());
                     }
                     let center =
-                        crate::scene::paint_receiver_center(region.hit().rect()).ok_or(())?;
+                        crate::presentation::scene::paint_receiver_center(region.hit().rect())
+                            .ok_or(())?;
                     (region, center)
                 };
                 Some(SurfacePaintProgramStep::DropTarget(DropTargetPaintRecord {
@@ -2045,8 +2048,8 @@ impl<'frame> SurfacePaintPlan<'frame> {
             None => return Ok(None),
         };
         let owner_surface = match owner {
-            crate::RootPresentationOwner::Main { surface }
-            | crate::RootPresentationOwner::Contained { surface, .. } => surface,
+            crate::graph::workspace::RootPresentationOwner::Main { surface }
+            | crate::graph::workspace::RootPresentationOwner::Contained { surface, .. } => surface,
         };
         if owner_surface != self.surface {
             return Ok(None);
@@ -2063,7 +2066,10 @@ impl<'frame> SurfacePaintPlan<'frame> {
             )
         };
         if kind == DockspacePresentationCommandKind::Float
-            && matches!(owner, crate::RootPresentationOwner::Contained { .. })
+            && matches!(
+                owner,
+                crate::graph::workspace::RootPresentationOwner::Contained { .. }
+            )
         {
             return Ok(Some(unavailable(
                 DockspacePresentationCommandUnavailable::AlreadyContained,
@@ -2242,7 +2248,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
             self.version,
             self.scene,
             self.frozen_action_witness()?,
-            crate::intent::CloseSceneTarget::Tab(*tab.id()),
+            crate::input::intent::CloseSceneTarget::Tab(*tab.id()),
         ))
     }
 
@@ -2269,7 +2275,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
             self.version,
             self.scene,
             self.frozen_action_witness()?,
-            crate::intent::CloseSceneTarget::Contained(floating),
+            crate::input::intent::CloseSceneTarget::Contained(floating),
         ))
     }
 
@@ -2743,14 +2749,14 @@ impl<'frame> SurfacePaintPlan<'frame> {
         })
     }
 
-    fn tab_record(&self, item: ItemId) -> Option<&'frame crate::scene::TabRecord> {
+    fn tab_record(&self, item: ItemId) -> Option<&'frame crate::presentation::scene::TabRecord> {
         self.plan
             .tab_records()
             .iter()
             .find(|record| record.id().item == item)
     }
 
-    fn tab_is_operable(&self, tab: &crate::scene::TabRecord) -> bool {
+    fn tab_is_operable(&self, tab: &crate::presentation::scene::TabRecord) -> bool {
         let bounds = tab.drag_hit().rect();
         bounds.width() > 0.0
             && bounds.height() > 0.0
@@ -2831,12 +2837,12 @@ const fn receiver_role(kind: PresentationHitRegionKind) -> Option<DockspaceRecei
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::drop_target::{DropTargetRecord, DropVisual, SurfaceBackground};
     use crate::graph::{Node, RootRecord, SurfacePresentation, Workspace};
-    use crate::hit_region::HitRegion;
+    use crate::interaction::targeting::targets::{DropTargetRecord, DropVisual, SurfaceBackground};
     use crate::policy::DockPolicy;
+    use crate::presentation::hit::region::HitRegion;
+    use crate::presentation::scene::PaneSceneId;
     use crate::runtime::{DockspaceSession, UniformSurfaceMetrics};
-    use crate::scene::PaneSceneId;
 
     fn measured_surface_session() -> (DockspaceSession, SurfaceId) {
         let surface = SurfaceId::new(1);
@@ -2914,7 +2920,7 @@ mod tests {
 
     #[test]
     fn linked_target_receivers_match_identity_resolution_without_paint_time_searches() {
-        use crate::drop_resolver::structural_work;
+        use crate::interaction::targeting::resolver::structural_work;
 
         let (mut session, surface) = measured_surface_session();
         for width in [640.0, 800.0, 640.0] {
@@ -3059,7 +3065,7 @@ mod tests {
             .expect("the malformed program seals structurally");
         assert!(matches!(
             malformed.link_surface_program(),
-            Err(crate::scene::SceneBuildError::InvalidSurfaceProgram { .. })
+            Err(crate::presentation::scene::SceneBuildError::InvalidSurfaceProgram { .. })
         ));
         let malformed = SurfacePaintPlan {
             plan: &malformed,

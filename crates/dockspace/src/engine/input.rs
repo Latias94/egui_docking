@@ -1,8 +1,8 @@
-//! Public engine input protocol and opaque prepared interaction proofs.
+//! Internal engine input protocol and opaque prepared interaction proofs.
 
 use super::*;
-use crate::intent::PointerId;
-use crate::scene::{ContainedResizeDirection, SplitterJunctionId, TabSceneId};
+use crate::input::intent::PointerId;
+use crate::presentation::scene::{ContainedResizeDirection, SplitterJunctionId, TabSceneId};
 
 /// A document-validated workspace replacement carrying its opaque allocator lineage.
 ///
@@ -13,8 +13,8 @@ use crate::scene::{ContainedResizeDirection, SplitterJunctionId, TabSceneId};
 pub struct ValidatedWorkspaceRestore {
     workspace: Workspace,
     presentation_identity_frontier: PresentationIdentityFrontier,
-    native_surfaces: Option<crate::frame::NativeSurfaceRestorePlan>,
-    root_continuations: Vec<crate::frame::PreparedNativeRootContinuation>,
+    native_surfaces: Option<crate::platform::frame::NativeSurfaceRestorePlan>,
+    root_continuations: Vec<crate::platform::frame::PreparedNativeRootContinuation>,
 }
 
 impl ValidatedWorkspaceRestore {
@@ -44,26 +44,30 @@ impl ValidatedWorkspaceRestore {
     #[cfg(feature = "serde")]
     pub(crate) fn with_native_surfaces(
         mut self,
-        plan: crate::frame::NativeSurfaceRestorePlan,
+        plan: crate::platform::frame::NativeSurfaceRestorePlan,
     ) -> Self {
         self.native_surfaces = Some(plan);
         self
     }
 
-    pub(crate) fn native_surfaces(&self) -> Option<&crate::frame::NativeSurfaceRestorePlan> {
+    pub(crate) fn native_surfaces(
+        &self,
+    ) -> Option<&crate::platform::frame::NativeSurfaceRestorePlan> {
         self.native_surfaces.as_ref()
     }
 
     #[cfg(feature = "serde")]
     pub(crate) fn with_root_continuations(
         mut self,
-        continuations: Vec<crate::frame::PreparedNativeRootContinuation>,
+        continuations: Vec<crate::platform::frame::PreparedNativeRootContinuation>,
     ) -> Self {
         self.root_continuations = continuations;
         self
     }
 
-    pub(crate) fn root_continuations(&self) -> &[crate::frame::PreparedNativeRootContinuation] {
+    pub(crate) fn root_continuations(
+        &self,
+    ) -> &[crate::platform::frame::PreparedNativeRootContinuation] {
         &self.root_continuations
     }
 
@@ -84,15 +88,6 @@ pub struct PreparedTabStripControlActivation {
     pub(super) control: FrozenTabStripControlClick,
 }
 
-impl PreparedTabStripControlActivation {
-    /// Returns the stable control identity carried by this prepared activation.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn control(&self) -> TabStripControlId {
-        self.control.record.id()
-    }
-}
-
 /// Scene-proof-bearing non-pointer activation of one tab-list menu row.
 ///
 /// The sealed host-frame projection freezes the selected item and its exact
@@ -107,35 +102,10 @@ pub struct PreparedTabListMenuRowActivation {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PreparedTabListMenuDismiss {
     pub(super) presentation: FrozenPresentationAuthority,
-    pub(super) session: crate::tab_strip::TabListMenuSessionId,
+    pub(super) session: crate::presentation::tab_strip::TabListMenuSessionId,
     pub(super) revision: PopupRoutingRevision,
     pub(super) record: TabListMenuRecord,
     pub(super) backdrop: TabListMenuBackdropRecord,
-}
-
-impl PreparedTabListMenuDismiss {
-    /// Returns the exact active menu session carried by this proof.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn session(&self) -> crate::tab_strip::TabListMenuSessionId {
-        self.session
-    }
-}
-
-impl PreparedTabListMenuRowActivation {
-    /// Returns the exact active menu session frozen by this activation.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn session(&self) -> crate::tab_strip::TabListMenuSessionId {
-        self.row.session
-    }
-
-    /// Returns the stable tab identity selected by this activation.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn tab(&self) -> crate::scene::TabSceneId {
-        self.row.record.tab()
-    }
 }
 
 /// Validated scroll intent for one core-owned tab strip or tab-list menu.
@@ -213,32 +183,14 @@ pub struct PreparedTabStripScroll {
     pub(super) adjustment: TabScrollAdjustment,
 }
 
-impl PreparedTabStripScroll {
-    /// Returns the stable structural tab bar carried by this proof.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn bar(&self) -> crate::scene::TabBarSceneId {
-        self.key.bar()
-    }
-}
-
 /// Exact popup-session proof for one tab-list menu scroll adjustment.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PreparedTabListMenuScroll {
     pub(super) presentation: FrozenPresentationAuthority,
-    pub(super) session: crate::tab_strip::TabListMenuSessionId,
+    pub(super) session: crate::presentation::tab_strip::TabListMenuSessionId,
     pub(super) revision: PopupRoutingRevision,
     pub(super) record: TabListMenuRecord,
     pub(super) adjustment: TabScrollAdjustment,
-}
-
-impl PreparedTabListMenuScroll {
-    /// Returns the exact active menu session carried by this proof.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn session(&self) -> crate::tab_strip::TabListMenuSessionId {
-        self.session
-    }
 }
 
 /// Device-independent navigation intent for the sole active tab-list menu.
@@ -261,26 +213,10 @@ pub enum TabListMenuNavigation {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PreparedTabListMenuNavigation {
     pub(super) presentation: FrozenPresentationAuthority,
-    pub(super) session: crate::tab_strip::TabListMenuSessionId,
+    pub(super) session: crate::presentation::tab_strip::TabListMenuSessionId,
     pub(super) revision: PopupRoutingRevision,
     pub(super) record: TabListMenuRecord,
     pub(super) target: ItemId,
-}
-
-impl PreparedTabListMenuNavigation {
-    /// Returns the exact active menu session carried by this proof.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn session(&self) -> crate::tab_strip::TabListMenuSessionId {
-        self.session
-    }
-
-    /// Returns the core-resolved focus target.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn target(&self) -> ItemId {
-        self.target
-    }
 }
 
 /// One current-frame tab-strip or tab-list-menu action prepared from an exact
@@ -295,7 +231,7 @@ pub(crate) enum LocalTabChromeAction {
     ActivateControl(FrozenTabStripControlClick),
     /// Scroll one exact current tab-strip viewport.
     ScrollStrip {
-        key: crate::tab_strip::TabStripStateKey,
+        key: crate::presentation::tab_strip::TabStripStateKey,
         record: TabBarRecord,
         adjustment: TabScrollAdjustment,
     },
@@ -303,7 +239,7 @@ pub(crate) enum LocalTabChromeAction {
     ActivateMenuRow(FrozenTabListMenuRowClick),
     /// Dismiss the exact active tab-list menu.
     DismissMenu {
-        session: crate::tab_strip::TabListMenuSessionId,
+        session: crate::presentation::tab_strip::TabListMenuSessionId,
         revision: PopupRoutingRevision,
         record: TabListMenuRecord,
         backdrop: TabListMenuBackdropRecord,
@@ -312,14 +248,14 @@ pub(crate) enum LocalTabChromeAction {
     DismissMenuFromBackdrop(FrozenTabListMenuBackdropClick),
     /// Scroll the exact active tab-list menu.
     ScrollMenu {
-        session: crate::tab_strip::TabListMenuSessionId,
+        session: crate::presentation::tab_strip::TabListMenuSessionId,
         revision: PopupRoutingRevision,
         record: TabListMenuRecord,
         adjustment: TabScrollAdjustment,
     },
     /// Move focus within the exact active tab-list menu.
     NavigateMenu {
-        session: crate::tab_strip::TabListMenuSessionId,
+        session: crate::presentation::tab_strip::TabListMenuSessionId,
         revision: PopupRoutingRevision,
         record: TabListMenuRecord,
         target: ItemId,
@@ -558,7 +494,7 @@ pub enum EngineInput {
     /// Apply an owned local action using its core-issued frozen semantic witness.
     ApplyDeferredSurfaceAction {
         expected: WorkspaceVersion,
-        witness: Arc<crate::scene::SurfacePlanScene>,
+        witness: Arc<crate::presentation::scene::SurfacePlanScene>,
         action: LocalSurfaceAction,
     },
     /// Attach an empty central logical surface using declared semantic identities.
@@ -614,8 +550,8 @@ pub enum EngineInput {
     SetNativeSurfacePlacements {
         provider: PlatformObservationLease,
         expected: WorkspaceVersion,
-        window: crate::viewport::WindowBinding,
-        placements: Vec<crate::coordinates::NativeSurfacePlacement>,
+        window: crate::platform::viewport::WindowBinding,
+        placements: Vec<crate::platform::coordinates::NativeSurfacePlacement>,
     },
     /// Bind an existing adapter window to a current logical surface.
     RegisterViewport {
@@ -698,7 +634,7 @@ pub enum EngineInput {
         /// Workspace epoch whose binding incarnation was observed.
         expected_epoch: crate::ids::WorkspaceEpoch,
         /// Provider-owned global focus fact.
-        observation: crate::viewport_focus::FocusObservationEnvelope,
+        observation: crate::platform::focus::FocusObservationEnvelope,
     },
     /// Report an adapter dispatch result without claiming the effect was observed applied.
     ReportPlatformEffect {
@@ -741,7 +677,7 @@ pub enum EngineInput {
     /// Reports the host's current UI focus independently of pane history.
     PublishHostFocusObservation {
         expected_epoch: crate::ids::WorkspaceEpoch,
-        observation: crate::viewport_focus::HostFocusObservation,
+        observation: crate::platform::focus::HostFocusObservation,
     },
     /// Explicitly cancel one unresolved native-create saga.
     ///
@@ -767,7 +703,7 @@ pub enum EngineInput {
         /// Workspace version against which the failed cleanup was inspected.
         expected: WorkspaceVersion,
         /// Exact failed cleanup effect; indeterminate and all other phases are not retryable.
-        failed_effect: crate::effect::EffectId,
+        failed_effect: crate::platform::effect::EffectId,
     },
     /// Authoritatively replace the complete workspace.
     ReplaceWorkspace(Workspace),
@@ -776,7 +712,7 @@ pub enum EngineInput {
         /// Validated replacement graph with final presentation identities.
         workspace: Workspace,
         /// Complete coordinator preparation for the exact predecessors and targets.
-        continuations: Vec<crate::frame::PreparedNativeRootContinuation>,
+        continuations: Vec<crate::platform::frame::PreparedNativeRootContinuation>,
     },
     /// Restore one complete workspace and allocator lineage validated as one document.
     #[cfg_attr(
@@ -998,7 +934,7 @@ pub enum EngineInput {
         /// Exact Ready candidate painted by the framework callback.
         scene: SurfaceSceneStamp,
         /// Complete junction identity exposed by that candidate.
-        junction: crate::scene::SplitterJunctionId,
+        junction: crate::presentation::scene::SplitterJunctionId,
         /// Logical split axis adjusted by the semantic control.
         axis: crate::model::DockspaceAxis,
         /// Signed displacement shared by every incident splitter on `axis`.
@@ -1013,7 +949,7 @@ pub enum EngineInput {
         /// Stable contained presentation identity.
         floating: FloatingPresentationId,
         /// Exact cardinal edge exposed by that candidate.
-        direction: crate::scene::ContainedResizeDirection,
+        direction: crate::presentation::scene::ContainedResizeDirection,
         /// Signed displacement of that edge in logical surface units.
         delta: f64,
     },
@@ -1105,7 +1041,7 @@ pub enum EngineInput {
     /// frozen surface authority. Its workspace version must still match exactly.
     CancelPreparedInteraction {
         expected: WorkspaceVersion,
-        witness: Arc<crate::scene::SurfacePlanScene>,
+        witness: Arc<crate::presentation::scene::SurfacePlanScene>,
         status: InteractionStatus,
         delivery: GestureCancelDelivery,
     },

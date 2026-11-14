@@ -450,7 +450,7 @@ fn full_input_slot_drains_before_retrying_the_same_pending_presentation_once() {
 
 #[test]
 fn snapshot_byte_rejection_preserves_generations_and_exact_capacity_retries() {
-    use crate::backend_ingress::BackendIngressPayload;
+    use crate::input::ingress::BackendIngressPayload;
     use crate::platform::ObservedWorkArea;
     use std::sync::atomic::AtomicU8;
 

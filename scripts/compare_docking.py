@@ -181,7 +181,7 @@ def main() -> None:
             state_dir.mkdir()
             command = [str(binaries[product])]
             if product == "dockspace":
-                command += ["--exact", "docking_cost::docking_cost", "--ignored", "--nocapture", "--test-threads", "1"]
+                command += ["--exact", "graph::docking_cost::docking_cost", "--ignored", "--nocapture", "--test-threads", "1"]
             measured_environment = dict(
                 os.environ, DOCKSPACE_DOCK_COST_SAMPLES=str(args.samples),
                 DOCKSPACE_DOCK_COST_WARMUP=str(args.warmup), DOCKSPACE_DOCK_COST_PANES=args.panes,

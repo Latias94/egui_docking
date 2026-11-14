@@ -1,5 +1,5 @@
 use super::*;
-use crate::backend_ingress::{BackendIngressPayload, BackendIngressRecord, BackendIngressRecorder};
+use crate::input::ingress::{BackendIngressPayload, BackendIngressRecord, BackendIngressRecorder};
 use std::time::Duration;
 
 #[test]
@@ -75,7 +75,7 @@ fn native_semantic_box_capacity_is_charged_once_across_batch_clones() {
         EngineInput::RegisterViewport { .. }
     ));
     let expected = size_of::<BackendIngressRecorder>()
-        + size_of::<Option<crate::backend_ingress::BackendIngressPrefixRetirementReceipt>>()
+        + size_of::<Option<crate::input::ingress::BackendIngressPrefixRetirementReceipt>>()
         + recorder.record_buffer_capacity_bytes()
         + recorder.shared_fixed_data_bytes()
         + size_of::<EngineInput>();
@@ -141,7 +141,7 @@ fn retirement_receipt_inline_storage_is_charged_while_empty_and_owned() {
     assert!(descendants >= size_of::<ViewportBinding>());
     assert!(native.pending_prefix_retirement.is_none());
     let expected = size_of::<BackendIngressRecorder>()
-        + size_of::<Option<crate::backend_ingress::BackendIngressPrefixRetirementReceipt>>()
+        + size_of::<Option<crate::input::ingress::BackendIngressPrefixRetirementReceipt>>()
         + native.recorder.record_buffer_capacity_bytes()
         + native.recorder.shared_fixed_data_bytes();
     let empty = session.native_input_owned_capacity_bytes().unwrap();
@@ -388,8 +388,8 @@ fn native_input_capacity_rejects_dynamic_close_dispositions_outside_the_facade()
         .record_semantic_input(EngineInput::RequestSurfaceClose {
             expected,
             edge: close.edge,
-            request: crate::close_plan::SurfaceCloseRequest::RehomeAll {
-                target: crate::close_plan::SurfaceRehomeTarget::new(
+            request: crate::close::plan::SurfaceCloseRequest::RehomeAll {
+                target: crate::close::plan::SurfaceRehomeTarget::new(
                     SURFACE,
                     None,
                     Vec::with_capacity(32),

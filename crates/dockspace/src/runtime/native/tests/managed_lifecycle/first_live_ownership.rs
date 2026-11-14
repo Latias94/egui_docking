@@ -2,13 +2,13 @@
 
 use super::*;
 use crate::model::WorkspaceVersion;
+use crate::platform::registry::ViewportAdmission;
+use crate::presentation::tab_strip::PopupPlaneRequirement;
 use crate::runtime::{
     SurfaceMeasurementAnswer, SurfaceMeasurementRequest, SurfacePaintProgramOperation,
     TabListMenuMetrics, TabStripControlKind, TabStripControlMetric, TabStripControlMetrics,
     TabStripControlPlacement, TabStripMetrics,
 };
-use crate::tab_strip::PopupPlaneRequirement;
-use crate::viewport_registry::ViewportAdmission;
 
 #[inline(never)]
 fn pending_first_live_native_create()
@@ -198,7 +198,7 @@ fn assert_pending_first_live_source(
                 saga.binding() == child.binding
                     && matches!(
                         saga.phase(),
-                        crate::frame::NativeCreatePhase::AwaitingFirstLivePresentation { .. }
+                        crate::platform::frame::NativeCreatePhase::AwaitingFirstLivePresentation { .. }
                     )
             })
     );
@@ -519,7 +519,7 @@ fn ordered_first_live_rebases_following_surface_action_and_retries_atomically() 
         assert_eq!(current.revision().get(), version.revision().get() + 1);
         let workspace = frame.frame.view().workspace();
         let tabs = workspace.root(ROOT).expect("the child root exists").node;
-        let stale = crate::command::WorkspaceCommand::Select {
+        let stale = crate::graph::command::WorkspaceCommand::Select {
             source: workspace
                 .capture_item_source(ROOT, tabs, ITEM)
                 .expect("the former selected item remains in the child"),
@@ -587,7 +587,7 @@ fn open_first_live_source_popup(
         .expect("the source overflow configuration frame begins");
     configure
         .replace_presentation_config(
-            crate::presentation_config::DockPresentationConfig::builder()
+            crate::presentation::config::DockPresentationConfig::builder()
                 .tab_min_width(180.0)
                 .build()
                 .expect("the contained source's two tabs require real overflow"),
@@ -1042,7 +1042,7 @@ fn disabling_native_policy_cancels_pending_first_live_without_transfer_or_late_a
         .expect("policy cancellation transfers the exact child to its cleanup owner");
     assert_eq!(
         retirement.origin(),
-        crate::frame::BindingRetirementOrigin::NativeCreateAborted { create }
+        crate::platform::frame::BindingRetirementOrigin::NativeCreateAborted { create }
     );
     assert_eq!(
         session
@@ -1304,9 +1304,11 @@ fn unreported_and_abandoned_first_live_output_preserve_source_ownership() {
 }
 
 fn first_live_measurements(
-    requirements: &crate::scene_manifest::SurfaceRequirements,
-) -> crate::scene_manifest::SurfaceMeasurements {
-    use crate::scene_manifest::{Measurement, SurfaceMeasurements, TabIntrinsic, TabStripMetrics};
+    requirements: &crate::presentation::manifest::SurfaceRequirements,
+) -> crate::presentation::manifest::SurfaceMeasurements {
+    use crate::presentation::manifest::{
+        Measurement, SurfaceMeasurements, TabIntrinsic, TabStripMetrics,
+    };
 
     let bounds = crate::geometry::LogicalRect::new(0.0, 0.0, 420.0, 320.0)
         .expect("the child surface bounds validate");
@@ -1351,7 +1353,7 @@ fn first_live_measurements(
 
 #[test]
 fn native_first_live_projection_compiles_child_without_publishing_ownership() {
-    use crate::frame::NativeCreatePhase;
+    use crate::platform::frame::NativeCreatePhase;
 
     let (session, root, child) = pending_first_live_native_create();
 

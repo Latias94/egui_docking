@@ -184,7 +184,7 @@ impl DockEngine {
         if !owner.is_desktop()
             || !matches!(owner.lease().scope(), PointerProviderScope::NativeJoined(_))
             || self.pointer_journal.stream_device(owner.stream())
-                != Some(crate::pointer_journal::PointerDeviceKind::Mouse)
+                != Some(crate::input::journal::PointerDeviceKind::Mouse)
             || !self.pointer_continuation_source_is_current(owner)
             || !(self.presentation_authority_is_current(drag.presentation)
                 || drag.continuation.as_ref().is_some_and(|continuation| {
@@ -453,7 +453,7 @@ impl DockEngine {
         receipt: &ValidatedPointerReceiverReceipt,
         snapshot: &JournalPresentationSnapshot,
     ) -> Option<(
-        crate::scene::TabSceneId,
+        crate::presentation::scene::TabSceneId,
         PresentedSurfaceAuthority,
         LogicalPoint,
     )> {
@@ -711,7 +711,7 @@ impl DockEngine {
         cause: ReductionCause,
         owner: GestureOwner,
         session: crate::interaction::DragSessionId,
-        tab: crate::scene::TabSceneId,
+        tab: crate::presentation::scene::TabSceneId,
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
     ) -> Result<InteractionOutcome, EngineError> {

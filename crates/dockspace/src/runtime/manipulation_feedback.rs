@@ -1,6 +1,6 @@
 //! Stateless product feedback projected from committed interaction events.
 
-use crate::event::ReductionCause;
+use crate::engine::event::ReductionCause;
 use crate::ids::{EngineAuthorityDomainId, ReducerTickId};
 use crate::interaction::{
     ContainedTransformSessionId, DragSessionId, InteractionEvent, InteractionEventKind,

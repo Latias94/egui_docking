@@ -2,7 +2,7 @@ use super::*;
 
 use std::collections::BTreeMap;
 
-use crate::close_plan::DeferredCloseToken;
+use crate::close::plan::DeferredCloseToken;
 use crate::graph::Workspace;
 
 const ALL_ITEMS: [ItemId; 4] = [FIRST, SECOND, THIRD, FOURTH];

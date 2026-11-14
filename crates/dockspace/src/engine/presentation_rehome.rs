@@ -8,9 +8,9 @@ use crate::model::{DockspaceActionOutcome, DockspaceActionRejection, ProductActi
 
 #[derive(Debug, Clone, Copy)]
 struct NativePresentationRehomeSource {
-    owner: crate::RootPresentationOwner,
+    owner: crate::graph::workspace::RootPresentationOwner,
     surface: SurfaceId,
-    binding: crate::viewport::ViewportBinding,
+    binding: crate::platform::viewport::ViewportBinding,
     recovery: SurfaceRecoveryObligationId,
     presentation: PresentedSurfaceAuthority,
 }
@@ -18,7 +18,7 @@ struct NativePresentationRehomeSource {
 struct PreparedPresentationRehome {
     command: WorkspaceCommand,
     root: RootId,
-    source: crate::command::NodeSource,
+    source: crate::graph::command::NodeSource,
     target_surface: SurfaceId,
     floating: Option<FloatingPresentationId>,
     visual: PreviewVisual,
@@ -74,7 +74,7 @@ impl DockEngine {
             .workspace
             .presentation_for_root(root)
             .ok_or(DockspaceActionRejection::RootUnavailable { root })?;
-        let crate::RootPresentationOwner::Main { surface } = owner else {
+        let crate::graph::workspace::RootPresentationOwner::Main { surface } = owner else {
             return Ok(None);
         };
         let Some(bound) = self.bound_surface_recoveries.get(&surface) else {
@@ -100,7 +100,7 @@ impl DockEngine {
             .workspace
             .presentation_for_root(root)
             .ok_or(DockspaceActionRejection::RootUnavailable { root })?;
-        let crate::RootPresentationOwner::Main { surface } = owner else {
+        let crate::graph::workspace::RootPresentationOwner::Main { surface } = owner else {
             return Ok(None);
         };
         let Some(bound) = self.bound_surface_recoveries.get(&surface) else {
@@ -126,21 +126,25 @@ impl DockEngine {
             .presentation_for_root(root)
             .ok_or(DockspaceActionRejection::RootUnavailable { root })?;
         let source_surface = match owner {
-            crate::RootPresentationOwner::Main { surface }
-            | crate::RootPresentationOwner::Contained { surface, .. } => surface,
+            crate::graph::workspace::RootPresentationOwner::Main { surface }
+            | crate::graph::workspace::RootPresentationOwner::Contained { surface, .. } => surface,
         };
         let Some(source_recovery) = self.bound_surface_recoveries.get(&source_surface) else {
             return Ok(None);
         };
         match owner {
-            crate::RootPresentationOwner::Contained { .. } if source_surface == target_surface => {
+            crate::graph::workspace::RootPresentationOwner::Contained { .. }
+                if source_surface == target_surface =>
+            {
                 return Ok(None);
             }
-            crate::RootPresentationOwner::Main { .. } if source_surface == target_surface => {
+            crate::graph::workspace::RootPresentationOwner::Main { .. }
+                if source_surface == target_surface =>
+            {
                 return Err(DockspaceActionRejection::Conflict);
             }
-            crate::RootPresentationOwner::Main { .. }
-            | crate::RootPresentationOwner::Contained { .. } => {}
+            crate::graph::workspace::RootPresentationOwner::Main { .. }
+            | crate::graph::workspace::RootPresentationOwner::Contained { .. } => {}
         }
         let source_binding = source_recovery.binding;
         let source_record = self.viewport.viewport(source_surface).filter(|record| {
@@ -190,7 +194,10 @@ impl DockEngine {
         root: RootId,
         source: NativePresentationRehomeSource,
     ) -> Result<PreparedPresentationRehome, DockspaceActionRejection> {
-        if !matches!(source.owner, crate::RootPresentationOwner::Main { .. }) {
+        if !matches!(
+            source.owner,
+            crate::graph::workspace::RootPresentationOwner::Main { .. }
+        ) {
             return Err(DockspaceActionRejection::DockBackUnavailable { root });
         }
         let bound = self
@@ -421,7 +428,7 @@ impl DockEngine {
         command: &WorkspaceCommand,
     ) -> Result<
         Option<(
-            crate::command::NodeSource,
+            crate::graph::command::NodeSource,
             SurfaceId,
             Option<FloatingPresentationId>,
             PreviewVisual,
@@ -465,7 +472,7 @@ impl DockEngine {
                         .iter()
                         .find(|record| {
                             record.id()
-                                == crate::drop_target::DropTargetId::SurfaceBackground { surface }
+                                == crate::interaction::targeting::targets::DropTargetId::SurfaceBackground { surface }
                         })
                         .ok_or(DockspaceActionRejection::PresentationUnavailable { surface })?;
                     Ok(Some((
@@ -923,15 +930,15 @@ impl DockEngine {
                     authority.same_interaction_semantics(pending.source_presentation)
                 });
         let rejection = if self.version != pending.source_version {
-            Some(crate::event::PresentationRehomeResult::WorkspaceChanged)
+            Some(crate::engine::event::PresentationRehomeResult::WorkspaceChanged)
         } else if self.policy.revision() != pending.policy_revision {
-            Some(crate::event::PresentationRehomeResult::PolicyChanged)
+            Some(crate::engine::event::PresentationRehomeResult::PolicyChanged)
         } else if pending.presentation.is_failed() {
-            Some(crate::event::PresentationRehomeResult::TargetNotPresented)
+            Some(crate::engine::event::PresentationRehomeResult::TargetNotPresented)
         } else if !source_is_current
             || self.workspace.presentation_for_root(pending.root) != Some(pending.source_owner)
         {
-            Some(crate::event::PresentationRehomeResult::SourceUnavailable)
+            Some(crate::engine::event::PresentationRehomeResult::SourceUnavailable)
         } else {
             None
         };
@@ -986,7 +993,7 @@ impl DockEngine {
             Err(_) => {
                 Self::record_presentation_rehome_settlement(
                     &pending,
-                    crate::event::PresentationRehomeResult::CommandRejected,
+                    crate::engine::event::PresentationRehomeResult::CommandRejected,
                     None,
                     self.version,
                     events,
@@ -1005,7 +1012,7 @@ impl DockEngine {
             .viewport
             .viewport(pending.target_surface)
             .filter(|record| record.can_accept_activation())
-            .map(crate::viewport_registry::ViewportRecord::binding)
+            .map(crate::platform::registry::ViewportRecord::binding)
         {
             let _ = self.start_viewport_activation(
                 ViewportActivationRequest::drop_committed(binding, pending.pane_focus),
@@ -1015,7 +1022,7 @@ impl DockEngine {
         }
         Self::record_presentation_rehome_settlement(
             &pending,
-            crate::event::PresentationRehomeResult::Applied,
+            crate::engine::event::PresentationRehomeResult::Applied,
             Some(product_outcome),
             self.version,
             events,
@@ -1025,7 +1032,7 @@ impl DockEngine {
 
     fn record_presentation_rehome_settlement(
         pending: &PendingPresentationRehome,
-        result: crate::event::PresentationRehomeResult,
+        result: crate::engine::event::PresentationRehomeResult,
         outcome: Option<DockspaceActionOutcome>,
         version: WorkspaceVersion,
         events: &mut Vec<WorkspaceEvent>,
@@ -1044,40 +1051,44 @@ impl DockEngine {
     }
 }
 
-fn product_dock_target_root(target: &crate::command::DockTarget) -> RootId {
+fn product_dock_target_root(target: &crate::graph::command::DockTarget) -> RootId {
     match target {
-        crate::command::DockTarget::Center(target)
-        | crate::command::DockTarget::TabGap { target, .. } => target.root(),
-        crate::command::DockTarget::InnerEdge(target)
-        | crate::command::DockTarget::OuterEdge(target) => target.root(),
+        crate::graph::command::DockTarget::Center(target)
+        | crate::graph::command::DockTarget::TabGap { target, .. } => target.root(),
+        crate::graph::command::DockTarget::InnerEdge(target)
+        | crate::graph::command::DockTarget::OuterEdge(target) => target.root(),
     }
 }
 
-fn product_drop_target_id(target: &crate::command::DockTarget) -> crate::drop_target::DropTargetId {
+fn product_drop_target_id(
+    target: &crate::graph::command::DockTarget,
+) -> crate::interaction::targeting::targets::DropTargetId {
     match target {
-        crate::command::DockTarget::Center(target) => crate::drop_target::DropTargetId::Center {
-            surface: target.surface(),
-            root: target.root(),
-            tabs: target.tabs(),
-        },
-        crate::command::DockTarget::TabGap { target, index } => {
-            crate::drop_target::DropTargetId::TabGap {
+        crate::graph::command::DockTarget::Center(target) => {
+            crate::interaction::targeting::targets::DropTargetId::Center {
+                surface: target.surface(),
+                root: target.root(),
+                tabs: target.tabs(),
+            }
+        }
+        crate::graph::command::DockTarget::TabGap { target, index } => {
+            crate::interaction::targeting::targets::DropTargetId::TabGap {
                 surface: target.surface(),
                 root: target.root(),
                 tabs: target.tabs(),
                 index: *index,
             }
         }
-        crate::command::DockTarget::InnerEdge(target) => {
-            crate::drop_target::DropTargetId::InnerEdge {
+        crate::graph::command::DockTarget::InnerEdge(target) => {
+            crate::interaction::targeting::targets::DropTargetId::InnerEdge {
                 surface: target.surface(),
                 root: target.root(),
                 node: target.node(),
                 edge: target.edge(),
             }
         }
-        crate::command::DockTarget::OuterEdge(target) => {
-            crate::drop_target::DropTargetId::OuterEdge {
+        crate::graph::command::DockTarget::OuterEdge(target) => {
+            crate::interaction::targeting::targets::DropTargetId::OuterEdge {
                 surface: target.surface(),
                 root: target.root(),
                 node: target.node(),

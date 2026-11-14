@@ -22,25 +22,25 @@ use super::native_effect::{
     NativeEffectSubmissionError, NativeInputEffectAcknowledgement,
 };
 use super::{DockspaceRuntimeError, DockspaceSession};
-use crate::backend_ingress::{
-    BackendIngressError, BackendIngressOrdinal, BackendIngressPrefixRetirementReceipt,
-    BackendIngressRecorder,
-};
-pub use crate::coordinates::NativeSurfacePlacement;
 use crate::engine::EngineInput;
 use crate::geometry::{PhysicalRect, PhysicalSize, ScaleFactor};
 use crate::ids::{SurfaceId, WorkspaceEpoch};
+use crate::input::ingress::{
+    BackendIngressError, BackendIngressOrdinal, BackendIngressPrefixRetirementReceipt,
+    BackendIngressRecorder,
+};
+pub use crate::platform::coordinates::NativeSurfacePlacement;
+use crate::platform::provider::PlatformObservationLease;
+use crate::platform::registry::ViewportAdmission;
+use crate::platform::viewport::{
+    CloseObservationGeneration, ViewportBinding, ViewportRole, WindowBinding, WindowToken,
+    WorkAreaGeneration, WorkAreaToken,
+};
 use crate::platform::{
     CloseEffectAcknowledgement, ObservedWindow, WindowCloseObservation, WindowCloseState,
     WindowInputState, WindowPresentationState,
 };
 pub use crate::platform::{NativeCreateReadiness, NativeDragSourceInput};
-use crate::platform_provider::PlatformObservationLease;
-use crate::viewport::{
-    CloseObservationGeneration, ViewportBinding, ViewportRole, WindowBinding, WindowToken,
-    WorkAreaGeneration, WorkAreaToken,
-};
-use crate::viewport_registry::ViewportAdmission;
 pub use budget::{NativeInputBudget, NativeMonotonicClock};
 use compiler::{
     NativeSnapshotEntry, compile_focus_observation, compile_platform_snapshot,
@@ -413,13 +413,13 @@ impl From<NativeSurfaceBinding> for NativeWindowBinding {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NativeSurfaceCloseRequest {
     provider: PlatformObservationLease,
-    edge: crate::close_plan::NativeCloseEdge,
+    edge: crate::close::plan::NativeCloseEdge,
 }
 
 impl NativeSurfaceCloseRequest {
     pub(super) const fn from_edge(
         provider: PlatformObservationLease,
-        edge: crate::close_plan::NativeCloseEdge,
+        edge: crate::close::plan::NativeCloseEdge,
     ) -> Self {
         Self { provider, edge }
     }
@@ -453,13 +453,13 @@ pub enum NativeSurfaceCloseAction {
 }
 
 impl NativeSurfaceCloseAction {
-    fn into_request(self) -> crate::close_plan::SurfaceCloseRequest {
+    fn into_request(self) -> crate::close::plan::SurfaceCloseRequest {
         match self {
             Self::RecoverPresentation => {
-                crate::close_plan::SurfaceCloseRequest::RecoverPresentation
+                crate::close::plan::SurfaceCloseRequest::RecoverPresentation
             }
-            Self::RetainLayout => crate::close_plan::SurfaceCloseRequest::RetainLayout,
-            Self::CloseContent => crate::close_plan::SurfaceCloseRequest::CloseContent,
+            Self::RetainLayout => crate::close::plan::SurfaceCloseRequest::RetainLayout,
+            Self::CloseContent => crate::close::plan::SurfaceCloseRequest::CloseContent,
         }
     }
 }
@@ -509,9 +509,11 @@ pub enum NativeSurfaceCloseRejection {
     Unsupported,
 }
 
-impl From<&crate::transition::SurfaceCloseRequestRejection> for NativeSurfaceCloseRejection {
-    fn from(reason: &crate::transition::SurfaceCloseRequestRejection) -> Self {
-        use crate::transition::SurfaceCloseRequestRejection;
+impl From<&crate::engine::transition::SurfaceCloseRequestRejection>
+    for NativeSurfaceCloseRejection
+{
+    fn from(reason: &crate::engine::transition::SurfaceCloseRequestRejection) -> Self {
+        use crate::engine::transition::SurfaceCloseRequestRejection;
 
         match reason {
             SurfaceCloseRequestRejection::EdgeUnavailable { .. } => Self::StaleEdge,
@@ -1406,7 +1408,7 @@ impl RuntimeNativeState {
 
     fn record_effect_result(
         &mut self,
-        result: crate::effect::EffectResult,
+        result: crate::platform::effect::EffectResult,
     ) -> Result<(), NativePlatformError> {
         self.recorder
             .record_platform_effect_result(result)
@@ -1473,7 +1475,7 @@ impl RuntimeNativeState {
 
     fn current_focus_observation(
         &self,
-    ) -> Result<crate::viewport_focus::FocusObservationEnvelope, NativePlatformError> {
+    ) -> Result<crate::platform::focus::FocusObservationEnvelope, NativePlatformError> {
         compile_focus_observation(self.provider(), self.focus_generation, self.focus)
     }
 
@@ -1482,7 +1484,7 @@ impl RuntimeNativeState {
         bindings: impl IntoIterator<Item = ViewportBinding>,
     ) -> Result<
         (
-            crate::viewport_focus::FocusObservationEnvelope,
+            crate::platform::focus::FocusObservationEnvelope,
             Option<(u64, NativeGlobalFocus)>,
         ),
         NativePlatformError,
@@ -1728,7 +1730,7 @@ impl RuntimeNativeState {
         committed: BackendIngressOrdinal,
         surface: SurfaceId,
         token: WindowToken,
-        recovery: crate::surface_recovery::SurfaceRecoveryBootstrap,
+        recovery: crate::engine::surface_recovery::SurfaceRecoveryBootstrap,
     ) -> Result<(), NativePlatformError> {
         self.preflight_registration(committed, surface)?;
         let ordinal = self
@@ -1911,10 +1913,8 @@ pub(super) struct NativeHostCommit {
     pub(super) input_pending: bool,
 }
 
-fn registration_surface(
-    record: &crate::backend_ingress::BackendIngressRecord,
-) -> Option<SurfaceId> {
-    let crate::backend_ingress::BackendIngressPayload::SemanticInput(input) = record.payload()
+fn registration_surface(record: &crate::input::ingress::BackendIngressRecord) -> Option<SurfaceId> {
+    let crate::input::ingress::BackendIngressPayload::SemanticInput(input) = record.payload()
     else {
         return None;
     };

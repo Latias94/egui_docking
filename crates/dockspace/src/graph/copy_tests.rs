@@ -1,11 +1,11 @@
 //! Candidate isolation and actual payload-copy work through the normal owner.
 
 use super::*;
-use crate::command::{DockFraction, DockTarget, Edge, MovePayload, WorkspaceCommand};
-use crate::drop_resolver::structural_work;
-use crate::error::{CommandError, ReferenceRole};
+use crate::graph::command::{DockFraction, DockTarget, Edge, MovePayload, WorkspaceCommand};
+use crate::graph::error::{CommandError, ReferenceRole};
+use crate::graph::transaction::WorkspaceTransaction;
+use crate::interaction::targeting::resolver::structural_work;
 use crate::policy::DockPolicySnapshot;
-use crate::transaction::WorkspaceTransaction;
 
 const A: RootId = RootId::new(1);
 const B: RootId = RootId::new(2);
@@ -81,7 +81,8 @@ fn semantic_edits_share_root_records_and_discarded_root_wrapping_is_isolated() {
                 .unwrap(),
         ),
     };
-    let prepared = crate::operation::prepare_transaction(&workspace, &policy, &[command]).unwrap();
+    let prepared =
+        crate::graph::operation::prepare_transaction(&workspace, &policy, &[command]).unwrap();
     assert!(!Arc::ptr_eq(&records, &prepared.candidate().storage.roots));
     assert_ne!(prepared.candidate().root(B).unwrap().node, tabs[2]);
     assert_eq!(workspace.root(B).unwrap().node, tabs[2]);
@@ -177,7 +178,7 @@ fn center_move_copies_only_two_complete_tabs_payloads_and_unique_followup_copies
         .capture_item_source(B, tabs[2], ItemId::new(3))
         .unwrap();
     structural_work::reset();
-    crate::operation::apply_owned_draft_command(
+    crate::graph::operation::apply_owned_draft_command(
         &mut candidate,
         &policy,
         &WorkspaceCommand::Select { source },
@@ -239,7 +240,7 @@ fn canonical_noop_and_retirement_filters_do_not_detach_retained_payloads() {
     let mut candidate = workspace.clone();
     structural_work::reset();
     assert!(
-        !crate::canonical::canonicalize_workspace(&mut candidate)
+        !crate::graph::canonical::canonicalize_workspace(&mut candidate)
             .unwrap()
             .changed
     );
@@ -369,7 +370,7 @@ fn a_late_batch_failure_discards_detached_payloads_and_preserves_original_refs()
     assert_eq!(
         WorkspaceTransaction::from_commands([first, duplicate])
             .apply(&mut workspace, &DockPolicySnapshot::default()),
-        Err(crate::error::TransactionError::Command {
+        Err(crate::graph::error::TransactionError::Command {
             index: 1,
             source: CommandError::ItemAlreadyOpen {
                 item: ItemId::new(2),

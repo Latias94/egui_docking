@@ -562,7 +562,7 @@ pub enum EngineError {
         /// Failing sequenced input.
         input: InputSequence,
         /// Atomic transaction failure.
-        source: crate::error::TransactionError,
+        source: crate::graph::error::TransactionError,
     },
     /// A successful one-command transaction omitted its required outcome.
     #[error("workspace command input {input} produced no command outcome")]
@@ -616,7 +616,7 @@ pub enum EngineError {
         /// Failing sequenced input.
         input: InputSequence,
         /// Exact stale, destroyed, or otherwise unobservable binding.
-        binding: crate::viewport::WindowBinding,
+        binding: crate::platform::viewport::WindowBinding,
     },
     /// A pointer edge or another already-bound reducer fact could not advance focus state.
     #[error("viewport focus reduction {cause:?} failed: {source}")]

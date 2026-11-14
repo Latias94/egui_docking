@@ -5,7 +5,7 @@ use super::{
     NativeReceiverQuery, NativeScrollReceiverChallenge, NativeSurfaceReceiverQuery,
 };
 use crate::engine::CoreHostFrame;
-use crate::pointer_receiver::{
+use crate::input::receiver::{
     NativeWindowHitReceipt, PointerReceiverCandidate, PointerReceiverDelivery,
     PointerReceiverDeliveryDisposition, PointerReceiverDeliveryRequest, PointerReceiverHoverHit,
     PointerReceiverHoverHitDisposition, PointerReceiverObservation, PointerReceiverProbeReceipt,
@@ -267,7 +267,7 @@ fn native_scroll_challenge(
 }
 
 fn resolve_delivery_lane(
-    projection: crate::scene::SurfaceInteractionProjection<'_>,
+    projection: crate::presentation::scene::SurfaceInteractionProjection<'_>,
     answer: &NativeReceiverAnswer,
 ) -> PointerReceiverDeliveryDisposition {
     match answer {

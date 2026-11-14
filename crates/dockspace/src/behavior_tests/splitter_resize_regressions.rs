@@ -2,42 +2,42 @@ use super::support;
 
 use std::collections::BTreeSet;
 
-use dockspace::command::{
-    CloseCommitOutcome, CommandOutcome, ContentCloseTarget, SplitResize, WorkspaceCommand,
+use dockspace::engine::transition::{
+    EngineTransition, InputOutcome, SurfaceContributionOutcome, SurfaceContributionRejection,
+    SurfaceContributionUnavailableReason,
 };
 use dockspace::engine::{CoreHostFrame, DockEngine, EngineInput};
-use dockspace::error::{CommandError, ReferenceRole, TransactionError};
 use dockspace::geometry::{LogicalPoint, LogicalRect, LogicalSize};
+use dockspace::graph::command::{
+    CloseCommitOutcome, CommandOutcome, ContentCloseTarget, SplitResize, WorkspaceCommand,
+};
+use dockspace::graph::error::{CommandError, ReferenceRole, TransactionError};
+use dockspace::graph::transaction::WorkspaceTransaction;
 use dockspace::graph::{
     Axis, ContainedFloating, Node, RootRecord, SplitWeight, SurfacePresentation, Workspace,
 };
 use dockspace::ids::{
     FloatingPresentationId, ItemId, NodeId, RootId, StableInputSourceId, SurfaceId,
 };
-use dockspace::intent::{Authority, PointerButton, PointerId};
-use dockspace::interaction::{
-    InteractionCancelReason, InteractionOutcome, InteractionRejection, InteractionStatus,
-};
-use dockspace::model::DockspaceAxis;
-use dockspace::pointer_journal::{
+use dockspace::input::intent::{Authority, PointerButton, PointerId};
+use dockspace::input::journal::{
     PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
     PointerEdgeSequence, SurfaceLocalPointerEndpoint, SurfaceLocalPointerProvider,
     SurfaceLocalPointerRetirementDisposition, SurfaceLocalPointerScope,
 };
-use dockspace::pointer_receiver::{
+use dockspace::input::receiver::{
     PointerReceiverDelivery, PointerReceiverDeliveryDisposition, PointerReceiverObservation,
     PointerReceiverProbeReceipt, PointerReceiverReceipt, PointerReceiverReceiptBatch,
     PresentedPointerReceiverObservation,
 };
-use dockspace::policy::{DockPolicy, PolicyRejection, PolicyRevision};
-use dockspace::presentation_hit::{PresentationHitRegionId, PresentationHitRegionKind};
-use dockspace::scene::{SplitterRecord, SurfaceSceneStamp};
-use dockspace::scene_manifest::{MeasurementAuthorityError, MeasurementUnavailableReason};
-use dockspace::transaction::WorkspaceTransaction;
-use dockspace::transition::{
-    EngineTransition, InputOutcome, SurfaceContributionOutcome, SurfaceContributionRejection,
-    SurfaceContributionUnavailableReason,
+use dockspace::interaction::{
+    InteractionCancelReason, InteractionOutcome, InteractionRejection, InteractionStatus,
 };
+use dockspace::model::DockspaceAxis;
+use dockspace::policy::{DockPolicy, PolicyRejection, PolicyRevision};
+use dockspace::presentation::hit::{PresentationHitRegionId, PresentationHitRegionKind};
+use dockspace::presentation::manifest::{MeasurementAuthorityError, MeasurementUnavailableReason};
+use dockspace::presentation::scene::{SplitterRecord, SurfaceSceneStamp};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(1);
@@ -393,7 +393,7 @@ fn journal_splitter_cancel_preserves_the_durable_layout() {
         &mut host,
         &mut pointer,
         PointerEdgeKind::StreamCancelled(
-            dockspace::pointer_journal::PointerStreamCancelReason::ExplicitPlatformCancellation,
+            dockspace::input::journal::PointerStreamCancelReason::ExplicitPlatformCancellation,
         ),
         moved,
         None,
@@ -414,7 +414,7 @@ fn adjust_splitter(
     engine: &mut DockEngine,
     host: &mut support::TestPresentationHost,
     scene: SurfaceSceneStamp,
-    splitter: dockspace::scene::SplitterSceneId,
+    splitter: dockspace::presentation::scene::SplitterSceneId,
     delta: f64,
 ) -> InteractionOutcome {
     let expected = engine.version();
@@ -482,7 +482,7 @@ fn close_root(
     ));
     assert!(committed.events().iter().any(|event| matches!(
         event.kind(),
-        dockspace::event::WorkspaceEventKind::CloseCommitted(
+        dockspace::engine::event::WorkspaceEventKind::CloseCommitted(
             CloseCommitOutcome::RootClosed { root: actual, .. }
         ) if *actual == root
     )));

@@ -2,7 +2,7 @@
 
 use crate::geometry::LogicalRect;
 use crate::ids::ItemId;
-use crate::scene_compiler::{FutureTab, FutureTabStrip};
+use crate::presentation::compiler::{FutureTab, FutureTabStrip};
 
 use super::DockspaceDragPreview;
 

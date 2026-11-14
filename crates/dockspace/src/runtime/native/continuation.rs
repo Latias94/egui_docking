@@ -8,8 +8,8 @@ use super::{
 };
 use crate::geometry::LogicalPoint;
 use crate::ids::SurfaceId;
+use crate::input::journal::PointerProviderScope;
 use crate::interaction::{DragSessionId, GestureLane, GestureOwner, PointerContinuationRequest};
-use crate::pointer_journal::PointerProviderScope;
 use crate::runtime::PointerContinuationToken;
 
 /// Read-only capture requirement for the current native desktop mouse drag.

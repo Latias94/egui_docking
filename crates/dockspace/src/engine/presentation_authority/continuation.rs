@@ -87,12 +87,12 @@ impl DockEngine {
                         source.root(),
                         source.node(),
                         source.reference(),
-                        crate::error::ReferenceRole::Source,
+                        crate::graph::error::ReferenceRole::Source,
                     )
                     .is_ok()
                     && matches!(self.workspace.presentation_for_root(source.root()),
-                    Some(crate::RootPresentationOwner::Main { surface })
-                    | Some(crate::RootPresentationOwner::Contained { surface, .. })
+                    Some(crate::graph::workspace::RootPresentationOwner::Main { surface })
+                    | Some(crate::graph::workspace::RootPresentationOwner::Contained { surface, .. })
                     if surface == resize.surface)
             })
     }
@@ -254,7 +254,7 @@ impl DockEngine {
                         .capture_node_source(*root, source.node())
                         .is_ok_and(|current| current == *source)
                     && self.workspace.presentation_for_root(*root)
-                        == Some(crate::RootPresentationOwner::Contained {
+                        == Some(crate::graph::workspace::RootPresentationOwner::Contained {
                             surface: *surface,
                             floating: *floating,
                         })

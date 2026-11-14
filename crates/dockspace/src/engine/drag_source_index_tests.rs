@@ -132,27 +132,27 @@ fn indexed_drag_source_preparation_matches_live_payload_rejections() {
         MovePayload::Tabs(node),
         MovePayload::Subtree(subtree.clone()),
         MovePayload::Item(singleton.clone()),
-        MovePayload::Item(crate::command::ItemSource {
+        MovePayload::Item(crate::graph::command::ItemSource {
             item: ItemId::new(99),
             ..item.clone()
         }),
-        MovePayload::Item(crate::command::ItemSource {
+        MovePayload::Item(crate::graph::command::ItemSource {
             root: RootId::new(99),
             ..item.clone()
         }),
-        MovePayload::Item(crate::command::ItemSource {
+        MovePayload::Item(crate::graph::command::ItemSource {
             tabs: NodeId::null(),
             ..item.clone()
         }),
-        MovePayload::Item(crate::command::ItemSource {
+        MovePayload::Item(crate::graph::command::ItemSource {
             tabs: fixture.other_tabs,
             ..item.clone()
         }),
-        MovePayload::Item(crate::command::ItemSource {
+        MovePayload::Item(crate::graph::command::ItemSource {
             reference: singleton.reference,
             ..item.clone()
         }),
-        MovePayload::Item(crate::command::ItemSource {
+        MovePayload::Item(crate::graph::command::ItemSource {
             tabs: fixture.split,
             ..item
         }),
@@ -255,14 +255,14 @@ fn indexed_drag_source_preparation_reuses_current_root_fingerprints() {
                 .unwrap(),
         ),
     ];
-    crate::drop_resolver::structural_work::reset();
+    crate::interaction::targeting::resolver::structural_work::reset();
     PARTIAL_DETACHABILITY_EVALUATIONS.with(|evaluations| evaluations.set(0));
     for _ in 0..64 {
         for payload in &payloads {
             prepare(engine, payload).unwrap();
         }
     }
-    let work = crate::drop_resolver::structural_work::snapshot();
+    let work = crate::interaction::targeting::resolver::structural_work::snapshot();
     assert_eq!(work.root_fingerprint_builds, 0);
     assert_eq!(work.root_fingerprint_node_visits, 0);
     assert_eq!(
@@ -287,9 +287,11 @@ fn published_workspace_before_revision_uses_live_drag_source_validation() {
     let source = candidate
         .capture_item_source(fixture.root, fixture.tabs, ItemId::new(2))
         .unwrap();
-    crate::transaction::WorkspaceTransaction::from_commands([WorkspaceCommand::Select { source }])
-        .apply(&mut candidate, &engine.policy)
-        .unwrap();
+    crate::graph::transaction::WorkspaceTransaction::from_commands([WorkspaceCommand::Select {
+        source,
+    }])
+    .apply(&mut candidate, &engine.policy)
+    .unwrap();
     let publication = engine
         .stage_workspace_publication(candidate, &engine.policy)
         .unwrap();
@@ -302,7 +304,7 @@ fn published_workspace_before_revision_uses_live_drag_source_validation() {
             .workspace_index_for(engine.workspace.as_arc(), engine.version)
             .is_none()
     );
-    crate::drop_resolver::structural_work::reset();
+    crate::interaction::targeting::resolver::structural_work::reset();
     assert!(matches!(
         prepare(engine, &payload),
         Err(InteractionRejection::CommandRejected(
@@ -310,7 +312,8 @@ fn published_workspace_before_revision_uses_live_drag_source_validation() {
         ))
     ));
     assert_eq!(
-        crate::drop_resolver::structural_work::snapshot().root_fingerprint_builds,
+        crate::interaction::targeting::resolver::structural_work::snapshot()
+            .root_fingerprint_builds,
         0
     );
     assert_eq!(prepare(engine, &payload), prepare_live(engine, &payload));
@@ -329,10 +332,11 @@ fn published_workspace_before_revision_uses_live_drag_source_validation() {
             .workspace_index_for(engine.workspace.as_arc(), engine.version)
             .is_some()
     );
-    crate::drop_resolver::structural_work::reset();
+    crate::interaction::targeting::resolver::structural_work::reset();
     prepare(engine, &current).unwrap();
     assert_eq!(
-        crate::drop_resolver::structural_work::snapshot().root_fingerprint_builds,
+        crate::interaction::targeting::resolver::structural_work::snapshot()
+            .root_fingerprint_builds,
         0
     );
     assert!(matches!(
@@ -370,10 +374,11 @@ fn workspace_index_source_or_version_mismatch_keeps_live_drag_source_validation(
                 .workspace_index_for(engine.workspace.as_arc(), engine.version)
                 .is_none()
         );
-        crate::drop_resolver::structural_work::reset();
+        crate::interaction::targeting::resolver::structural_work::reset();
         prepare(engine, &payload).unwrap();
         assert_eq!(
-            crate::drop_resolver::structural_work::snapshot().root_fingerprint_builds,
+            crate::interaction::targeting::resolver::structural_work::snapshot()
+                .root_fingerprint_builds,
             0
         );
         assert_eq!(prepare(engine, &payload), prepare_live(engine, &payload));

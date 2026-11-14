@@ -1,21 +1,21 @@
 use super::support;
 
+use dockspace::engine::transition::EngineTransition;
 use dockspace::engine::{CoreHostFrame, DockEngine};
 use dockspace::geometry::{LogicalPoint, LogicalRect};
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, RootId, SurfaceId};
-use dockspace::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
-use dockspace::pointer_journal::{
+use dockspace::input::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
+use dockspace::input::journal::{
     AnyButtonDownAuthority, PointerAuthorityCheckpoint, PointerCaptureOwner, PointerEdge,
     PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation, PointerEdgeSequence,
     PointerStateObservation, SurfaceLocalPointerEndpoint, SurfaceLocalPointerProvider,
     SurfaceLocalPointerScope,
 };
-use dockspace::pointer_receiver::{
+use dockspace::input::receiver::{
     PointerReceiverObservation, PointerReceiverReceipt, PointerReceiverReceiptBatch,
 };
 use dockspace::policy::DockPolicy;
-use dockspace::transition::EngineTransition;
 use support::{
     TestPresentationHost, complete_host_frame_with_retained_or_unavailable, publish_surface,
 };

@@ -2,22 +2,39 @@ use super::support;
 
 use crate::platform::{NativeCreateReadiness, WindowCreatePreparationObservation};
 use dockspace::close::CloseDecision;
-use dockspace::command::{
+use dockspace::engine::transition::{InputOutcome, WorkspaceVersion};
+use dockspace::engine::{CoreHostFrame, DockEngine, EngineInput};
+use dockspace::geometry::{LogicalPoint, LogicalRect, PhysicalPoint, PhysicalRect, ScaleFactor};
+use dockspace::graph::command::{
     ContainedPosition, RootContent, RootPresentationTarget, WorkspaceCommand,
 };
-use dockspace::effect::PlatformEffect;
-use dockspace::engine::{CoreHostFrame, DockEngine, EngineInput};
-use dockspace::frame::{BindingRetirementStatus, NativeCreatePhase, NativeCreateRequest};
-use dockspace::geometry::{LogicalPoint, LogicalRect, PhysicalPoint, PhysicalRect, ScaleFactor};
 use dockspace::graph::{ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{
     FloatingPresentationId, ItemId, RootId, StableInputSourceId, SurfaceId, WorkspaceRevision,
 };
-use dockspace::intent::{
+use dockspace::input::intent::{
     Authority, AuthorityUnavailableReason, CloseSceneTarget, PointerButton, PointerId,
+};
+use dockspace::input::journal::{
+    DesktopDockRoute, DesktopRouteFact, DesktopWorkAreaRoute, PointerCaptureOwner, PointerEdge,
+    PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation, PointerEdgeSequence,
+    PointerEventDeliveryOwner, PointerProviderScope,
+};
+use dockspace::input::receiver::{
+    PointerReceiverDelivery, PointerReceiverDeliveryDisposition, PointerReceiverObservation,
+    PointerReceiverProbeReceipt, PointerReceiverReceiptBatch, PointerReceiverUnknownReason,
+    PresentedPointerReceiverObservation,
 };
 use dockspace::interaction::{
     InteractionDelivery, InteractionOutcome, PreviewResolutionStatus, PreviewVisual,
+};
+use dockspace::platform::effect::PlatformEffect;
+use dockspace::platform::focus::{FocusObservationGeneration, unknown_focus_observation};
+use dockspace::platform::frame::{BindingRetirementStatus, NativeCreatePhase, NativeCreateRequest};
+use dockspace::platform::registry::ViewportAdmission;
+use dockspace::platform::viewport::{
+    CloseObservationGeneration, CoordinateObservationGeneration, InputObservationGeneration,
+    PresentationObservationGeneration, ViewportRole, WindowToken, WorkAreaToken,
 };
 use dockspace::platform::{
     CloseEffectAcknowledgement, InputEffectAcknowledgement, ObservedWindow, ObservedWorkArea,
@@ -25,25 +42,8 @@ use dockspace::platform::{
     WindowCloseState, WindowCoordinateObservation, WindowInputObservation, WindowInputState,
     WindowPresentationObservation, WindowPresentationState,
 };
-use dockspace::pointer_journal::{
-    DesktopDockRoute, DesktopRouteFact, DesktopWorkAreaRoute, PointerCaptureOwner, PointerEdge,
-    PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation, PointerEdgeSequence,
-    PointerEventDeliveryOwner, PointerProviderScope,
-};
-use dockspace::pointer_receiver::{
-    PointerReceiverDelivery, PointerReceiverDeliveryDisposition, PointerReceiverObservation,
-    PointerReceiverProbeReceipt, PointerReceiverReceiptBatch, PointerReceiverUnknownReason,
-    PresentedPointerReceiverObservation,
-};
 use dockspace::policy::DockPolicy;
-use dockspace::presentation_hit::PresentationHitRegionKind;
-use dockspace::transition::{InputOutcome, WorkspaceVersion};
-use dockspace::viewport::{
-    CloseObservationGeneration, CoordinateObservationGeneration, InputObservationGeneration,
-    PresentationObservationGeneration, ViewportRole, WindowToken, WorkAreaToken,
-};
-use dockspace::viewport_focus::{FocusObservationGeneration, unknown_focus_observation};
-use dockspace::viewport_registry::ViewportAdmission;
+use dockspace::presentation::hit::PresentationHitRegionKind;
 use support::{TestPresentationHost, submit_input};
 
 const SOURCE_SURFACE: SurfaceId = SurfaceId::new(1);
@@ -225,7 +225,7 @@ impl NativeVacancyFixture {
         }
         let inventory_observation = support::known_inventory_observation(generation, &windows);
         PlatformSnapshot::new(
-            dockspace::viewport::PlatformSnapshotGeneration::new(generation),
+            dockspace::platform::viewport::PlatformSnapshotGeneration::new(generation),
             support::known_capability_observation(generation, native_platform_capabilities()),
             unknown_focus_observation(
                 FocusObservationGeneration::new(generation),
@@ -286,7 +286,7 @@ fn native_platform_capabilities() -> PlatformCapabilities {
 }
 
 fn observed_source_window(
-    binding: dockspace::viewport::ViewportBinding,
+    binding: dockspace::platform::viewport::ViewportBinding,
     generation: u64,
 ) -> ObservedWindow {
     ObservedWindow::new(binding)
@@ -302,7 +302,7 @@ fn observed_source_window(
 }
 
 fn observed_target_window(
-    binding: dockspace::viewport::ViewportBinding,
+    binding: dockspace::platform::viewport::ViewportBinding,
     generation: u64,
 ) -> ObservedWindow {
     ObservedWindow::new(binding)
@@ -331,7 +331,7 @@ fn observed_native_window(request: NativeCreateRequest, generation: u64) -> Obse
 }
 
 fn source_snapshot(
-    binding: dockspace::viewport::ViewportBinding,
+    binding: dockspace::platform::viewport::ViewportBinding,
     generation: u64,
     close: Option<WindowCloseState>,
 ) -> PlatformSnapshot {
@@ -361,7 +361,7 @@ fn source_snapshot(
         .collect();
     let inventory_observation = support::known_inventory_observation(generation, &windows);
     PlatformSnapshot::new(
-        dockspace::viewport::PlatformSnapshotGeneration::new(generation),
+        dockspace::platform::viewport::PlatformSnapshotGeneration::new(generation),
         support::known_capability_observation(generation, native_platform_capabilities()),
         unknown_focus_observation(
             FocusObservationGeneration::new(generation),

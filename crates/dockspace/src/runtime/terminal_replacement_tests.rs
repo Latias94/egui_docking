@@ -11,7 +11,7 @@ use crate::model::{
     DockPlacement, DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout,
 };
 use crate::policy::DockPolicy;
-use crate::presentation_observation::HostPresentationObservation;
+use crate::presentation::observation::HostPresentationObservation;
 
 const DOCUMENT: DockspaceDocumentId = DockspaceDocumentId::from_bytes([0x72; 16]);
 const SURFACE: SurfaceId = SurfaceId::new(1);

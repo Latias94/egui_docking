@@ -9,10 +9,10 @@ use crate::engine::{
     EngineInput, LocalSurfaceAction as SurfaceAction, LocalTabChromeAction, LocalTabSelection,
 };
 use crate::ids::{EngineAuthorityDomainId, FloatingPresentationId, ItemId, SurfaceId};
-use crate::intent::CloseSceneTarget;
+use crate::input::intent::CloseSceneTarget;
 use crate::interaction::GestureCancelDelivery;
 use crate::model::WorkspaceVersion;
-use crate::scene::{
+use crate::presentation::scene::{
     ContainedResizeDirection, SplitterJunctionId, SplitterSceneId, SurfaceSceneStamp,
 };
 
@@ -30,12 +30,12 @@ pub enum SurfaceTabNavigation {
 }
 
 impl SurfaceTabNavigation {
-    pub(super) fn into_core(self) -> crate::tab_strip::TabNavigation {
+    pub(super) fn into_core(self) -> crate::presentation::tab_strip::TabNavigation {
         match self {
-            Self::Previous => crate::tab_strip::TabNavigation::Previous,
-            Self::Next => crate::tab_strip::TabNavigation::Next,
-            Self::First => crate::tab_strip::TabNavigation::First,
-            Self::Last => crate::tab_strip::TabNavigation::Last,
+            Self::Previous => crate::presentation::tab_strip::TabNavigation::Previous,
+            Self::Next => crate::presentation::tab_strip::TabNavigation::Next,
+            Self::First => crate::presentation::tab_strip::TabNavigation::First,
+            Self::Last => crate::presentation::tab_strip::TabNavigation::Last,
         }
     }
 }
@@ -96,7 +96,7 @@ pub struct PreparedSurfaceAction {
     expected: WorkspaceVersion,
     surface: SurfaceId,
     action: SurfaceAction,
-    witness: Arc<crate::scene::SurfacePlanScene>,
+    witness: Arc<crate::presentation::scene::SurfacePlanScene>,
 }
 
 impl PreparedSurfaceAction {
@@ -104,7 +104,7 @@ impl PreparedSurfaceAction {
         authority_domain: EngineAuthorityDomainId,
         expected: WorkspaceVersion,
         scene: SurfaceSceneStamp,
-        witness: Arc<crate::scene::SurfacePlanScene>,
+        witness: Arc<crate::presentation::scene::SurfacePlanScene>,
         selection: LocalTabSelection,
     ) -> Self {
         Self {
@@ -120,7 +120,7 @@ impl PreparedSurfaceAction {
         authority_domain: EngineAuthorityDomainId,
         expected: WorkspaceVersion,
         scene: SurfaceSceneStamp,
-        witness: Arc<crate::scene::SurfacePlanScene>,
+        witness: Arc<crate::presentation::scene::SurfacePlanScene>,
         target: CloseSceneTarget,
     ) -> Self {
         Self {
@@ -136,7 +136,7 @@ impl PreparedSurfaceAction {
         authority_domain: EngineAuthorityDomainId,
         expected: WorkspaceVersion,
         scene: SurfaceSceneStamp,
-        witness: Arc<crate::scene::SurfacePlanScene>,
+        witness: Arc<crate::presentation::scene::SurfacePlanScene>,
         action: crate::model::ProductAction,
     ) -> Self {
         Self {
@@ -152,7 +152,7 @@ impl PreparedSurfaceAction {
         authority_domain: EngineAuthorityDomainId,
         expected: WorkspaceVersion,
         scene: SurfaceSceneStamp,
-        witness: Arc<crate::scene::SurfacePlanScene>,
+        witness: Arc<crate::presentation::scene::SurfacePlanScene>,
         root: crate::ids::RootId,
     ) -> Self {
         Self {
@@ -168,7 +168,7 @@ impl PreparedSurfaceAction {
         authority_domain: EngineAuthorityDomainId,
         expected: WorkspaceVersion,
         scene: SurfaceSceneStamp,
-        witness: Arc<crate::scene::SurfacePlanScene>,
+        witness: Arc<crate::presentation::scene::SurfacePlanScene>,
         splitter: SplitterSceneId,
         delta: f64,
     ) -> Self {
@@ -189,7 +189,7 @@ impl PreparedSurfaceAction {
         authority_domain: EngineAuthorityDomainId,
         expected: WorkspaceVersion,
         scene: SurfaceSceneStamp,
-        witness: Arc<crate::scene::SurfacePlanScene>,
+        witness: Arc<crate::presentation::scene::SurfacePlanScene>,
         junction: SplitterJunctionId,
         axis: crate::model::DockspaceAxis,
         delta: f64,
@@ -212,7 +212,7 @@ impl PreparedSurfaceAction {
         authority_domain: EngineAuthorityDomainId,
         expected: WorkspaceVersion,
         scene: SurfaceSceneStamp,
-        witness: Arc<crate::scene::SurfacePlanScene>,
+        witness: Arc<crate::presentation::scene::SurfacePlanScene>,
         floating: FloatingPresentationId,
         direction: ContainedResizeDirection,
         delta: f64,
@@ -235,7 +235,7 @@ impl PreparedSurfaceAction {
         authority_domain: EngineAuthorityDomainId,
         expected: WorkspaceVersion,
         surface: SurfaceId,
-        witness: Arc<crate::scene::SurfacePlanScene>,
+        witness: Arc<crate::presentation::scene::SurfacePlanScene>,
         status: crate::interaction::InteractionStatus,
         delivery: GestureCancelDelivery,
     ) -> Self {
@@ -252,7 +252,7 @@ impl PreparedSurfaceAction {
         authority_domain: EngineAuthorityDomainId,
         expected: WorkspaceVersion,
         scene: SurfaceSceneStamp,
-        witness: Arc<crate::scene::SurfacePlanScene>,
+        witness: Arc<crate::presentation::scene::SurfacePlanScene>,
         action: LocalTabChromeAction,
     ) -> Self {
         Self {

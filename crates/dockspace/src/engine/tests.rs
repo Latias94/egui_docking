@@ -5,14 +5,34 @@ mod configuration_phase;
 mod docking_enabled;
 mod local_selection;
 
+use crate::engine::transition::InputOutcome;
 use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize, PhysicalRect, ScaleFactor};
 use crate::graph::{Axis, ContainedFloating, Node, RootRecord, SurfacePresentation};
 use crate::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId, WorkspaceEpoch};
-use crate::intent::{
+use crate::input::intent::{
     Authority, AuthorityUnavailableReason, NativeTearOffProposal, PointerButton, PointerId,
+};
+use crate::input::journal::{
+    PointerAuthorityCheckpoint, PointerCaptureOwner, PointerEdge, PointerEdgeJournal,
+    PointerEdgeKind, PointerEdgeLocation, PointerEdgeSequence, PointerProviderScope,
+    SurfaceLocalPointerEndpoint, SurfaceLocalPointerScope,
+};
+use crate::input::receiver::{
+    PointerReceiverDelivery, PointerReceiverReceipt, PointerReceiverReceiptBatch,
+    PresentedPointerReceiverObservation,
 };
 use crate::interaction::{
     DragGeneration, DragSessionId, InteractionOutcome, InteractionRejection, InteractionStatus,
+};
+use crate::platform::focus::{
+    FocusObservationEnvelope, FocusObservationGeneration, GlobalFocusedWindow,
+    PaneFocusObservationGeneration, PaneFocusObservationTransition,
+    PaneFocusRequestObservationState, PanelFocusRecord,
+};
+use crate::platform::viewport::{
+    CapabilityObservationGeneration, CloseObservationGeneration, CoordinateObservationGeneration,
+    InventoryObservationGeneration, ViewportBinding, ViewportRole, WindowIncarnation, WindowToken,
+    WorkAreaObservationGeneration, WorkAreaToken,
 };
 use crate::platform::{
     CapabilityRosterObservation, CloseEffectAcknowledgement, ObservedWindow, ObservedWorkArea,
@@ -20,38 +40,20 @@ use crate::platform::{
     WindowCoordinateObservation, WindowInventoryObservation, WindowPresentationObservation,
     WindowPresentationState, WorkAreaRosterObservation,
 };
-use crate::pointer_journal::{
-    PointerAuthorityCheckpoint, PointerCaptureOwner, PointerEdge, PointerEdgeJournal,
-    PointerEdgeKind, PointerEdgeLocation, PointerEdgeSequence, PointerProviderScope,
-    SurfaceLocalPointerEndpoint, SurfaceLocalPointerScope,
-};
-use crate::pointer_receiver::{
-    PointerReceiverDelivery, PointerReceiverReceipt, PointerReceiverReceiptBatch,
-    PresentedPointerReceiverObservation,
-};
-use crate::presentation_hit::{PresentationHitManifest, PresentationHitRegionKind};
-use crate::presentation_observation::{
-    HostPresentationCaptureGeneration, HostPresentationObservation,
-    HostPresentationObservationEntry, HostPresentationOutputPayload, HostPresentationProgress,
-    HostPresentationStreamObservation, PresentationHostLease, PresentationHostRetirementReason,
-};
-use crate::presentation_observation::{PresentationOutputSerial, SurfacePresentationOutputTicket};
-use crate::scene::{SurfaceScene, TabBarSceneId, TabSceneId, TabStripMemberVisibility};
-use crate::scene_manifest::{
+use crate::presentation::hit::{PresentationHitManifest, PresentationHitRegionKind};
+use crate::presentation::manifest::{
     Measurement, MeasurementUnavailableReason, SurfaceMeasurements, SurfaceSceneRevision,
     TabIntrinsic, TabListMenuMetrics, TabStripControlMetric, TabStripControlMetrics,
     TabStripControlPlacement, TabStripMetrics,
 };
-use crate::transition::InputOutcome;
-use crate::viewport::{
-    CapabilityObservationGeneration, CloseObservationGeneration, CoordinateObservationGeneration,
-    InventoryObservationGeneration, ViewportBinding, ViewportRole, WindowIncarnation, WindowToken,
-    WorkAreaObservationGeneration, WorkAreaToken,
+use crate::presentation::observation::{
+    HostPresentationCaptureGeneration, HostPresentationObservation,
+    HostPresentationObservationEntry, HostPresentationOutputPayload, HostPresentationProgress,
+    HostPresentationStreamObservation, PresentationHostLease, PresentationHostRetirementReason,
 };
-use crate::viewport_focus::{
-    FocusObservationEnvelope, FocusObservationGeneration, GlobalFocusedWindow,
-    PaneFocusObservationGeneration, PaneFocusObservationTransition,
-    PaneFocusRequestObservationState, PanelFocusRecord,
+use crate::presentation::observation::{PresentationOutputSerial, SurfacePresentationOutputTicket};
+use crate::presentation::scene::{
+    SurfaceScene, TabBarSceneId, TabSceneId, TabStripMemberVisibility,
 };
 
 const SOURCE_ROOT: RootId = RootId::new(1);
@@ -118,7 +120,7 @@ fn test_platform_snapshot_at(
         )
     };
     PlatformSnapshot::new(
-        crate::viewport::PlatformSnapshotGeneration::new(provider_generation),
+        crate::platform::viewport::PlatformSnapshotGeneration::new(provider_generation),
         capability_observation,
         focus,
         inventory_observation,
@@ -207,7 +209,7 @@ fn local_pointer_journal(
         .expect("test pointer journal must be contiguous")
 }
 
-fn region_center(region: &crate::presentation_hit::PresentationHitRegion) -> LogicalPoint {
+fn region_center(region: &crate::presentation::hit::PresentationHitRegion) -> LogicalPoint {
     let rect = region.hit().rect();
     LogicalPoint::new(
         rect.x() + rect.width() * 0.5,
@@ -1759,7 +1761,7 @@ fn publish_surface_projection_with_output(
     measurements: SurfaceMeasurements,
 ) -> (
     SurfaceSceneStamp,
-    crate::presentation_observation::HostPresentationOutput,
+    crate::presentation::observation::HostPresentationOutput,
     EngineTransition,
 ) {
     let contribution = engine
@@ -1851,7 +1853,7 @@ fn publish_surface_projection_with_output(
     assert!(observed.presentation_observations().iter().any(|outcome| {
         matches!(
             outcome,
-            crate::presentation_observation::HostPresentationObservationOutcome::Retired {
+            crate::presentation::observation::HostPresentationObservationOutcome::Retired {
                 promotion_eligible: true,
                 ..
             }
@@ -1864,7 +1866,7 @@ fn assert_no_pointer_passthrough_effects(engine: &DockEngine) {
     assert!(!engine.viewport().effects().records().any(|(_, record)| {
         matches!(
             record.request().effect(),
-            crate::effect::PlatformEffect::SetPointerPassthrough { .. }
+            crate::platform::effect::PlatformEffect::SetPointerPassthrough { .. }
         )
     }));
 }

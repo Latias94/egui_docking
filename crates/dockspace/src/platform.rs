@@ -2,21 +2,32 @@
 //!
 //! Adapters submit facts and execute effects. They never submit operating-system
 //! handles or infer a docking target from window geometry.
+//!
+//! Child modules coordinate provider authority, effects, window bindings, focus
+//! and observed coordinates. Logical surface recovery belongs to the engine.
+
+pub(crate) mod coordinates;
+pub(crate) mod effect;
+pub(crate) mod focus;
+pub(crate) mod frame;
+pub(crate) mod provider;
+pub(crate) mod registry;
+pub(crate) mod viewport;
 
 use std::mem::size_of;
 
 use thiserror::Error;
 
-use crate::effect::EffectId;
 use crate::geometry::{PhysicalRect, PhysicalSize, ScaleFactor};
-use crate::intent::{Authority, AuthorityUnavailableReason};
-use crate::viewport::{
+use crate::input::intent::{Authority, AuthorityUnavailableReason};
+use crate::platform::effect::EffectId;
+use crate::platform::focus::FocusObservationEnvelope;
+use crate::platform::viewport::{
     CapabilityObservationGeneration, CloseObservationGeneration, CoordinateObservationGeneration,
     InputObservationGeneration, InventoryGeneration, InventoryObservationGeneration,
     PlatformSnapshotGeneration, PresentationObservationGeneration, ViewportBinding, WindowBinding,
     WindowToken, WorkAreaObservationGeneration, WorkAreaToken,
 };
-use crate::viewport_focus::FocusObservationEnvelope;
 
 /// Host-observed creation and renderer preparation for one exact binding.
 ///
@@ -493,12 +504,6 @@ impl CapabilityRosterObservation {
     #[must_use]
     pub const fn generation(&self) -> CapabilityObservationGeneration {
         self.generation
-    }
-
-    #[must_use]
-    #[cfg(test)]
-    pub const fn roster(&self) -> &Authority<PlatformCapabilities> {
-        &self.roster
     }
 
     #[must_use]
@@ -1906,7 +1911,7 @@ fn validate_focus_window(
     focus: FocusObservationEnvelope,
     windows: &[ObservedWindow],
 ) -> Result<(), PlatformSnapshotError> {
-    let Authority::Known(crate::viewport_focus::GlobalFocusedWindow::Dock(binding)) =
+    let Authority::Known(crate::platform::focus::GlobalFocusedWindow::Dock(binding)) =
         focus.focused()
     else {
         return Ok(());

@@ -2,7 +2,7 @@ use super::*;
 
 use std::time::Duration;
 
-use crate::backend_ingress::BackendIngressPayload;
+use crate::input::ingress::BackendIngressPayload;
 use crate::runtime::{PointerDeviceKind, PointerEventMetadata};
 
 #[test]

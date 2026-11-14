@@ -8,8 +8,8 @@ use slotmap::SparseSecondaryMap;
 
 use super::root_structure::RootStructure;
 use super::{Node, Workspace, WorkspaceData};
+use crate::graph::workspace::{ParentLink, RootPresentationOwner};
 use crate::ids::{NodeId, RootId};
-use crate::workspace::{ParentLink, RootPresentationOwner};
 
 /// An opaque exact reference issued by one committed root owner.
 ///
@@ -143,7 +143,7 @@ impl Workspace {
     pub(super) fn complete_root_structure(
         &mut self,
         root: RootId,
-    ) -> Result<(), crate::error::CommandError> {
+    ) -> Result<(), crate::graph::error::CommandError> {
         let Some(owner) = self.authority.roots.get_mut(&root) else {
             return Ok(());
         };
@@ -161,7 +161,7 @@ impl Workspace {
     pub(super) fn complete_item_move_structure(
         &mut self,
         root: RootId,
-    ) -> Result<(), crate::error::CommandError> {
+    ) -> Result<(), crate::graph::error::CommandError> {
         let Some(owner) = self.authority.roots.get_mut(&root) else {
             return Ok(());
         };
@@ -174,7 +174,9 @@ impl Workspace {
     }
 
     /// A terminal full normalizer may finish all roots it has just visited.
-    pub(super) fn complete_root_structures(&mut self) -> Result<(), crate::error::CommandError> {
+    pub(super) fn complete_root_structures(
+        &mut self,
+    ) -> Result<(), crate::graph::error::CommandError> {
         let storage = &self.storage;
         let authority = &mut self.authority;
         for (&root, owner) in &mut authority.roots {
@@ -191,7 +193,7 @@ impl Workspace {
 
     pub(super) fn issue_storage(
         storage: WorkspaceData,
-    ) -> Result<Self, crate::error::CommandError> {
+    ) -> Result<Self, crate::graph::error::CommandError> {
         let mut presentations = Vec::with_capacity(storage.roots.len());
         for (&surface, presentation) in &storage.surfaces {
             if let Some(root) = presentation.main_root
@@ -215,7 +217,7 @@ impl Workspace {
         presentations.sort_by_key(|(root, _)| *root);
         presentations.dedup_by_key(|(root, _)| *root);
         if presentations.len() != storage.roots.len() {
-            return Err(crate::error::CommandError::Invariant {
+            return Err(crate::graph::error::CommandError::Invariant {
                 stage: "refresh root presentation authority",
             });
         }
@@ -328,7 +330,7 @@ impl Workspace {
     pub(super) fn complete_root_change(
         &mut self,
         root: RootId,
-    ) -> Result<(), crate::error::CommandError> {
+    ) -> Result<(), crate::graph::error::CommandError> {
         let Some(record) = self.storage.roots.get(&root).copied() else {
             self.authority.roots.remove(&root);
             return Ok(());
@@ -336,7 +338,7 @@ impl Workspace {
         let presentation = self
             .owned_presentation(root)
             .or_else(|| self.presentation_in_storage(root))
-            .ok_or(crate::error::CommandError::Invariant {
+            .ok_or(crate::graph::error::CommandError::Invariant {
                 stage: "complete root presentation authority",
             })?;
         self.place_node(root, record.node, None);
@@ -363,12 +365,12 @@ impl Workspace {
         &mut self,
         root: RootId,
         tabs: NodeId,
-    ) -> Result<(), crate::error::CommandError> {
+    ) -> Result<(), crate::graph::error::CommandError> {
         let owner = self
             .authority
             .roots
             .get_mut(&root)
-            .ok_or(crate::error::CommandError::MissingRoot { root })?;
+            .ok_or(crate::graph::error::CommandError::MissingRoot { root })?;
         owner.reference = RootReference(Arc::new(RootIssuance {
             root,
             selection_from: Some((Arc::downgrade(&owner.reference.0), tabs)),
@@ -382,13 +384,13 @@ impl Workspace {
         &mut self,
         root: RootId,
         presentation: RootPresentationOwner,
-    ) -> Result<(), crate::error::CommandError> {
+    ) -> Result<(), crate::graph::error::CommandError> {
         self.storage
             .roots
             .get(&root)
-            .ok_or(crate::error::CommandError::MissingRoot { root })?;
+            .ok_or(crate::graph::error::CommandError::MissingRoot { root })?;
         if self.authority.roots.contains_key(&root) {
-            return Err(crate::error::CommandError::Invariant {
+            return Err(crate::graph::error::CommandError::Invariant {
                 stage: "complete fresh root birth",
             });
         }
@@ -414,12 +416,12 @@ impl Workspace {
         &mut self,
         root: RootId,
         presentation: RootPresentationOwner,
-    ) -> Result<(), crate::error::CommandError> {
+    ) -> Result<(), crate::graph::error::CommandError> {
         let owner = self
             .authority
             .roots
             .get_mut(&root)
-            .ok_or(crate::error::CommandError::MissingRoot { root })?;
+            .ok_or(crate::graph::error::CommandError::MissingRoot { root })?;
         if owner.presentation != presentation {
             owner.presentation = presentation;
             owner.reference = RootReference::fresh(root);
@@ -439,14 +441,14 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::{
+    use crate::graph::command::{
         DockFraction, DockTarget, Edge, MovePayload, RootPresentationTarget, WorkspaceCommand,
     };
-    use crate::error::{CommandError, ReferenceRole};
+    use crate::graph::error::{CommandError, ReferenceRole};
+    use crate::graph::transaction::WorkspaceTransaction;
     use crate::graph::{Axis, RootRecord, SurfacePresentation};
     use crate::ids::{ItemId, SurfaceId};
     use crate::policy::{DockPolicy, PolicyRevision};
-    use crate::transaction::WorkspaceTransaction;
 
     #[test]
     fn semantic_edits_share_placements_and_discarded_structure_edits_detach_them() {
@@ -525,7 +527,7 @@ mod tests {
             ),
         };
         let prepared =
-            crate::operation::prepare_transaction(&workspace, &policy, &[command]).unwrap();
+            crate::graph::operation::prepare_transaction(&workspace, &policy, &[command]).unwrap();
         assert!(!Arc::ptr_eq(
             &placements,
             &prepared.candidate().authority.placements

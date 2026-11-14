@@ -1,6 +1,6 @@
 use super::*;
+use crate::input::journal::AnyButtonDownAuthority;
 use crate::model::{DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout};
-use crate::pointer_journal::AnyButtonDownAuthority;
 use crate::runtime::HostInputOutcome;
 use std::num::NonZeroUsize;
 

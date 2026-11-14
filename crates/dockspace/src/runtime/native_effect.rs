@@ -6,15 +6,15 @@ use std::sync::{Arc, Mutex, PoisonError};
 use thiserror::Error;
 
 use super::native::{NativeHostErrorKind, NativePlatformError, NativeSurfaceBinding};
-use crate::effect::{
+use crate::geometry::PhysicalRect;
+use crate::ids::WorkspaceEpoch;
+use crate::platform::effect::{
     CleanupObservationToken, DispatchFailureReason, EffectDispatchResult, EffectId,
     EffectIndeterminateReason, EffectResult, EffectUnsupportedReason, NativeCloseResolution,
     PlatformEffect, PlatformEffectEmission,
 };
-use crate::geometry::PhysicalRect;
-use crate::ids::WorkspaceEpoch;
-use crate::platform_provider::PlatformObservationLease;
-use crate::viewport::{ViewportBinding, ViewportRole};
+use crate::platform::provider::PlatformObservationLease;
+use crate::platform::viewport::{ViewportBinding, ViewportRole};
 
 /// Public native-window ownership role without exposing viewport internals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -935,10 +935,10 @@ mod dispatch_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::effect::{EffectLedger, PlatformEffect};
     use crate::ids::{EngineAuthorityDomainId, SurfaceId, WorkspaceEpoch};
-    use crate::platform_provider::PlatformObservationAuthority;
-    use crate::viewport::{InventoryGeneration, WindowIncarnation, WindowToken};
+    use crate::platform::effect::{EffectLedger, PlatformEffect};
+    use crate::platform::provider::PlatformObservationAuthority;
+    use crate::platform::viewport::{InventoryGeneration, WindowIncarnation, WindowToken};
 
     #[test]
     fn property_effect_request_hides_ledger_links_and_returns_typed_acknowledgement() {

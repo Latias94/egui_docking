@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use dockspace::geometry::{Constraints, LogicalRect, LogicalSize};
 use dockspace::graph::{Axis, Node, RootRecord, SplitWeight, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, NodeId, RootId, SurfaceId};
-use dockspace::layout::{
+use dockspace::presentation::layout::{
     AxisConstraint, AxisConstraintError, LayoutError, LayoutMetrics, LayoutMetricsError,
     SplitWeightOverride, project_root, project_root_with_overrides, solve_axis,
 };

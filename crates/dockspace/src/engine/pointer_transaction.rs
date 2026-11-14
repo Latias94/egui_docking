@@ -2,7 +2,7 @@
 
 use super::contained_geometry::{contained_manipulation_point, contained_move_geometry};
 use super::*;
-use crate::intent::PointerId;
+use crate::input::intent::PointerId;
 
 mod click;
 
@@ -93,7 +93,7 @@ impl DockEngine {
             .focus_observation()
             .is_some_and(|observation| {
                 observation.focused()
-                    == &Authority::Known(crate::viewport_focus::GlobalFocusedWindow::Dock(window))
+                    == &Authority::Known(crate::platform::focus::GlobalFocusedWindow::Dock(window))
             });
         let source_matches = self
             .interaction
@@ -101,7 +101,7 @@ impl DockEngine {
             .is_some_and(|authority| {
                 matches!(
                     authority.presented.endpoint(),
-                    crate::presentation_observation::HostPresentationEndpoint::Native(source)
+                    crate::presentation::observation::HostPresentationEndpoint::Native(source)
                         if source.window() == window
                 )
             });
@@ -152,7 +152,7 @@ impl DockEngine {
                     cause,
                     stream,
                     if reason
-                        == crate::pointer_journal::PointerStreamCancelReason::ExplicitCancellation
+                        == crate::input::journal::PointerStreamCancelReason::ExplicitCancellation
                     {
                         InteractionCancelReason::ExplicitCancellation
                     } else {
@@ -321,7 +321,7 @@ impl DockEngine {
             PointerEdgeKind::StreamCancelled(reason) => self.terminate_journal_stream(
                 cause,
                 stream,
-                if reason == crate::pointer_journal::PointerStreamCancelReason::ExplicitCancellation
+                if reason == crate::input::journal::PointerStreamCancelReason::ExplicitCancellation
                 {
                     InteractionCancelReason::ExplicitCancellation
                 } else {
@@ -570,7 +570,7 @@ impl DockEngine {
                 point,
                 policy,
             )?;
-            if edge.metadata().device() == crate::pointer_journal::PointerDeviceKind::Touch
+            if edge.metadata().device() == crate::input::journal::PointerDeviceKind::Touch
                 && Self::pointer_timing_supported(owner)
                 && let InteractionStatus::Pressed { session } = self.interaction.status()
             {
@@ -593,7 +593,7 @@ impl DockEngine {
             return Ok(outcome);
         }
         let threshold_origin = self.journal_drag_threshold_origin(edge, desktop_delivery_route)?;
-        if edge.metadata().device() == crate::pointer_journal::PointerDeviceKind::Touch
+        if edge.metadata().device() == crate::input::journal::PointerDeviceKind::Touch
             && Self::pointer_timing_supported(owner)
             && Self::touch_wait_region(region.kind())
         {
@@ -635,7 +635,7 @@ impl DockEngine {
         presentation: &JournalSurfacePresentation,
         region: PresentationHitRegionId,
         point: LogicalPoint,
-        device: crate::pointer_journal::PointerDeviceKind,
+        device: crate::input::journal::PointerDeviceKind,
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
     ) -> Result<Option<InteractionOutcome>, EngineError> {
@@ -828,7 +828,7 @@ impl DockEngine {
             )));
         }
         if self.workspace.presentation_for_root(root)
-            != Some(crate::RootPresentationOwner::Contained { surface, floating })
+            != Some(crate::graph::workspace::RootPresentationOwner::Contained { surface, floating })
         {
             return Ok(Some(InteractionOutcome::Rejected(
                 InteractionRejection::StaleScene,
@@ -923,7 +923,7 @@ impl DockEngine {
                     .viewport
                     .viewport(route.binding().surface())
                     .filter(|record| record.binding() == route.binding())
-                    .and_then(crate::viewport_registry::ViewportRecord::coordinates)
+                    .and_then(crate::platform::registry::ViewportRecord::coordinates)
                     .filter(|coordinates| {
                         coordinates.coordinate_generation() == route.coordinate_generation()
                     })
@@ -1558,7 +1558,9 @@ impl DockEngine {
                         .contained_projection()
                         .is_some_and(|projection| {
                             projection.owner
-                                == crate::scene::ContainedLayoutOwner::Drag(drag.session)
+                                == crate::presentation::scene::ContainedLayoutOwner::Drag(
+                                    drag.session,
+                                )
                                 && projection.target_basis.is_some()
                         })
                         && preview.target_layout_basis()
@@ -1825,7 +1827,7 @@ impl DockEngine {
             .viewport
             .viewport(focus_surface)
             .filter(|record| record.can_accept_activation())
-            .map(crate::viewport_registry::ViewportRecord::binding)
+            .map(crate::platform::registry::ViewportRecord::binding)
         {
             let _ = self.start_viewport_activation(
                 ViewportActivationRequest::drop_committed(binding, pane_focus),
@@ -1878,7 +1880,7 @@ impl DockEngine {
                 InteractionRejection::TargetChanged,
             ));
         }
-        let normalized = crate::frame::NativeCreateProposal::from_tear_off(proposal);
+        let normalized = crate::platform::frame::NativeCreateProposal::from_tear_off(proposal);
         let request = match self.start_native_root_create(
             cause,
             focus_causal,
@@ -2131,7 +2133,8 @@ impl DockEngine {
             .plan()
             .contained_projection()
             .filter(|projection| {
-                projection.owner == crate::scene::ContainedLayoutOwner::Drag(drag.session)
+                projection.owner
+                    == crate::presentation::scene::ContainedLayoutOwner::Drag(drag.session)
             })
             .and_then(|projection| projection.target_basis)
             .unwrap_or(presentation.scene());
@@ -2148,14 +2151,14 @@ impl DockEngine {
     pub(super) fn resolve_presented_drop_with_current_index(
         &self,
         presentation: &JournalSurfacePresentation,
-        source_layout_facts: Option<&crate::scene::PresentationLayoutFacts>,
+        source_layout_facts: Option<&crate::presentation::scene::PresentationLayoutFacts>,
         policy: &DockPolicySnapshot,
         session: crate::interaction::DragSessionId,
         source: MovePayload,
-        surface_background_offer: Option<crate::intent::SurfaceBackgroundRootOffer>,
+        surface_background_offer: Option<crate::input::intent::SurfaceBackgroundRootOffer>,
         point: crate::geometry::LogicalPoint,
         allow_magnetic: bool,
-    ) -> Result<crate::drop_resolver::DropQuery, DropResolutionError> {
+    ) -> Result<crate::interaction::targeting::resolver::DropQuery, DropResolutionError> {
         let targeting = if !self.interaction.docking_enabled() {
             DropTargeting::Disabled
         } else if allow_magnetic {
@@ -2502,7 +2505,7 @@ impl DockEngine {
             bounds,
             rect,
         );
-        CoreContainedCandidate::Proposal(crate::intent::ContainedTearOffProposal::new(
+        CoreContainedCandidate::Proposal(crate::input::intent::ContainedTearOffProposal::new(
             origin.root,
             origin.floating,
             placement,
@@ -2513,7 +2516,7 @@ impl DockEngine {
     fn valid_contained_move_proposal(
         &self,
         origin: &FrozenContainedDragOrigin,
-        proposal: crate::intent::ContainedTearOffProposal,
+        proposal: crate::input::intent::ContainedTearOffProposal,
         authority: ContainedPlacementAuthority,
     ) -> bool {
         let proof = proposal.placement();
@@ -2548,7 +2551,7 @@ impl DockEngine {
         &self,
         cause: ReductionCause,
         drag: &crate::interaction::ActiveDrag,
-        proposal: crate::intent::ContainedTearOffProposal,
+        proposal: crate::input::intent::ContainedTearOffProposal,
         authority: ContainedPlacementAuthority,
         policy: &DockPolicySnapshot,
     ) -> Result<(PreviewDecision, Option<PreparedDropMutation>), EngineError> {
@@ -2581,7 +2584,7 @@ impl DockEngine {
                 None,
             ));
         }
-        let prepared = match crate::operation::prepare_transaction(
+        let prepared = match crate::graph::operation::prepare_transaction(
             self.workspace.as_ref(),
             policy,
             std::slice::from_ref(&command),
@@ -2912,7 +2915,7 @@ impl DockEngine {
         &self,
         surface: SurfaceId,
         scene: SurfaceSceneStamp,
-        plan: &crate::scene::PresentationPlan,
+        plan: &crate::presentation::scene::PresentationPlan,
         source: TabGestureSource,
         point: crate::geometry::LogicalPoint,
         presentation: FrozenPresentationAuthority,
@@ -2995,10 +2998,10 @@ impl DockEngine {
             .capture_node_source(root, tabs)
             .map_err(InteractionRejection::CommandRejected)?;
         let contained = match self.workspace.presentation_for_root(root) {
-            Some(crate::RootPresentationOwner::Main {
+            Some(crate::graph::workspace::RootPresentationOwner::Main {
                 surface: owner_surface,
             }) if owner_surface == surface => None,
-            Some(crate::RootPresentationOwner::Contained {
+            Some(crate::graph::workspace::RootPresentationOwner::Contained {
                 surface: owner_surface,
                 floating,
             }) if owner_surface == surface => {
@@ -3041,7 +3044,9 @@ impl DockEngine {
             || {
                 plan.pane_records()
                     .iter()
-                    .find(|pane| pane.id() == (crate::scene::PaneSceneId { root, tabs }))
+                    .find(|pane| {
+                        pane.id() == (crate::presentation::scene::PaneSceneId { root, tabs })
+                    })
                     .map(|pane| JournalDragSourceGeometry {
                         source_rect: pane.bounds(),
                         minimum_size: self
@@ -3160,9 +3165,11 @@ impl DockEngine {
             };
             if intent == SourcePressIntent::Activate {
                 commands.push(raise);
-            } else if let Err(source) =
-                crate::operation::authorize_workspace_command(&self.workspace, policy, &raise)
-            {
+            } else if let Err(source) = crate::graph::operation::authorize_workspace_command(
+                &self.workspace,
+                policy,
+                &raise,
+            ) {
                 return Ok(InteractionOutcome::Rejected(
                     InteractionRejection::CommandRejected(source),
                 ));
@@ -3217,7 +3224,7 @@ impl DockEngine {
             ) {
                 return Ok(InteractionOutcome::Rejected(
                     InteractionRejection::CommandRejected(
-                        crate::error::CommandError::SurfaceLifecycleFrozen { surface },
+                        crate::graph::error::CommandError::SurfaceLifecycleFrozen { surface },
                     ),
                 ));
             }
@@ -3225,7 +3232,7 @@ impl DockEngine {
             {
                 return Ok(InteractionOutcome::Rejected(
                     InteractionRejection::CommandRejected(
-                        crate::error::CommandError::SurfaceLifecycleFrozen { surface },
+                        crate::graph::error::CommandError::SurfaceLifecycleFrozen { surface },
                     ),
                 ));
             }
@@ -3269,7 +3276,7 @@ impl DockEngine {
                 .viewport
                 .viewport(prepared.surface)
                 .filter(|record| record.can_accept_activation())
-                .map(crate::viewport_registry::ViewportRecord::binding)
+                .map(crate::platform::registry::ViewportRecord::binding)
             {
                 let _ = self.start_viewport_activation(
                     ViewportActivationRequest::pointer_tab_gesture(
@@ -3413,7 +3420,7 @@ impl DockEngine {
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
-    ) -> Result<Vec<crate::transition::ReducedPointerEdge>, EngineError> {
+    ) -> Result<Vec<crate::engine::transition::ReducedPointerEdge>, EngineError> {
         let (stamp, provider, journal, candidates, receipts, handoff) = protocol.into_parts();
         // A SurfaceLocal lease freezes a native endpoint, including its window
         // incarnation. The host frame can span a platform or workspace
@@ -3557,7 +3564,7 @@ impl DockEngine {
             {
                 interaction.push(outcome);
             }
-            reduced.push(crate::transition::ReducedPointerEdge::new(
+            reduced.push(crate::engine::transition::ReducedPointerEdge::new(
                 tick,
                 ordinal,
                 accepted.stream(),

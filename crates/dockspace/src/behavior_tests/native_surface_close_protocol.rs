@@ -9,26 +9,36 @@ use super::support;
 
 use support::TestPresentationHost;
 
-use dockspace::close::{
-    CloseDecision, CloseItemDecisionState, ClosePlanPhase, DeferredCloseDecision,
+use dockspace::close::plan::{
+    CloseCancellationState, ClosePlan, ClosePlanLookup, ClosePlanPhase, NativeCloseEdge,
+    SurfaceCloseRequest, SurfaceContainedRehomeTarget, SurfaceMainRehomeTarget,
+    SurfaceRehomeTarget,
 };
-use dockspace::close_plan::{
-    CloseCancellationState, ClosePlan, ClosePlanLookup, NativeCloseEdge, SurfaceCloseRequest,
-    SurfaceContainedRehomeTarget, SurfaceMainRehomeTarget, SurfaceRehomeTarget,
-};
-use dockspace::command::ContainedPosition;
-use dockspace::effect::{
-    DispatchFailureReason, EffectDispatchResult, EffectId, EffectRecordLookup, EffectResult,
-    NativeCloseResolution, PlatformEffect,
+use dockspace::close::{CloseDecision, CloseItemDecisionState, DeferredCloseDecision};
+use dockspace::engine::transition::{
+    EngineTransition, InputOutcome, InputPriority, SurfaceCloseRequestRejection,
 };
 use dockspace::engine::{DockEngine, EngineInput};
-use dockspace::frame::PanelFocus;
 use dockspace::geometry::{LogicalRect, PhysicalRect, ScaleFactor};
+use dockspace::graph::command::ContainedPosition;
 use dockspace::graph::{ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{
     FloatingPresentationId, ItemId, RootId, SourceSequence, StableInputSourceId, SurfaceId,
 };
-use dockspace::intent::{Authority, AuthorityUnavailableReason};
+use dockspace::input::intent::{Authority, AuthorityUnavailableReason};
+use dockspace::platform::effect::{
+    DispatchFailureReason, EffectDispatchResult, EffectId, EffectRecordLookup, EffectResult,
+    NativeCloseResolution, PlatformEffect,
+};
+use dockspace::platform::focus::{
+    FocusObservationGeneration, PaneFocusObservation, PaneFocusObservationGeneration,
+    unknown_focus_observation,
+};
+use dockspace::platform::frame::PanelFocus;
+use dockspace::platform::viewport::{
+    CloseObservationGeneration, CoordinateObservationGeneration, PresentationObservationGeneration,
+    ViewportBinding, ViewportRole, WindowToken,
+};
 use dockspace::platform::{
     CloseEffectAcknowledgement, ObservedWindow, PlatformCapabilities, PlatformCapability,
     PlatformCapabilityReason, PlatformRequirement, PlatformSnapshot, WindowCloseObservation,
@@ -38,17 +48,6 @@ use dockspace::platform::{
 use dockspace::policy::{
     CloseCapability, DockItemRule, DockPayloadKind, DockPolicy, DockPresentationMode,
     DockSurfaceRule, PolicyRejection,
-};
-use dockspace::transition::{
-    EngineTransition, InputOutcome, InputPriority, SurfaceCloseRequestRejection,
-};
-use dockspace::viewport::{
-    CloseObservationGeneration, CoordinateObservationGeneration, PresentationObservationGeneration,
-    ViewportBinding, ViewportRole, WindowToken,
-};
-use dockspace::viewport_focus::{
-    FocusObservationGeneration, PaneFocusObservation, PaneFocusObservationGeneration,
-    unknown_focus_observation,
 };
 
 const SOURCE: SurfaceId = SurfaceId::new(1);
@@ -175,7 +174,9 @@ impl Harness {
         let inventory_observation =
             support::known_inventory_observation(self.snapshot_generation, &windows);
         let snapshot = PlatformSnapshot::new(
-            dockspace::viewport::PlatformSnapshotGeneration::new(self.snapshot_generation),
+            dockspace::platform::viewport::PlatformSnapshotGeneration::new(
+                self.snapshot_generation,
+            ),
             support::known_capability_observation(
                 self.snapshot_generation,
                 self.capabilities.clone(),
@@ -772,7 +773,7 @@ fn retain_layout_with_a_disabled_pane_immediately_cancels_the_native_close_edge(
     assert!(matches!(
         only_outcome(&rejected),
         InputOutcome::SurfaceCloseRejected {
-            reason: dockspace::transition::SurfaceCloseRequestRejection::PaneCloseDisabled { item },
+            reason: dockspace::engine::transition::SurfaceCloseRequestRejection::PaneCloseDisabled { item },
             ..
         } if *item == ItemId::new(1)
     ));
@@ -1013,7 +1014,7 @@ fn late_effect_report_after_destroyed_settlement_is_ledger_only() {
     assert!(matches!(
         only_outcome(&late),
         InputOutcome::PlatformEffectReported {
-            transition: dockspace::effect::EffectTransition::RetiredTerminal,
+            transition: dockspace::platform::effect::EffectTransition::RetiredTerminal,
             ..
         }
     ));
@@ -1078,7 +1079,7 @@ fn late_cancellation_result_after_terminal_compaction_is_inert() {
     assert!(matches!(
         only_outcome(&late),
         InputOutcome::PlatformEffectReported {
-            transition: dockspace::effect::EffectTransition::RetiredTerminal,
+            transition: dockspace::platform::effect::EffectTransition::RetiredTerminal,
             ..
         }
     ));

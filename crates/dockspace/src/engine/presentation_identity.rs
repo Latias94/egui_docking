@@ -304,7 +304,7 @@ impl DockEngine {
                 RootPresentationTarget::Contained { floating, .. }
                     if !matches!(
                         self.workspace.presentation_for_root(source.root()),
-                        Some(crate::RootPresentationOwner::Contained { .. })
+                        Some(crate::graph::workspace::RootPresentationOwner::Contained { .. })
                     ) =>
                 {
                     self.validate_fresh_floating_identity(*floating)
@@ -351,7 +351,7 @@ impl DockEngine {
                 RootPresentationTarget::Contained { floating, .. }
                     if !matches!(
                         self.workspace.presentation_for_root(source.root()),
-                        Some(crate::RootPresentationOwner::Contained { .. })
+                        Some(crate::graph::workspace::RootPresentationOwner::Contained { .. })
                     ) =>
                 {
                     self.presentation_identity.observe_floating(*floating);

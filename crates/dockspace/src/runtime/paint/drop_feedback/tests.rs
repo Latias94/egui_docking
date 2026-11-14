@@ -1,10 +1,12 @@
 use super::*;
 
-use crate::command::MovePayload;
-use crate::drop_resolver::{DropResolution, resolve_presented_drop};
 use crate::geometry::{LogicalPoint, LogicalSize};
+use crate::graph::command::MovePayload;
+use crate::graph::transaction::WorkspaceTransaction;
+use crate::graph::workspace::WorkspaceIndex;
 use crate::graph::{Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
 use crate::ids::{FloatingPresentationId, NodeId};
+use crate::interaction::targeting::resolver::{DropResolution, resolve_presented_drop};
 use crate::interaction::{DragGeneration, DragSessionId};
 use crate::policy::{
     DockPolicy, DockTargetRule, DockTargetRuleKey, TabBarInteraction, TabBarPolicy,
@@ -16,8 +18,6 @@ use crate::runtime::{
     SurfacePointerReceiverFacts, SurfacePresentationResult, SurfaceUnavailableReason,
     UniformSurfaceMetrics,
 };
-use crate::transaction::WorkspaceTransaction;
-use crate::workspace::WorkspaceIndex;
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(1);
@@ -43,7 +43,7 @@ fn measured_session(workspace: Workspace, policy: DockPolicy) -> DockspaceSessio
     session
 }
 
-fn pane(plan: &PresentationPlan, tabs: NodeId) -> &crate::scene::PaneRecord {
+fn pane(plan: &PresentationPlan, tabs: NodeId) -> &crate::presentation::scene::PaneRecord {
     plan.pane_records()
         .iter()
         .find(|pane| pane.id().tabs == tabs)
@@ -217,7 +217,7 @@ fn hidden_bars_keep_their_selected_target_and_empty_central_has_no_representativ
             surface: SURFACE,
             root: ROOT,
             node: split,
-            edge: crate::command::Edge::Right,
+            edge: crate::graph::command::Edge::Right,
         },
         None,
     )

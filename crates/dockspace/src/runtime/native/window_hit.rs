@@ -2,8 +2,8 @@
 
 use crate::engine::{CoreHostFrame, DockEngine};
 use crate::geometry::PhysicalPoint;
-use crate::pointer_journal::NativeSurfacePointerRoute;
-use crate::pointer_receiver::{
+use crate::input::journal::NativeSurfacePointerRoute;
+use crate::input::receiver::{
     NativeWindowHitReceipt, PointerReceiverCandidate, PointerReceiverProbeRequest,
 };
 use crate::runtime::{PointerEventMetadata, SurfacePresentationArtifact};

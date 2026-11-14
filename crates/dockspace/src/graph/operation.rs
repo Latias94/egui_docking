@@ -4,15 +4,21 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Deref;
 use std::sync::Arc;
 
-use crate::RootPresentationOwner;
-use crate::canonical::canonicalize_draft;
-use crate::close_plan::CloseItemRequirement;
-use crate::command::{
+use crate::close::plan::CloseItemRequirement;
+use crate::engine::surface_recovery::SurfaceRecoveryTransaction;
+use crate::engine::transition::WorkspaceVersion;
+use crate::graph::canonical::canonicalize_draft;
+use crate::graph::command::{
     CloseCommitOutcome, CommandOutcome, ContainedPosition, ContainedRosterSource, DockTarget, Edge,
     EdgeTarget, EdgeTargetScope, ItemSource, MovePayload, NodeSource, RootContent,
     RootPresentationTarget, SplitResize, SurfaceRosterSource, TabTarget, WorkspaceCommand,
 };
-use crate::error::{CommandError, ReferenceRole, TransactionError, TransactionPreconditionError};
+use crate::graph::error::{
+    CommandError, ReferenceRole, TransactionError, TransactionPreconditionError,
+};
+use crate::graph::transaction::{TransactionReport, clone_workspace_draft};
+use crate::graph::workspace::RootPresentationOwner;
+use crate::graph::workspace::WorkspaceIndex;
 use crate::graph::{
     Axis, ContainedFloating, NORMALIZED_WEIGHT_TOLERANCE, Node, RootRecord, SplitWeight,
     SurfacePresentation, Workspace,
@@ -23,10 +29,6 @@ use crate::policy::{
     DockPayloadPolicyFacts, DockPolicyRequest, DockPolicySnapshot, DockPresentationPolicyRequest,
     DockPresentationTarget, DockResizePolicyRequest, PolicyDecision,
 };
-use crate::surface_recovery::SurfaceRecoveryTransaction;
-use crate::transaction::{TransactionReport, clone_workspace_draft};
-use crate::transition::WorkspaceVersion;
-use crate::workspace::WorkspaceIndex;
 
 mod authorization;
 mod close;
@@ -136,7 +138,7 @@ pub(crate) struct WorkspaceSnapshot {
 impl WorkspaceSnapshot {
     pub(crate) fn validated(
         workspace: Workspace,
-    ) -> Result<Self, crate::validation::WorkspaceValidationErrors> {
+    ) -> Result<Self, crate::graph::validation::WorkspaceValidationErrors> {
         // Strict validation rejects every topology rewrite and vacant surface
         // that the general transaction would otherwise have to clean up.
         workspace.validate()?;
@@ -169,7 +171,9 @@ impl WorkspaceSnapshot {
                 if *selected == Some(source.item()))
         {
             #[cfg(test)]
-            crate::drop_resolver::structural_work::record_transaction_prepare(commands.len());
+            crate::interaction::targeting::resolver::structural_work::record_transaction_prepare(
+                commands.len(),
+            );
             authorize_workspace_command(self, policy, command)
                 .and_then(|()| validate_item_source(self, source))
                 .map_err(|source| TransactionError::Command { index: 0, source })?;
@@ -283,7 +287,9 @@ fn prepare_transaction_inner(
     commands: &[WorkspaceCommand],
 ) -> Result<PreparedTransaction, TransactionError> {
     #[cfg(test)]
-    crate::drop_resolver::structural_work::record_transaction_prepare(commands.len());
+    crate::interaction::targeting::resolver::structural_work::record_transaction_prepare(
+        commands.len(),
+    );
     let mut candidate = clone_workspace_draft(workspace);
     if let [command @ WorkspaceCommand::Select { source }] = commands
         && let TransactionAuthority::Policy(policy) = authority
@@ -357,14 +363,15 @@ pub(crate) fn prepare_transaction_with(
     workspace: &Workspace,
     policy: &DockPolicySnapshot,
     edit: impl FnOnce(
-        &mut crate::transaction::WorkspaceTransactionStage<'_>,
+        &mut crate::graph::transaction::WorkspaceTransactionStage<'_>,
     ) -> Result<(), TransactionError>,
 ) -> Result<PreparedTransaction, TransactionError> {
-    let mut stage = crate::transaction::WorkspaceTransactionStage::new(TransactionDraft::new(
-        workspace,
-        TransactionAuthority::Policy(policy),
-        clone_workspace_draft(workspace),
-    ));
+    let mut stage =
+        crate::graph::transaction::WorkspaceTransactionStage::new(TransactionDraft::new(
+            workspace,
+            TransactionAuthority::Policy(policy),
+            clone_workspace_draft(workspace),
+        ));
     edit(&mut stage)?;
     stage.finish(workspace)
 }
@@ -398,13 +405,15 @@ impl<'policy> TransactionDraft<'policy> {
     pub(crate) fn capture_and_push(
         &mut self,
         capture: impl FnOnce(
-            crate::transaction::TransactionCapture<'_>,
+            crate::graph::transaction::TransactionCapture<'_>,
         ) -> Result<WorkspaceCommand, CommandError>,
     ) -> Result<(), TransactionError> {
         if let Some(error) = &self.failure {
             return Err(error.clone());
         }
-        let command = match capture(crate::transaction::TransactionCapture::new(&self.candidate)) {
+        let command = match capture(crate::graph::transaction::TransactionCapture::new(
+            &self.candidate,
+        )) {
             Ok(command) => command,
             Err(source) => {
                 let error = TransactionError::Command {
@@ -626,8 +635,8 @@ mod tests {
     mod split_resize;
 
     use super::*;
-    use crate::command::{ContainedRootSource, DockFraction, SurfaceRosterSource};
     use crate::geometry::LogicalRect;
+    use crate::graph::command::{ContainedRootSource, DockFraction, SurfaceRosterSource};
     use crate::graph::{ContainedFloating, Node, RootRecord, WorkspaceBuilder};
     use crate::policy::{
         CloseCapability, DockPolicy, DockSurfaceRule, PolicyRejection, PolicyRevision,
@@ -825,12 +834,12 @@ mod tests {
         for command_count in [16, 128, 1_024] {
             let (mut workspace, commands) = scaled_open_item_transaction(command_count);
 
-            crate::drop_resolver::structural_work::reset();
-            let report = crate::transaction::WorkspaceTransaction::from_commands(commands)
+            crate::interaction::targeting::resolver::structural_work::reset();
+            let report = crate::graph::transaction::WorkspaceTransaction::from_commands(commands)
                 .apply(&mut workspace, &default_policy())
                 .expect("scaled item opens publish atomically");
 
-            let work = crate::drop_resolver::structural_work::snapshot();
+            let work = crate::interaction::targeting::resolver::structural_work::snapshot();
             assert_eq!(report.outcomes().len(), command_count);
             assert_eq!(work.transaction_commands, command_count);
             assert!(work.item_multiset_scans <= 4);
@@ -844,12 +853,12 @@ mod tests {
             let (mut workspace, commands, expected_changes) =
                 scaled_edge_move_transaction(command_count);
 
-            crate::drop_resolver::structural_work::reset();
-            let report = crate::transaction::WorkspaceTransaction::from_commands(commands)
+            crate::interaction::targeting::resolver::structural_work::reset();
+            let report = crate::graph::transaction::WorkspaceTransaction::from_commands(commands)
                 .apply(&mut workspace, &default_policy())
                 .expect("mixed moves publish atomically");
 
-            let work = crate::drop_resolver::structural_work::snapshot();
+            let work = crate::interaction::targeting::resolver::structural_work::snapshot();
             assert!(report.changed());
             assert_eq!(report.outcomes().len(), command_count);
             for (outcome, expected_changed) in report.outcomes().iter().zip(expected_changes) {
@@ -869,7 +878,7 @@ mod tests {
                 .capture_tab_target(root, node)
                 .expect("test root must be a current tabs target"),
         );
-        crate::transaction::WorkspaceTransaction::from_commands([WorkspaceCommand::Open {
+        crate::graph::transaction::WorkspaceTransaction::from_commands([WorkspaceCommand::Open {
             item,
             target,
         }])

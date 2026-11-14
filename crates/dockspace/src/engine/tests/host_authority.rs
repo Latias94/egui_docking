@@ -1,10 +1,10 @@
 //! Host-frame, provider, identity, and presentation authority tests.
 
 use super::*;
-use crate::pointer_journal::{
+use crate::input::journal::{
     FiniteScrollVector, ScrollModifiers, ScrollMomentum, SurfaceLocalPointerRetirementDisposition,
 };
-use crate::viewport::{CoordinateGeneration, PresentationObservationGeneration};
+use crate::platform::viewport::{CoordinateGeneration, PresentationObservationGeneration};
 
 fn register_test_root_viewport(
     engine: &mut DockEngine,
@@ -641,10 +641,10 @@ fn native_surface_local_lease_cannot_cross_a_workspace_binding_reincarnation() {
 fn host_frame_records_one_whole_engine_candidate_clone() {
     let mut fixture = counter_fixture();
     let expected_workspace_volume =
-        crate::drop_resolver::structural_work::WorkspaceCloneVolume::capture(
+        crate::interaction::targeting::resolver::structural_work::WorkspaceCloneVolume::capture(
             fixture.engine.workspace(),
         );
-    crate::drop_resolver::structural_work::reset();
+    crate::interaction::targeting::resolver::structural_work::reset();
 
     let mut frame = begin_test_host_frame(&fixture.engine, fixture.presentation_host);
     complete_host_frame_with_explicit_surface_roster(&fixture.engine, &mut frame);
@@ -652,11 +652,11 @@ fn host_frame_records_one_whole_engine_candidate_clone() {
         .finish(&mut fixture.engine)
         .expect("empty authoritative host frame must reduce");
 
-    let work = crate::drop_resolver::structural_work::snapshot();
+    let work = crate::interaction::targeting::resolver::structural_work::snapshot();
     assert_eq!(work.engine_deep_clones.atomic_candidates.calls, 1);
     assert_eq!(
         work.engine_deep_clones.atomic_candidates.volume,
-        crate::drop_resolver::structural_work::WorkspaceCloneVolume::default()
+        crate::interaction::targeting::resolver::structural_work::WorkspaceCloneVolume::default()
     );
     assert_eq!(
         work.engine_deep_clones.shared_workspace,
@@ -688,11 +688,11 @@ fn surface_contribution_authority_diff_is_linear_in_surface_count() {
         let mut frame = begin_test_host_frame(&engine, host);
         complete_host_frame_with_explicit_surface_roster(&engine, &mut frame);
 
-        crate::scene::interaction_authority_work::reset();
+        crate::presentation::scene::interaction_authority_work::reset();
         frame
             .finish(&mut engine)
             .expect("complete scale fixture frame reduces");
-        let work = crate::scene::interaction_authority_work::snapshot();
+        let work = crate::presentation::scene::interaction_authority_work::snapshot();
 
         assert_eq!(work.scans, 2, "surface count {surface_count}");
         assert_eq!(
@@ -726,7 +726,7 @@ fn surface_contribution_validation_reuses_the_manifest_workspace_index() {
             .expect("scale fixture presentation host mints");
         let mut frame = begin_test_host_frame(&engine, host);
 
-        crate::drop_resolver::structural_work::reset();
+        crate::interaction::targeting::resolver::structural_work::reset();
         for identity in 1..=surface_count {
             let surface =
                 SurfaceId::new(u64::try_from(identity).expect("surface fixture identity fits u64"));
@@ -744,7 +744,7 @@ fn surface_contribution_validation_reuses_the_manifest_workspace_index() {
                 .expect("each surface contributes once");
         }
 
-        let work = crate::drop_resolver::structural_work::snapshot();
+        let work = crate::interaction::targeting::resolver::structural_work::snapshot();
         assert!(
             work.root_fingerprint_builds <= surface_count,
             "surface validation rebuilt more than one root fingerprint per surface: {work:?}"
@@ -896,7 +896,7 @@ fn surface_local_scroll_batch_refreshes_only_the_changed_surface() {
         .expect("discrete scroll edge is structurally valid");
         let mut frame = begin_test_host_frame(&engine, host);
 
-        crate::drop_resolver::structural_work::reset();
+        crate::interaction::targeting::resolver::structural_work::reset();
         for previous in 0..4_u64 {
             frame
                 .submit_surface_pointer_journal(
@@ -924,7 +924,7 @@ fn surface_local_scroll_batch_refreshes_only_the_changed_surface() {
                 .expect("scroll segment reduces");
         }
 
-        let work = crate::drop_resolver::structural_work::snapshot();
+        let work = crate::interaction::targeting::resolver::structural_work::snapshot();
         assert_eq!(
             work.presentation_roster_full_captures, 0,
             "scroll segments must not rebuild the complete roster for {surface_count} surfaces"
@@ -960,10 +960,12 @@ fn retained_changed_tab_press_starts_its_post_selection_payload_after_threshold(
 }
 
 fn retained_changed_tab_press(activate_drag: bool) {
-    use crate::pointer_receiver::{PointerReceiverHoverHit, PointerReceiverHoverHitDisposition};
-    use crate::presentation_observation::HostPresentationOutput;
-    use crate::scene::{ResolvedSurfaceProgramOperation, ResolvedSurfaceProgramStep};
-    use crate::scene_compiler::{reset_surface_compilation_count, surface_compilation_count};
+    use crate::input::receiver::{PointerReceiverHoverHit, PointerReceiverHoverHitDisposition};
+    use crate::presentation::compiler::{
+        reset_surface_compilation_count, surface_compilation_count,
+    };
+    use crate::presentation::observation::HostPresentationOutput;
+    use crate::presentation::scene::{ResolvedSurfaceProgramOperation, ResolvedSurfaceProgramStep};
 
     fn observe_output(
         engine: &DockEngine,
@@ -1099,7 +1101,7 @@ fn retained_changed_tab_press(activate_drag: bool) {
             assert_eq!(armed.source_validated_at, view.version());
             assert_eq!(
                 armed.payload,
-                crate::command::MovePayload::Item(
+                crate::graph::command::MovePayload::Item(
                     view.workspace()
                         .capture_item_source(SOURCE_ROOT, tabs, second)
                         .unwrap(),
@@ -1280,7 +1282,7 @@ fn retained_changed_tab_press(activate_drag: bool) {
         let hit = projection
             .hit_manifest()
             .resolve_exclusive(
-                crate::presentation_hit::PresentationPointerLane::HoverDrop,
+                crate::presentation::hit::PresentationPointerLane::HoverDrop,
                 moved,
             )
             .unwrap()
@@ -1301,7 +1303,7 @@ fn retained_changed_tab_press(activate_drag: bool) {
                 .unwrap(),
             )
             .unwrap();
-        let expected = crate::command::MovePayload::Item(
+        let expected = crate::graph::command::MovePayload::Item(
             movement
                 .view()
                 .workspace()
@@ -1359,7 +1361,7 @@ fn retained_changed_tab_press(activate_drag: bool) {
             .iter()
             .any(|outcome| matches!(
                 outcome,
-                crate::presentation_observation::HostPresentationObservationOutcome::Retired {
+                crate::presentation::observation::HostPresentationObservationOutcome::Retired {
                     promotion_eligible: true,
                     ..
                 }
@@ -1381,12 +1383,14 @@ fn retained_changed_tab_press(activate_drag: bool) {
 
 #[test]
 fn retained_selection_encoding_restart_rejects_old_receipt_and_drops_atomically() {
+    use crate::presentation::compiler::{
+        reset_surface_compilation_count, surface_compilation_count,
+    };
     use crate::runtime::{
         DockspaceHostFrame, DockspaceRuntimeErrorKind, DockspaceSession,
         SurfacePaintProgramOperation, SurfacePaintProgramStep, SurfacePresentationResult,
         SurfaceProgramExecutionReceipt, SurfaceUnavailableReason, UniformSurfaceMetrics,
     };
-    use crate::scene_compiler::{reset_surface_compilation_count, surface_compilation_count};
 
     fn encode(
         frame: &mut DockspaceHostFrame<'_>,
@@ -1548,19 +1552,22 @@ fn real_host_frame_tab_press_and_release_have_bounded_clone_work() {
         )
         .expect("tab pointer provider must mint");
     let workspace_volume =
-        crate::drop_resolver::structural_work::WorkspaceCloneVolume::capture(engine.workspace());
-    let engine_state = crate::drop_resolver::structural_work::EngineCloneVolume {
-        scene_surfaces: 1,
-        scene_retained_plans: 1,
-        scene_paint_hit_regions: 14,
-        presentation_hosts: 1,
-        presentation_streams: 1,
-        presentation_pending_outputs: 0,
-        live_pointer_providers: 1,
-        semantic_input_watermark_guards: 0,
-    };
+        crate::interaction::targeting::resolver::structural_work::WorkspaceCloneVolume::capture(
+            engine.workspace(),
+        );
+    let engine_state =
+        crate::interaction::targeting::resolver::structural_work::EngineCloneVolume {
+            scene_surfaces: 1,
+            scene_retained_plans: 1,
+            scene_paint_hit_regions: 14,
+            presentation_hosts: 1,
+            presentation_streams: 1,
+            presentation_pending_outputs: 0,
+            live_pointer_providers: 1,
+            semantic_input_watermark_guards: 0,
+        };
 
-    crate::drop_resolver::structural_work::reset();
+    crate::interaction::targeting::resolver::structural_work::reset();
     let mut press = begin_test_host_frame(&engine, host);
     press
         .submit_surface_pointer_journal(
@@ -1612,11 +1619,11 @@ fn real_host_frame_tab_press_and_release_have_bounded_clone_work() {
         press_transition.reduced_pointer_edges()[0].interaction_outcomes(),
         [InteractionOutcome::DragArmed { .. }]
     ));
-    let press_work = crate::drop_resolver::structural_work::snapshot();
+    let press_work = crate::interaction::targeting::resolver::structural_work::snapshot();
     assert_eq!(press_work.engine_deep_clones.atomic_candidates.calls, 1);
     assert_eq!(
         press_work.engine_deep_clones.atomic_candidates.volume,
-        crate::drop_resolver::structural_work::WorkspaceCloneVolume::default()
+        crate::interaction::targeting::resolver::structural_work::WorkspaceCloneVolume::default()
     );
     assert_eq!(
         press_work.engine_deep_clones.shared_workspace,
@@ -1640,7 +1647,7 @@ fn real_host_frame_tab_press_and_release_have_bounded_clone_work() {
     assert_eq!(press_work.root_fingerprint_builds, 0);
     assert_eq!(press_work.root_fingerprint_node_visits, 0);
 
-    crate::drop_resolver::structural_work::reset();
+    crate::interaction::targeting::resolver::structural_work::reset();
     let mut release = begin_test_host_frame(&engine, host);
     release
         .submit_surface_pointer_journal(
@@ -1684,11 +1691,11 @@ fn real_host_frame_tab_press_and_release_have_bounded_clone_work() {
         }]
     ));
     assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
-    let release_work = crate::drop_resolver::structural_work::snapshot();
+    let release_work = crate::interaction::targeting::resolver::structural_work::snapshot();
     assert_eq!(release_work.engine_deep_clones.atomic_candidates.calls, 1);
     assert_eq!(
         release_work.engine_deep_clones.atomic_candidates.volume,
-        crate::drop_resolver::structural_work::WorkspaceCloneVolume::default()
+        crate::interaction::targeting::resolver::structural_work::WorkspaceCloneVolume::default()
     );
     assert_eq!(
         release_work.engine_deep_clones.shared_workspace,
@@ -1875,7 +1882,7 @@ fn real_host_frame_contained_close_requests_approval_without_mutating_content() 
     };
     assert_eq!(
         plan.target(),
-        crate::close_plan::ClosePlanTarget::Root { root: TARGET_ROOT }
+        crate::close::plan::ClosePlanTarget::Root { root: TARGET_ROOT }
     );
     assert!(!transition.changed());
     assert_eq!(engine.workspace(), &before);
@@ -1884,8 +1891,8 @@ fn real_host_frame_contained_close_requests_approval_without_mutating_content() 
 
 #[test]
 fn real_host_frame_dock_release_reuses_one_owned_graph_draft_and_rolls_back() {
-    use crate::drop_resolver::structural_work::{self, WorkspaceCloneVolume};
-    use crate::pointer_receiver::{PointerReceiverHoverHit, PointerReceiverHoverHitDisposition};
+    use crate::input::receiver::{PointerReceiverHoverHit, PointerReceiverHoverHitDisposition};
+    use crate::interaction::targeting::resolver::structural_work::{self, WorkspaceCloneVolume};
 
     let item = ItemId::new(1);
     let mut builder = Workspace::builder();
@@ -1913,7 +1920,7 @@ fn real_host_frame_dock_release_reuses_one_owned_graph_draft_and_rolls_back() {
         .iter()
         .find(|region| {
             matches!(region.id().kind(), PresentationHitRegionKind::DropTarget(
-            crate::drop_target::DropTargetId::TabGap { tabs, .. }
+            crate::interaction::targeting::targets::DropTargetId::TabGap { tabs, .. }
         ) if tabs == target)
         })
         .unwrap();
@@ -1949,7 +1956,7 @@ fn real_host_frame_dock_release_reuses_one_owned_graph_draft_and_rolls_back() {
         let mut probes = Vec::new();
         if candidate
             .probes()
-            .requires(crate::pointer_receiver::PointerReceiverProbe::Delivery)
+            .requires(crate::input::receiver::PointerReceiverProbe::Delivery)
         {
             probes.push(PointerReceiverProbeReceipt::Delivery(
                 PointerReceiverDelivery::new(
@@ -1961,7 +1968,7 @@ fn real_host_frame_dock_release_reuses_one_owned_graph_draft_and_rolls_back() {
         }
         if candidate
             .probes()
-            .requires(crate::pointer_receiver::PointerReceiverProbe::HoverHit)
+            .requires(crate::input::receiver::PointerReceiverProbe::HoverHit)
         {
             probes.push(PointerReceiverProbeReceipt::HoverHit(
                 PointerReceiverHoverHit::new(
@@ -2138,9 +2145,11 @@ fn real_host_frame_splitter_gesture_has_bounded_clone_work() {
         )
         .expect("splitter pointer provider must mint");
     let workspace_volume =
-        crate::drop_resolver::structural_work::WorkspaceCloneVolume::capture(engine.workspace());
+        crate::interaction::targeting::resolver::structural_work::WorkspaceCloneVolume::capture(
+            engine.workspace(),
+        );
 
-    crate::drop_resolver::structural_work::reset();
+    crate::interaction::targeting::resolver::structural_work::reset();
     let mut frame = begin_test_host_frame(&engine, host);
     frame
         .submit_surface_pointer_journal(
@@ -2181,7 +2190,7 @@ fn real_host_frame_splitter_gesture_has_bounded_clone_work() {
             .expect("splitter receipt batch is exact"),
         )
         .expect("splitter press receipt must stage");
-    let work_before_move = crate::drop_resolver::structural_work::snapshot();
+    let work_before_move = crate::interaction::targeting::resolver::structural_work::snapshot();
     frame
         .submit_surface_pointer_journal(
             &provider,
@@ -2201,7 +2210,7 @@ fn real_host_frame_splitter_gesture_has_bounded_clone_work() {
             .expect("splitter move receipt batch is exact"),
         )
         .expect("splitter move receipt must stage");
-    let work_after_move = crate::drop_resolver::structural_work::snapshot();
+    let work_after_move = crate::interaction::targeting::resolver::structural_work::snapshot();
     assert_eq!(
         work_after_move.presentation_roster_full_captures,
         work_before_move.presentation_roster_full_captures,
@@ -2260,7 +2269,7 @@ fn real_host_frame_splitter_gesture_has_bounded_clone_work() {
     ));
     assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
 
-    let work = crate::drop_resolver::structural_work::snapshot();
+    let work = crate::interaction::targeting::resolver::structural_work::snapshot();
     assert_eq!(
         work.presentation_roster_full_captures,
         work_after_move.presentation_roster_full_captures + 1,
@@ -2269,12 +2278,12 @@ fn real_host_frame_splitter_gesture_has_bounded_clone_work() {
     assert_eq!(work.engine_deep_clones.atomic_candidates.calls, 1);
     assert_eq!(
         work.engine_deep_clones.atomic_candidates.volume,
-        crate::drop_resolver::structural_work::WorkspaceCloneVolume::default()
+        crate::interaction::targeting::resolver::structural_work::WorkspaceCloneVolume::default()
     );
     assert_eq!(work.engine_deep_clones.shared_workspace, workspace_volume);
     assert_eq!(
         work.engine_deep_clones.atomic_candidate_state,
-        crate::drop_resolver::structural_work::EngineCloneVolume {
+        crate::interaction::targeting::resolver::structural_work::EngineCloneVolume {
             scene_surfaces: 1,
             scene_retained_plans: 1,
             scene_paint_hit_regions: 32,
@@ -2288,7 +2297,7 @@ fn real_host_frame_splitter_gesture_has_bounded_clone_work() {
     assert_eq!(work.workspace_deep_clones.engine_candidates.calls, 0);
     assert_eq!(
         work.workspace_deep_clones.engine_candidates.volume,
-        crate::drop_resolver::structural_work::WorkspaceCloneVolume::default()
+        crate::interaction::targeting::resolver::structural_work::WorkspaceCloneVolume::default()
     );
     assert_eq!(work.workspace_deep_clones.transaction_candidates.calls, 1);
     assert_eq!(
@@ -2351,8 +2360,10 @@ fn journal_tab_and_contained_activation_keep_one_outer_engine_clone() {
         .expect("real tab press must prepare");
     let policy = engine.policy.clone();
     let expected_volume =
-        crate::drop_resolver::structural_work::WorkspaceCloneVolume::capture(engine.workspace());
-    crate::drop_resolver::structural_work::reset();
+        crate::interaction::targeting::resolver::structural_work::WorkspaceCloneVolume::capture(
+            engine.workspace(),
+        );
+    crate::interaction::targeting::resolver::structural_work::reset();
     let mut outer = engine.candidate();
     let outcome = outer
         .activate_prepared_journal_tab_gesture(
@@ -2368,11 +2379,11 @@ fn journal_tab_and_contained_activation_keep_one_outer_engine_clone() {
         )
         .expect("real tab press must activate");
     assert!(matches!(outcome, InteractionOutcome::DragArmed { .. }));
-    let work = crate::drop_resolver::structural_work::snapshot();
+    let work = crate::interaction::targeting::resolver::structural_work::snapshot();
     assert_eq!(work.engine_deep_clones.atomic_candidates.calls, 1);
     assert_eq!(
         work.engine_deep_clones.atomic_candidates.volume,
-        crate::drop_resolver::structural_work::WorkspaceCloneVolume::default()
+        crate::interaction::targeting::resolver::structural_work::WorkspaceCloneVolume::default()
     );
     assert_eq!(work.engine_deep_clones.shared_workspace, expected_volume);
 
@@ -2438,13 +2449,15 @@ fn journal_tab_and_contained_activation_keep_one_outer_engine_clone() {
             floating,
             ContainedGestureKind::TitleDrag,
             title_point,
-            crate::pointer_journal::PointerDeviceKind::Unknown,
+            crate::input::journal::PointerDeviceKind::Unknown,
         )
         .expect("real contained title press must prepare");
     let policy = engine.policy.clone();
     let expected_volume =
-        crate::drop_resolver::structural_work::WorkspaceCloneVolume::capture(engine.workspace());
-    crate::drop_resolver::structural_work::reset();
+        crate::interaction::targeting::resolver::structural_work::WorkspaceCloneVolume::capture(
+            engine.workspace(),
+        );
+    crate::interaction::targeting::resolver::structural_work::reset();
     let mut outer = engine.candidate();
     let outcome = outer
         .activate_prepared_journal_contained_gesture(
@@ -2459,11 +2472,11 @@ fn journal_tab_and_contained_activation_keep_one_outer_engine_clone() {
         )
         .expect("real contained title press must activate");
     assert!(matches!(outcome, InteractionOutcome::DragArmed { .. }));
-    let work = crate::drop_resolver::structural_work::snapshot();
+    let work = crate::interaction::targeting::resolver::structural_work::snapshot();
     assert_eq!(work.engine_deep_clones.atomic_candidates.calls, 1);
     assert_eq!(
         work.engine_deep_clones.atomic_candidates.volume,
-        crate::drop_resolver::structural_work::WorkspaceCloneVolume::default()
+        crate::interaction::targeting::resolver::structural_work::WorkspaceCloneVolume::default()
     );
     assert_eq!(work.engine_deep_clones.shared_workspace, expected_volume);
 }
@@ -3152,7 +3165,7 @@ fn foreign_engine_viewport_observation_is_rejected_atomically() {
         result,
         Err(EngineError::Viewport {
             source: ViewportCoordinatorError::Registry(
-                crate::viewport_registry::ViewportRegistryError::StaleObservedBinding {
+                crate::platform::registry::ViewportRegistryError::StaleObservedBinding {
                     observed,
                     current,
                 }
@@ -3544,7 +3557,7 @@ fn stale_cleanup_retry_version_is_rejected_without_effects_or_state_change() {
         .reduce_viewport_cleanup_retry(
             InputSequence::new(900),
             stale,
-            crate::effect::EffectId::new(901),
+            crate::platform::effect::EffectId::new(901),
         )
         .expect("stale retry must be a typed nonfatal rejection");
 

@@ -5,8 +5,8 @@ use super::*;
 impl DockEngine {
     pub(super) fn prepare_presented_tab_strip_control(
         &self,
-        projection: crate::scene::SurfaceInteractionProjection<'_>,
-        control: crate::tab_strip::TabStripControlId,
+        projection: crate::presentation::scene::SurfaceInteractionProjection<'_>,
+        control: crate::presentation::tab_strip::TabStripControlId,
     ) -> Result<PreparedTabStripControlActivation, InteractionRejection> {
         let key = TabStripStateKey::new(projection.output_ticket().surface(), control.bar());
         let plan = projection.plan();
@@ -36,9 +36,9 @@ impl DockEngine {
 
     pub(super) fn prepare_presented_tab_list_menu_row(
         &self,
-        projection: crate::scene::SurfaceInteractionProjection<'_>,
-        session: crate::tab_strip::TabListMenuSessionId,
-        tab: crate::scene::TabSceneId,
+        projection: crate::presentation::scene::SurfaceInteractionProjection<'_>,
+        session: crate::presentation::tab_strip::TabListMenuSessionId,
+        tab: crate::presentation::scene::TabSceneId,
     ) -> Result<PreparedTabListMenuRowActivation, InteractionRejection> {
         let plan = projection.plan();
         let revision = plan.popup().revision();
@@ -69,8 +69,8 @@ impl DockEngine {
 
     pub(super) fn prepare_presented_tab_list_menu_scroll(
         &self,
-        projection: crate::scene::SurfaceInteractionProjection<'_>,
-        session: crate::tab_strip::TabListMenuSessionId,
+        projection: crate::presentation::scene::SurfaceInteractionProjection<'_>,
+        session: crate::presentation::tab_strip::TabListMenuSessionId,
         adjustment: TabScrollAdjustment,
     ) -> Result<PreparedTabListMenuScroll, InteractionRejection> {
         let plan = projection.plan();
@@ -111,8 +111,8 @@ impl DockEngine {
 
     pub(super) fn prepare_presented_tab_list_menu_navigation(
         &self,
-        projection: crate::scene::SurfaceInteractionProjection<'_>,
-        session: crate::tab_strip::TabListMenuSessionId,
+        projection: crate::presentation::scene::SurfaceInteractionProjection<'_>,
+        session: crate::presentation::tab_strip::TabListMenuSessionId,
         navigation: TabListMenuNavigation,
     ) -> Result<PreparedTabListMenuNavigation, InteractionRejection> {
         let plan = projection.plan();

@@ -1,6 +1,6 @@
 use super::*;
-use crate::canonical::CanonicalizationError;
-use crate::drop_resolver::structural_work;
+use crate::graph::canonical::CanonicalizationError;
+use crate::interaction::targeting::resolver::structural_work;
 
 const LOCAL_ROOT: RootId = RootId::new(1);
 const OTHER_ROOT: RootId = RootId::new(2);
@@ -229,9 +229,10 @@ fn last_item_retires_only_its_source_presentation_and_candidate_can_be_discarded
         let expected = candidate.clone();
         drop(candidate);
         let mut retried = workspace;
-        let retried_report = crate::transaction::WorkspaceTransaction::from_commands([movement])
-            .apply(&mut retried, &default_policy())
-            .unwrap();
+        let retried_report =
+            crate::graph::transaction::WorkspaceTransaction::from_commands([movement])
+                .apply(&mut retried, &default_policy())
+                .unwrap();
         assert_eq!(retried_report, report);
         assert_eq!(retried, expected);
     }
@@ -375,7 +376,7 @@ fn outer_flattening_weight_failure_still_discards_the_entire_move() {
     )
     .unwrap_err();
     assert!(matches!(expected, TransactionError::Canonicalization(_)));
-    let actual = crate::transaction::WorkspaceTransaction::from_commands([movement])
+    let actual = crate::graph::transaction::WorkspaceTransaction::from_commands([movement])
         .apply(&mut workspace, &default_policy())
         .unwrap_err();
     assert_eq!(actual, expected);
@@ -438,7 +439,7 @@ fn inner_edge_input_weight_sum_witness_matches_general_rejection_and_rolls_back(
         TransactionError::Canonicalization(CanonicalizationError::WeightsNotNormalized { node, .. })
             if *node == target
     ));
-    let actual = crate::transaction::WorkspaceTransaction::from_commands([movement])
+    let actual = crate::graph::transaction::WorkspaceTransaction::from_commands([movement])
         .apply(&mut workspace, &policy)
         .unwrap_err();
     assert_eq!(actual, expected);
@@ -505,7 +506,7 @@ fn source_collapse_of_wide_split_matches_general_success_and_preserves_items() {
     )
     .unwrap()
     .into_parts();
-    let report = crate::transaction::WorkspaceTransaction::from_commands([movement])
+    let report = crate::graph::transaction::WorkspaceTransaction::from_commands([movement])
         .apply(&mut workspace, &policy)
         .unwrap();
     assert_eq!(workspace, expected_workspace);

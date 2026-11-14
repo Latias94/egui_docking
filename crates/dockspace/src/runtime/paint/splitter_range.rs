@@ -1,7 +1,7 @@
 //! On-demand resize limits from the same touching-frontier solver as gestures.
 
 use crate::graph::Axis;
-use crate::scene::SplitterResizeTarget;
+use crate::presentation::scene::SplitterResizeTarget;
 
 use super::super::SurfaceSplitterAdjustment;
 use super::{DockspaceVisualId, SurfacePaintPlan, VisualIdentity};

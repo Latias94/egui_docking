@@ -4,26 +4,26 @@ use crate::behavior_tests::support::{
     MeasurementProfile, TestPresentationHost, complete_host_frame_with_retained_or_unavailable,
     measurements, publish_surface_with,
 };
+use crate::engine::event::ReductionCause;
+use crate::engine::transition::{SurfaceContributionOutcome, SurfaceContributionRejection};
 use crate::engine::{CoreHostFrame, DockEngine, PendingMutation, PreparedSurfacePaintCandidate};
-use crate::event::ReductionCause;
-use crate::intent::{Authority, PointerButton, PointerId};
-use crate::interaction::{
-    InteractionCancelReason, InteractionOutcome, InteractionStatus, PreviewVisual,
-};
-use crate::pointer_journal::{
+use crate::input::intent::{Authority, PointerButton, PointerId};
+use crate::input::journal::{
     HostLocalPointerRoute, PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind,
     PointerEdgeLocation, PointerEdgeSequence, PointerStreamCancelReason,
     SurfaceLocalPointerProvider,
 };
-use crate::pointer_receiver::{
+use crate::input::receiver::{
     PointerReceiverDelivery, PointerReceiverDeliveryDisposition, PointerReceiverObservation,
     PointerReceiverProbeReceipt, PointerReceiverProbeRequest, PointerReceiverReceiptBatch,
     PresentedPointerReceiverObservation,
 };
-use crate::presentation_hit::{PresentationHitRegionId, PresentationHitRegionKind};
-use crate::scene::ContainedLayoutOwner;
-use crate::transition::{SurfaceContributionOutcome, SurfaceContributionRejection};
-use crate::viewport_focus::{FocusCausalStamp, PaneFocusIntentGeneration};
+use crate::interaction::{
+    InteractionCancelReason, InteractionOutcome, InteractionStatus, PreviewVisual,
+};
+use crate::platform::focus::{FocusCausalStamp, PaneFocusIntentGeneration};
+use crate::presentation::hit::{PresentationHitRegionId, PresentationHitRegionKind};
+use crate::presentation::scene::ContainedLayoutOwner;
 
 mod edge_boundary_tests;
 
@@ -85,7 +85,10 @@ fn clipped_contained_sources_keep_their_unclipped_durable_acquisition_geometry()
                     floating,
                     direction,
                 },
-            ) => floating == FLOATING && direction == crate::scene::ContainedResizeDirection::East,
+            ) => {
+                floating == FLOATING
+                    && direction == crate::presentation::scene::ContainedResizeDirection::East
+            }
             ("tab", PresentationHitRegionKind::TabBody(tab)) => tab.item == LEFT,
             ("splitter", PresentationHitRegionKind::SplitterHandle(splitter)) => {
                 splitter.root == CONTAINED_ROOT
@@ -244,8 +247,8 @@ fn presented_target_preview_survives_unpresented_measurements_without_borrowing_
         .iter()
         .filter(|guide| guide.id().root == MAIN_ROOT)
         .find_map(|guide| {
-            guide.target(crate::drop_guide::DropGuideSlot::Edge(
-                crate::command::Edge::Left,
+            guide.target(crate::interaction::targeting::guide::DropGuideSlot::Edge(
+                crate::graph::command::Edge::Left,
             ))
         })
         .unwrap();
@@ -389,9 +392,10 @@ fn presented_target_preview_survives_unpresented_measurements_without_borrowing_
         panic!("A must retain the exact docking proposal solved from its presented layout");
     };
     let mut expected_workspace = engine.workspace().clone();
-    let expected = crate::transaction::WorkspaceTransaction::from_commands([command.clone()])
-        .apply(&mut expected_workspace, &policy)
-        .unwrap();
+    let expected =
+        crate::graph::transaction::WorkspaceTransaction::from_commands([command.clone()])
+            .apply(&mut expected_workspace, &policy)
+            .unwrap();
     assert!(expected.changed());
 
     // Without actual A, source-only C must not substitute its unpresented B basis.
@@ -483,7 +487,7 @@ fn presented_target_preview_survives_unpresented_measurements_without_borrowing_
     };
     assert_eq!(
         event.kind(),
-        &crate::event::WorkspaceEventKind::CommandCommitted(expected.outcomes()[0].clone())
+        &crate::engine::event::WorkspaceEventKind::CommandCommitted(expected.outcomes()[0].clone())
     );
     assert!(
         engine
@@ -505,7 +509,7 @@ fn prepared_contained_contribution_is_rejected_after_same_frame_cancellation() {
     let (resize, start) = core_receiver(&engine, |kind| {
         matches!(kind, PresentationHitRegionKind::ContainedResize {
             floating,
-            direction: crate::scene::ContainedResizeDirection::SouthEast,
+            direction: crate::presentation::scene::ContainedResizeDirection::SouthEast,
         } if floating == FLOATING)
     });
     let provider = engine

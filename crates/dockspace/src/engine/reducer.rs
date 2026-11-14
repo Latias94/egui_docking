@@ -165,7 +165,7 @@ impl HostBackendIngressCursor {
         self.completed_records
             .checked_sub(1)
             .and_then(|index| self.batch.records().get(index))
-            .is_none_or(crate::backend_ingress::BackendIngressRecord::is_commit_boundary)
+            .is_none_or(crate::input::ingress::BackendIngressRecord::is_commit_boundary)
     }
 
     pub(super) fn is_complete(&self) -> bool {
@@ -646,7 +646,7 @@ impl DockEngine {
         mut interaction_events: Vec<InteractionEvent>,
         vacancy_ledger: TickVacancyLedger,
         reduced: Vec<ReducedInput>,
-        reduced_pointer_edges: Vec<crate::transition::ReducedPointerEdge>,
+        reduced_pointer_edges: Vec<crate::engine::transition::ReducedPointerEdge>,
         mut events: Vec<WorkspaceEvent>,
         last_reduced_input: Option<InputSequence>,
         last_causal_cause: Option<ReductionCause>,
@@ -980,10 +980,10 @@ impl DockEngine {
     fn presentation_continuation(
         &self,
         surface: crate::ids::SurfaceId,
-        endpoint: crate::presentation_observation::HostPresentationEndpoint,
-        payload: crate::presentation_observation::HostPresentationOutputPayload,
-    ) -> Result<crate::presentation_observation::HostPresentationContinuation, EngineError> {
-        use crate::presentation_observation::{
+        endpoint: crate::presentation::observation::HostPresentationEndpoint,
+        payload: crate::presentation::observation::HostPresentationOutputPayload,
+    ) -> Result<crate::presentation::observation::HostPresentationContinuation, EngineError> {
+        use crate::presentation::observation::{
             HostPresentationContinuation, HostPresentationOutputPayload,
         };
 
@@ -1026,9 +1026,9 @@ impl DockEngine {
     fn paint_output_is_promotion_eligible(
         &self,
         surface: crate::ids::SurfaceId,
-        ticket: crate::presentation_observation::SurfacePresentationOutputTicket,
-        endpoint: crate::presentation_observation::HostPresentationEndpoint,
-        coordinate_generation: crate::viewport::CoordinateGeneration,
+        ticket: crate::presentation::observation::SurfacePresentationOutputTicket,
+        endpoint: crate::presentation::observation::HostPresentationEndpoint,
+        coordinate_generation: crate::platform::viewport::CoordinateGeneration,
     ) -> bool {
         if ticket.surface() != surface {
             return false;
@@ -1051,7 +1051,7 @@ impl DockEngine {
 
     fn bind_pending_mutation_output(
         &mut self,
-        output: crate::presentation_observation::HostPresentationOutput,
+        output: crate::presentation::observation::HostPresentationOutput,
     ) -> Result<(), EngineError> {
         let Some(interaction) = output.payload().interaction() else {
             return Ok(());
@@ -1300,7 +1300,7 @@ impl DockEngine {
                     .viewport
                     .stop_queued_native_surface(
                         *surface,
-                        crate::frame::QueuedInitialSurfaceStatus::Cancelled,
+                        crate::platform::frame::QueuedInitialSurfaceStatus::Cancelled,
                     )
                     .map_err(|source| EngineError::Viewport {
                         input: input.sequence,

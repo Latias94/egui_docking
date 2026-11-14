@@ -56,7 +56,7 @@ fn configured_prefix(
                 expected,
                 command: WorkspaceCommand::Open {
                     item: ItemId::new(3),
-                    target: crate::command::DockTarget::Center(target),
+                    target: crate::graph::command::DockTarget::Center(target),
                 },
             },
         )

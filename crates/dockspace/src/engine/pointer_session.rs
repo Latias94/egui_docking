@@ -5,7 +5,10 @@ mod source;
 use super::*;
 
 impl DockEngine {
-    fn native_capture_binding_is_current(&self, binding: crate::viewport::WindowBinding) -> bool {
+    fn native_capture_binding_is_current(
+        &self,
+        binding: crate::platform::viewport::WindowBinding,
+    ) -> bool {
         self.viewport
             .registry()
             .window(binding)
@@ -13,9 +16,9 @@ impl DockEngine {
                 window.ever_observed()
                     && !matches!(
                         window.lifecycle(),
-                        crate::viewport_registry::ViewportLifecycle::Destroyed
-                            | crate::viewport_registry::ViewportLifecycle::Missing
-                            | crate::viewport_registry::ViewportLifecycle::AwaitingDestroyed
+                        crate::platform::registry::ViewportLifecycle::Destroyed
+                            | crate::platform::registry::ViewportLifecycle::Missing
+                            | crate::platform::registry::ViewportLifecycle::AwaitingDestroyed
                     )
             })
     }
@@ -472,11 +475,11 @@ impl DockEngine {
     pub(super) fn freeze_payload_focus(
         &self,
         payload: &MovePayload,
-    ) -> Result<PaneFocusDisposition, crate::error::CommandError> {
+    ) -> Result<PaneFocusDisposition, crate::graph::error::CommandError> {
         self.validate_payload(payload)?;
         let surface =
             self.payload_surface(payload)
-                .ok_or(crate::error::CommandError::Invariant {
+                .ok_or(crate::graph::error::CommandError::Invariant {
                     stage: "freezing pane focus for an unpresented payload",
                 })?;
         let record = self.viewport_focus.panel_focus(surface);

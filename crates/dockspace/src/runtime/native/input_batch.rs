@@ -6,7 +6,7 @@ use super::{
     RuntimeNativeState,
 };
 use crate::engine::{BackendIngressProgress, CoreHostFrame, DockEngine};
-use crate::pointer_receiver::{PointerReceiverObservation, PointerReceiverReceiptBatch};
+use crate::input::receiver::{PointerReceiverObservation, PointerReceiverReceiptBatch};
 use crate::runtime::DockspaceRuntimeError;
 use crate::runtime::presentation::{RuntimePresentationState, SubmittedPresentationObservation};
 use std::num::NonZeroUsize;

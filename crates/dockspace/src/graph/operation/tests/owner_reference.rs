@@ -1,12 +1,12 @@
 //! Exact issuance and actual placement through the real checked executor.
 
 use super::*;
-use crate::canonical::{CanonicalizationError, canonicalize_workspace};
-use crate::drop_resolver::structural_work;
+use crate::graph::canonical::{CanonicalizationError, canonicalize_workspace};
 use crate::graph::root_structure::RootNodeKind;
-use crate::transaction::WorkspaceTransaction;
-use crate::validation::WorkspaceValidationError;
-use crate::workspace::ParentLink;
+use crate::graph::transaction::WorkspaceTransaction;
+use crate::graph::validation::WorkspaceValidationError;
+use crate::graph::workspace::ParentLink;
+use crate::interaction::targeting::resolver::structural_work;
 
 const A: RootId = RootId::new(1);
 const B: RootId = RootId::new(2);
@@ -883,7 +883,7 @@ fn nonempty_center_move_shares_both_actual_root_structures() {
 #[test]
 fn runtime_projection_rejects_an_unfinished_body_and_owns_the_completed_one() {
     let (workspace, _) = fixture();
-    let metrics = crate::layout::LayoutMetrics::new(1.0).unwrap();
+    let metrics = crate::presentation::layout::LayoutMetrics::new(1.0).unwrap();
     let bounds = LogicalRect::new(0.0, 0.0, 800.0, 600.0).unwrap();
     let leaf = crate::geometry::Constraints::new(
         crate::geometry::LogicalSize::new(1.0, 2.0).unwrap(),
@@ -891,12 +891,13 @@ fn runtime_projection_rejects_an_unfinished_body_and_owns_the_completed_one() {
     )
     .unwrap();
     let expected =
-        crate::layout::project_root(&workspace, A, bounds, |_| Some(leaf), metrics).unwrap();
+        crate::presentation::layout::project_root(&workspace, A, bounds, |_| Some(leaf), metrics)
+            .unwrap();
     let mut candidate = workspace.clone();
     candidate.begin_root_edit(A);
     let mut queried = false;
     assert_eq!(
-        crate::layout::project_root(
+        crate::presentation::layout::project_root(
             &candidate,
             A,
             bounds,
@@ -906,13 +907,14 @@ fn runtime_projection_rejects_an_unfinished_body_and_owns_the_completed_one() {
             },
             metrics
         ),
-        Err(crate::layout::LayoutError::UnfinishedRoot { root: A })
+        Err(crate::presentation::layout::LayoutError::UnfinishedRoot { root: A })
     );
     assert!(!queried);
     candidate.complete_root_structure(A).unwrap();
     assert_actual_placement(&candidate);
     let projection =
-        crate::layout::project_root(&candidate, A, bounds, |_| Some(leaf), metrics).unwrap();
+        crate::presentation::layout::project_root(&candidate, A, bounds, |_| Some(leaf), metrics)
+            .unwrap();
     drop(candidate);
     drop(workspace);
     assert_eq!(projection, expected);

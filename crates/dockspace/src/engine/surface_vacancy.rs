@@ -1,18 +1,18 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::error::CommandError;
-use crate::frame::SurfaceVacancyAuthority;
+use crate::engine::surface_recovery::{
+    SurfaceRecoveryObligation, SurfaceRecoveryObligationId, SurfaceRecoveryTarget,
+};
+use crate::engine::transition::InputOutcome;
 use crate::graph::Workspace;
+use crate::graph::error::CommandError;
 use crate::ids::{InputSequence, SurfaceId};
+use crate::platform::frame::SurfaceVacancyAuthority;
+use crate::platform::viewport::ViewportBinding;
 use crate::policy::{
     DockPolicyRequest, DockPolicySnapshot, DockPresentationMode, DockSurfaceRecoveryPolicyRequest,
     DockSurfaceRecoveryRootFacts, PolicyDecision,
 };
-use crate::surface_recovery::{
-    SurfaceRecoveryObligation, SurfaceRecoveryObligationId, SurfaceRecoveryTarget,
-};
-use crate::transition::InputOutcome;
-use crate::viewport::ViewportBinding;
 
 use super::{DockEngine, EngineError};
 

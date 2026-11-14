@@ -1,7 +1,7 @@
 //! Empty central regions persist only while their main presentation owns them.
 
 use super::*;
-use crate::transaction::WorkspaceTransaction;
+use crate::graph::transaction::WorkspaceTransaction;
 
 const FIRST: ItemId = ItemId::new(3);
 const SECOND: ItemId = ItemId::new(4);

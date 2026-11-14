@@ -1,5 +1,5 @@
 use super::*;
-use crate::transaction::WorkspaceTransaction;
+use crate::graph::transaction::WorkspaceTransaction;
 
 const ATTACHED: SurfaceId = SurfaceId::new(30);
 const ATTACHED_ROOT: RootId = RootId::new(30);

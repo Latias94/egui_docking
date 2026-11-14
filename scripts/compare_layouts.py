@@ -150,7 +150,7 @@ def main() -> None:
             raw_path = prefix.with_suffix(".csv")
             command = [str(binaries[product])]
             if product == "dockspace":
-                command += ["--exact", "layout::layout_cost::layout_cost", "--ignored", "--nocapture", "--test-threads", "1"]
+                command += ["--exact", "presentation::layout::layout_cost::layout_cost", "--ignored", "--nocapture", "--test-threads", "1"]
             print(f"Group {group}, run {run}: {product}", flush=True)
             started = utc_now()
             result = subprocess.run(command, cwd=ROOT, env=dict(environment, DOCKSPACE_LAYOUT_COST_OUT=str(raw_path)),

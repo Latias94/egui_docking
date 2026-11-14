@@ -2,13 +2,14 @@ use super::support;
 
 use std::collections::BTreeMap;
 
-use dockspace::command::{
+use dockspace::engine::{DockEngine, EngineInput};
+use dockspace::geometry::LogicalRect;
+use dockspace::graph::command::{
     CloseCommitOutcome, ContentCloseTarget, DockFraction, DockTarget, Edge, MovePayload,
     RootContent, RootPresentationTarget, SplitResize, WorkspaceCommand,
 };
-use dockspace::engine::{DockEngine, EngineInput};
-use dockspace::error::{CommandError, ReferenceRole, TransactionError};
-use dockspace::geometry::LogicalRect;
+use dockspace::graph::error::{CommandError, ReferenceRole, TransactionError};
+use dockspace::graph::transaction::WorkspaceTransaction;
 use dockspace::graph::{
     Axis, ContainedFloating, Node, RootRecord, SplitWeight, SurfacePresentation, Workspace,
     WorkspaceBuilder,
@@ -17,7 +18,6 @@ use dockspace::ids::{
     FloatingPresentationId, ItemId, NodeId, RootId, StableInputSourceId, SurfaceId,
 };
 use dockspace::policy::{DockPolicy, DockPolicySnapshot, PolicyRejection, PolicyRevision};
-use dockspace::transaction::WorkspaceTransaction;
 use support::{TestPresentationHost, submit_input};
 
 const ROOT_A: RootId = RootId::new(1);
@@ -53,7 +53,7 @@ fn close(workspace: &mut Workspace, target: ContentCloseTarget) -> CloseCommitOu
         EngineInput::RequestContentClose { expected, target },
     )
     .expect("close request must reduce");
-    let dockspace::transition::InputOutcome::ContentCloseRequested { plan, .. } =
+    let dockspace::engine::transition::InputOutcome::ContentCloseRequested { plan, .. } =
         request.reduced_inputs()[0].outcome()
     else {
         panic!("close target must open a plan");
@@ -72,7 +72,7 @@ fn close(workspace: &mut Workspace, target: ContentCloseTarget) -> CloseCommitOu
             },
         )
         .expect("close decision must reduce");
-        if let dockspace::transition::InputOutcome::CloseDecisionProcessed {
+        if let dockspace::engine::transition::InputOutcome::CloseDecisionProcessed {
             application: Some(Ok(outcome)),
             ..
         } = transition.reduced_inputs()[0].outcome()
@@ -80,13 +80,13 @@ fn close(workspace: &mut Workspace, target: ContentCloseTarget) -> CloseCommitOu
             assert!(transition.events().iter().any(|event| {
                 matches!(
                     event.kind(),
-                    dockspace::event::WorkspaceEventKind::CloseCommitted(committed)
+                    dockspace::engine::event::WorkspaceEventKind::CloseCommitted(committed)
                         if committed == outcome
                 )
             }));
             assert!(transition.events().iter().all(|event| !matches!(
                 event.kind(),
-                dockspace::event::WorkspaceEventKind::CommandCommitted(_)
+                dockspace::engine::event::WorkspaceEventKind::CommandCommitted(_)
             )));
             committed = Some(outcome.clone());
         }
@@ -140,7 +140,7 @@ fn same_stack_reorder_uses_pre_removal_gap_indices() {
     assert_eq!(tabs_items(&workspace, tabs), [item(2), item(3), item(1)]);
     assert!(matches!(
         report.outcomes(),
-        [dockspace::command::CommandOutcome::Reordered {
+        [dockspace::graph::command::CommandOutcome::Reordered {
             from: 0,
             to: 2,
             changed: true,
@@ -159,7 +159,7 @@ fn same_stack_reorder_uses_pre_removal_gap_indices() {
     .expect("same gap is a checked no-op");
     assert!(matches!(
         report.outcomes(),
-        [dockspace::command::CommandOutcome::Reordered { changed: false, .. }]
+        [dockspace::graph::command::CommandOutcome::Reordered { changed: false, .. }]
     ));
 }
 
@@ -228,7 +228,7 @@ fn equivalent_edge_move_reports_no_change() {
     assert_eq!(workspace, before);
     assert!(matches!(
         report.outcomes(),
-        [dockspace::command::CommandOutcome::Moved { changed: false, .. }]
+        [dockspace::graph::command::CommandOutcome::Moved { changed: false, .. }]
     ));
 }
 
@@ -742,10 +742,12 @@ fn close_root_leaves_a_rootless_surface_when_contained_roots_survive() {
     );
     assert_eq!(
         workspace.presentation_for_root(ROOT_B),
-        Some(dockspace::RootPresentationOwner::Contained {
-            surface: SURFACE_A,
-            floating: FLOATING_B,
-        })
+        Some(
+            dockspace::graph::workspace::RootPresentationOwner::Contained {
+                surface: SURFACE_A,
+                floating: FLOATING_B,
+            }
+        )
     );
     workspace.validate().expect("rootless survivor is valid");
 }
@@ -805,9 +807,11 @@ fn content_close_rejects_empty_and_missing_roots_without_mutation() {
     .expect("empty root close request reduces");
     assert!(matches!(
         empty_rejection.reduced_inputs()[0].outcome(),
-        dockspace::transition::InputOutcome::ContentCloseRejected {
+        dockspace::engine::transition::InputOutcome::ContentCloseRejected {
             target: ContentCloseTarget::Root(ROOT_A),
-            reason: dockspace::transition::ContentCloseRequestRejection::RootEmpty { root: ROOT_A },
+            reason: dockspace::engine::transition::ContentCloseRequestRejection::RootEmpty {
+                root: ROOT_A
+            },
             ..
         }
     ));
@@ -827,9 +831,9 @@ fn content_close_rejects_empty_and_missing_roots_without_mutation() {
     .expect("missing root close request reduces");
     assert!(matches!(
         missing_rejection.reduced_inputs()[0].outcome(),
-        dockspace::transition::InputOutcome::ContentCloseRejected {
+        dockspace::engine::transition::InputOutcome::ContentCloseRejected {
             target: ContentCloseTarget::Root(ROOT_B),
-            reason: dockspace::transition::ContentCloseRequestRejection::RootUnavailable {
+            reason: dockspace::engine::transition::ContentCloseRequestRejection::RootUnavailable {
                 root: ROOT_B,
             },
             ..

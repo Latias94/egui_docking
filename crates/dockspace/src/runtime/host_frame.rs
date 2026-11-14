@@ -3,21 +3,21 @@
 use std::cell::Cell;
 use std::collections::BTreeMap;
 
-use crate::close_plan::{
+use crate::close::plan::{
     CloseDecision, CloseDecisionToken, CloseRequestId, DeferredCloseDecision, DeferredCloseToken,
 };
-use crate::command::ContentCloseTarget;
-#[cfg(feature = "serde")]
-use crate::document::PendingRuntimeDocumentRestore;
+use crate::engine::transition::InputOutcome;
 use crate::engine::{
     CoreHostFrame, EngineInput, HostPresentationSlot, HostPresentationUnavailableReason,
     OwnedPreparedHostFrameCommit,
 };
+use crate::graph::command::ContentCloseTarget;
 use crate::ids::{RootId, SourceSequence, StableInputSourceId, SurfaceId};
 use crate::model::{DockPlacement, DockspaceView, WorkspaceVersion};
+#[cfg(feature = "serde")]
+use crate::persistence::document::PendingRuntimeDocumentRestore;
 use crate::policy::DockPolicy;
-use crate::presentation_observation::PresentationStreamAdmission;
-use crate::transition::InputOutcome;
+use crate::presentation::observation::PresentationStreamAdmission;
 
 #[cfg(feature = "serde")]
 use super::DockspacePersistenceError;
@@ -36,7 +36,9 @@ use super::{
 pub(super) const APPLICATION_INPUT_SOURCE: StableInputSourceId =
     StableInputSourceId::new(0x64_6f_63_6b_73_70_61_63);
 
-fn has_ordinary_application_input(transition: &crate::transition::EngineTransition) -> bool {
+fn has_ordinary_application_input(
+    transition: &crate::engine::transition::EngineTransition,
+) -> bool {
     transition.reduced_inputs().iter().any(|input| {
         input.source() == APPLICATION_INPUT_SOURCE
             && !matches!(
@@ -51,10 +53,10 @@ fn has_ordinary_application_input(transition: &crate::transition::EngineTransiti
 }
 
 fn workspace_root_continuations(
-    transition: &crate::transition::EngineTransition,
+    transition: &crate::engine::transition::EngineTransition,
 ) -> &[(
-    crate::viewport::ViewportBinding,
-    crate::viewport::ViewportBinding,
+    crate::platform::viewport::ViewportBinding,
+    crate::platform::viewport::ViewportBinding,
 )] {
     transition
         .reduced_inputs()
@@ -125,8 +127,8 @@ pub struct PreparedDockspaceHostFrameCommit<'session> {
 
 #[cfg(feature = "serde")]
 enum PreparedDocumentUpdate {
-    Restore(crate::document::BoundDocumentState),
-    Placements(crate::viewport_persistence::ViewportPlacementPreferences),
+    Restore(crate::persistence::document::BoundDocumentState),
+    Placements(crate::persistence::placement::ViewportPlacementPreferences),
 }
 
 impl<'session> DockspaceHostFrame<'session> {
@@ -445,11 +447,11 @@ impl<'session> DockspaceHostFrame<'session> {
             .find_map(|(_, pending)| {
                 (matches!(
                     pending.origin(),
-                    crate::viewport::NativeSurfaceEstablishmentOrigin::Initial { .. }
+                    crate::platform::viewport::NativeSurfaceEstablishmentOrigin::Initial { .. }
                 ) && !matches!(
                     pending.status(),
-                    crate::frame::RecoveryPendingStatus::ReplacementCancelled { .. }
-                        | crate::frame::RecoveryPendingStatus::AwaitingReplacementCleanup { .. }
+                    crate::platform::frame::RecoveryPendingStatus::ReplacementCancelled { .. }
+                        | crate::platform::frame::RecoveryPendingStatus::AwaitingReplacementCleanup { .. }
                 ))
                 .then(|| pending.replacement_binding())
                 .flatten()
@@ -1062,14 +1064,14 @@ impl<'session> DockspaceHostFrame<'session> {
                 !self.native_input_pending
                     && matches!(
                         plan.phase(),
-                        crate::close_plan::ClosePlanPhase::Requested
-                            | crate::close_plan::ClosePlanPhase::Resolving
-                            | crate::close_plan::ClosePlanPhase::Deferred
+                        crate::close::plan::ClosePlanPhase::Requested
+                            | crate::close::plan::ClosePlanPhase::Resolving
+                            | crate::close::plan::ClosePlanPhase::Deferred
                     )
             })
             .into_iter()
             .flat_map(|plan| plan.items().iter())
-            .filter(|item| item.state() == crate::close_plan::CloseItemDecisionState::Pending)
+            .filter(|item| item.state() == crate::close::plan::CloseItemDecisionState::Pending)
             .copied()
             .map(DockspaceCloseItem::from_core)
     }

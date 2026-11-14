@@ -4,17 +4,17 @@ use dockspace::engine::{DockEngine, EngineInput};
 use dockspace::geometry::{LogicalRect, PhysicalRect, ScaleFactor};
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, RootId, StableInputSourceId, SurfaceId};
-use dockspace::intent::{Authority, AuthorityUnavailableReason};
+use dockspace::input::intent::{Authority, AuthorityUnavailableReason};
+use dockspace::platform::focus::{FocusObservationGeneration, unknown_focus_observation};
+use dockspace::platform::viewport::{
+    CoordinateObservationGeneration, PresentationObservationGeneration, ViewportBinding,
+    ViewportRole, WindowToken, WorkAreaToken,
+};
 use dockspace::platform::{
     ObservedWindow, ObservedWorkArea, PlatformCapabilities, PlatformCapability, PlatformSnapshot,
     WindowCoordinateObservation, WindowPresentationObservation, WindowPresentationState,
 };
 use dockspace::policy::DockPolicy;
-use dockspace::viewport::{
-    CoordinateObservationGeneration, PresentationObservationGeneration, ViewportBinding,
-    ViewportRole, WindowToken, WorkAreaToken,
-};
-use dockspace::viewport_focus::{FocusObservationGeneration, unknown_focus_observation};
 use support::{TestPresentationHost, submit_input, submit_inputs};
 
 const SURFACE_ONE: SurfaceId = SurfaceId::new(1);
@@ -155,7 +155,7 @@ fn publish_snapshot(
     let inventory_observation =
         support::known_inventory_observation(observation_generation, &windows);
     let snapshot = PlatformSnapshot::new(
-        dockspace::viewport::PlatformSnapshotGeneration::new(observation_generation),
+        dockspace::platform::viewport::PlatformSnapshotGeneration::new(observation_generation),
         support::known_capability_observation(observation_generation, supported_capabilities()),
         unknown_focus_observation(
             FocusObservationGeneration::new(observation_generation),
@@ -435,6 +435,6 @@ fn unknown_work_area_token_fails_closed() {
             logical_rect(0.0, 0.0, 300.0, 200.0),
             WorkAreaToken::new(999),
         ),
-        Err(dockspace::coordinates::CoordinateUnavailable::UnknownWorkArea { .. })
+        Err(dockspace::platform::coordinates::CoordinateUnavailable::UnknownWorkArea { .. })
     ));
 }

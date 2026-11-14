@@ -5,8 +5,8 @@ use crate::ids::{FloatingPresentationId, ItemId};
 use crate::interaction::{
     FrozenTabListMenuBackdropClick, FrozenTabListMenuRowClick, FrozenTabStripControlClick,
 };
-use crate::scene::ContainedResizeDirection as CoreContainedResizeDirection;
-use crate::tab_strip::TabStripStateKey;
+use crate::presentation::scene::ContainedResizeDirection as CoreContainedResizeDirection;
+use crate::presentation::tab_strip::TabStripStateKey;
 
 use super::super::{
     PreparedSurfaceAction, SurfaceContainedResizeAdjustment, SurfaceSplitterAdjustment,
@@ -69,12 +69,12 @@ impl ContainedResizeDirection {
 impl SurfacePaintPlan<'_> {
     pub(super) fn frozen_action_witness(
         self,
-    ) -> Option<std::sync::Arc<crate::scene::SurfacePlanScene>> {
+    ) -> Option<std::sync::Arc<crate::presentation::scene::SurfacePlanScene>> {
         self.candidate
             .scene()
             .ready_candidate(self.surface)
             .filter(|candidate| candidate.stamp() == self.scene)
-            .map(crate::scene::SurfacePlanScene::frozen_witness)
+            .map(crate::presentation::scene::SurfacePlanScene::frozen_witness)
     }
 
     /// Prepares activation of one exact current-frame tab-strip control.
@@ -331,7 +331,7 @@ impl SurfacePaintPlan<'_> {
             .find(|record| record.id().item == item)?;
         self.tab_is_operable(current).then_some(())?;
         let selected = self.plan.selected_in_tabs(current.id().tabs);
-        let destination = crate::tab_strip::tab_navigation_destination(
+        let destination = crate::presentation::tab_strip::tab_navigation_destination(
             self.plan,
             *current.id(),
             selected,
@@ -367,7 +367,7 @@ impl SurfacePaintPlan<'_> {
             .splitter_record(id)
             .filter(|record| record.operable() && self.plan.partition_available(id.root))?;
         let delta = self.splitter_adjustment_delta(
-            crate::scene::SplitterResizeTarget::Handle(id),
+            crate::presentation::scene::SplitterResizeTarget::Handle(id),
             record.axis(),
             adjustment,
         )?;
@@ -399,7 +399,7 @@ impl SurfacePaintPlan<'_> {
         self.splitter_junction_axis_operable(record, axis)
             .then_some(())?;
         let delta = self.splitter_adjustment_delta(
-            crate::scene::SplitterResizeTarget::Junction(id),
+            crate::presentation::scene::SplitterResizeTarget::Junction(id),
             axis.into(),
             adjustment,
         )?;
@@ -495,7 +495,7 @@ impl SurfacePaintPlan<'_> {
     fn current_tab_list_menu(
         self,
         menu: TabListMenuPaintRecord<'_>,
-    ) -> Option<crate::scene::TabListMenuRecord> {
+    ) -> Option<crate::presentation::scene::TabListMenuRecord> {
         self.plan
             .tab_list_menu_records()
             .iter()

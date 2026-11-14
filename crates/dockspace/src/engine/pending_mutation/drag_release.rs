@@ -11,7 +11,7 @@ impl DockEngine {
         session: crate::interaction::DragSessionId,
         drag: crate::interaction::ActiveDrag,
         physical_route: Option<(
-            crate::viewport::ViewportBinding,
+            crate::platform::viewport::ViewportBinding,
             crate::platform::NativeDragSourceInput,
         )>,
         release_decision: PreviewDecision,
@@ -97,7 +97,7 @@ impl DockEngine {
             // native lifetime. Capacity rejection is one terminal outcome;
             // replaying the accepted release cannot create more storage.
             let rejection = InteractionRejection::CommandRejected(
-                crate::error::CommandError::SurfaceLifecycleFrozen {
+                crate::graph::error::CommandError::SurfaceLifecycleFrozen {
                     surface: pending.drag.source_surface,
                 },
             );

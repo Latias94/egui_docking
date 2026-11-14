@@ -1,9 +1,10 @@
-use dockspace::command::{
+use dockspace::geometry::LogicalRect;
+use dockspace::graph::command::{
     ContainedPosition, DockFraction, DockTarget, Edge, MovePayload, RootContent,
     RootPresentationTarget, WorkspaceCommand,
 };
-use dockspace::error::{CommandError, TransactionError};
-use dockspace::geometry::LogicalRect;
+use dockspace::graph::error::{CommandError, TransactionError};
+use dockspace::graph::transaction::WorkspaceTransaction;
 use dockspace::graph::{
     Axis, ContainedFloating, Node, RootRecord, SplitWeight, SurfacePresentation, Workspace,
     WorkspaceBuilder,
@@ -15,7 +16,6 @@ use dockspace::policy::{
     PolicyRejection, PolicyRevision, PolicyRuleScope, TabBarInteraction, TabBarPolicy,
     TabBarVisibility,
 };
-use dockspace::transaction::WorkspaceTransaction;
 
 const SOURCE_ROOT: RootId = RootId::new(1);
 const TARGET_ROOT: RootId = RootId::new(2);

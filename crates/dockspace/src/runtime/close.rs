@@ -8,17 +8,17 @@ use std::fmt;
 
 use thiserror::Error;
 
-use crate::close_plan::{
+use crate::close::plan::{
     CloseDecisionToken, CloseInertReason, CloseItemDecisionState, ClosePlan,
     ClosePlanPhase as CoreClosePlanPhase, ClosePlanTarget, CloseRequestId, CloseResolutionOutcome,
     DeferredCloseToken,
 };
-use crate::command::ContentCloseTarget;
 use crate::engine::EngineInput;
+use crate::engine::transition::ContentCloseRequestRejection;
+use crate::graph::command::ContentCloseTarget;
 use crate::ids::{EngineAuthorityDomainId, ItemId, RootId};
 use crate::model::WorkspaceVersion;
 use crate::policy::CloseCapability;
-use crate::transition::ContentCloseRequestRejection;
 
 use super::DockspaceSession;
 
@@ -241,7 +241,7 @@ impl DockspaceClosePhase {
 }
 
 impl DockspaceCloseItem {
-    pub(super) const fn from_core(item: crate::close_plan::ClosePlanItem) -> Self {
+    pub(super) const fn from_core(item: crate::close::plan::ClosePlanItem) -> Self {
         Self {
             item: item.item(),
             capability: item.capability(),
@@ -492,7 +492,7 @@ impl DockspaceCloseResolution {
 #[cfg(test)]
 mod tests {
     use super::DockspaceClosePhase;
-    use crate::close_plan::{ClosePlanPhase, ClosePlanTarget, SurfaceCloseDisposition};
+    use crate::close::plan::{ClosePlanPhase, ClosePlanTarget, SurfaceCloseDisposition};
     use crate::ids::{ItemId, RootId, SurfaceId};
 
     #[test]

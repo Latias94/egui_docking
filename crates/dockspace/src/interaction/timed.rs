@@ -63,9 +63,9 @@ pub(crate) enum TabStripEdgeDirection {
 pub(crate) struct TabStripEdgeScrollState {
     pub(crate) request: PointerContinuationRequest,
     pub(crate) authority: PresentedSurfaceAuthority,
-    pub(crate) output: crate::presentation_observation::SurfacePresentationOutputTicket,
+    pub(crate) output: crate::presentation::observation::SurfacePresentationOutputTicket,
     pub(crate) workspace: WorkspaceVersion,
-    pub(crate) key: crate::tab_strip::TabStripStateKey,
+    pub(crate) key: crate::presentation::tab_strip::TabStripStateKey,
     pub(crate) direction: TabStripEdgeDirection,
     pub(crate) viewport: LogicalRect,
     pub(crate) offset: f64,

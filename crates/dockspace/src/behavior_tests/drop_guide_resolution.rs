@@ -1,22 +1,24 @@
 use super::support;
 
-use dockspace::command::{Edge, MovePayload};
-use dockspace::drop_guide::{
-    DropGuideClusterRecord, DropGuideScope, DropGuideSlot, DropGuideTargetRecord,
-};
-use dockspace::drop_resolver::{
-    DropGuideEligibility, DropRejectionReason, DropResolution, resolve_drop,
-};
-use dockspace::drop_target::{DropTargetAvailability, DropTargetId, DropTargetUnavailable};
 use dockspace::engine::DockEngine;
 use dockspace::geometry::{LogicalPoint, LogicalRect};
+use dockspace::graph::command::{Edge, MovePayload};
 use dockspace::graph::{
     Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace, WorkspaceBuilder,
 };
 use dockspace::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId, WorkspaceEpoch};
+use dockspace::interaction::targeting::guide::{
+    DropGuideClusterRecord, DropGuideScope, DropGuideSlot, DropGuideTargetRecord,
+};
+use dockspace::interaction::targeting::resolver::{
+    DropGuideEligibility, DropRejectionReason, DropResolution, resolve_drop,
+};
+use dockspace::interaction::targeting::targets::{
+    DropTargetAvailability, DropTargetId, DropTargetUnavailable,
+};
 use dockspace::interaction::{DragGeneration, DragSessionId};
 use dockspace::policy::{DockPolicy, PolicyRejection};
-use dockspace::scene::{PresentationPlan, SurfaceSceneSet};
+use dockspace::presentation::scene::{PresentationPlan, SurfaceSceneSet};
 
 const SOURCE_ROOT: RootId = RootId::new(1);
 const TARGET_ROOT: RootId = RootId::new(2);
@@ -339,7 +341,7 @@ fn query(
     policy: &DockPolicy,
     payload: MovePayload,
     at: LogicalPoint,
-) -> dockspace::drop_resolver::DropQuery {
+) -> dockspace::interaction::targeting::resolver::DropQuery {
     let policy = policy.snapshot(Default::default());
     resolve_drop(
         scene,

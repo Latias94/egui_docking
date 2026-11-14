@@ -15,7 +15,7 @@ impl ReferenceAuthority<'_> {
         workspace: &Workspace,
         root: RootId,
         node: NodeId,
-        expected: &crate::command::RootReference,
+        expected: &crate::graph::command::RootReference,
         role: ReferenceRole,
     ) -> Result<(), CommandError> {
         match self {

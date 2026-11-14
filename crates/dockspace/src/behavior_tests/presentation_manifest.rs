@@ -1,23 +1,23 @@
 use super::support;
 
-use crate::scene_compiler::PresentationCompilationError;
-use dockspace::command::{DockTarget, WorkspaceCommand};
+use crate::presentation::compiler::PresentationCompilationError;
+use dockspace::engine::transition::{
+    EngineTransition, InputOutcome, SurfaceContributionOutcome, SurfaceContributionRejection,
+};
 use dockspace::engine::{
     DockEngine, EngineInput, PreparedSurfaceContribution, SurfaceContributionPrepareError,
 };
 use dockspace::geometry::{LogicalRect, LogicalSize};
+use dockspace::graph::command::{DockTarget, WorkspaceCommand};
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, RootId, StableInputSourceId, SurfaceId};
 use dockspace::policy::DockPolicy;
-use dockspace::presentation_config::DockPresentationConfig;
-use dockspace::scene::SurfaceScene;
-use dockspace::scene_manifest::{
+use dockspace::presentation::config::DockPresentationConfig;
+use dockspace::presentation::manifest::{
     ManifestMeasurementError, Measurement, MeasurementValidationError, SurfaceMeasurements,
     TabIntrinsic, TabStripMetrics,
 };
-use dockspace::transition::{
-    EngineTransition, InputOutcome, SurfaceContributionOutcome, SurfaceContributionRejection,
-};
+use dockspace::presentation::scene::SurfaceScene;
 use support::{TestPresentationHost, publish_surface, submit_input};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);

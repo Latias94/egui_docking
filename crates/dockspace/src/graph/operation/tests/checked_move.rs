@@ -1,12 +1,12 @@
 //! Candidate-local authority and execution regressions through real transactions.
 
 use super::*;
-use crate::drop_resolver::structural_work;
-use crate::policy::{DockTargetRuleKey, TabBarInteraction, TabBarPolicy, TabBarVisibility};
-use crate::surface_recovery::{
+use crate::engine::surface_recovery::{
     SurfaceMainRehome, SurfaceRehomePlacement, SurfaceRosterDisposition,
 };
-use crate::transaction::WorkspaceTransaction;
+use crate::graph::transaction::WorkspaceTransaction;
+use crate::interaction::targeting::resolver::structural_work;
+use crate::policy::{DockTargetRuleKey, TabBarInteraction, TabBarPolicy, TabBarVisibility};
 
 struct Fixture {
     workspace: Workspace,

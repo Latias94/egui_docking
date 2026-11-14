@@ -410,7 +410,7 @@ impl DockEngine {
                 self.viewport
                     .viewport(surface)
                     .filter(|record| record.can_accept_activation())
-                    .map(crate::viewport_registry::ViewportRecord::binding),
+                    .map(crate::platform::registry::ViewportRecord::binding),
             ),
         };
         if let Some(binding) = native_activation {
@@ -439,7 +439,7 @@ impl DockEngine {
     pub(super) fn validate_tab_list_menu_popup(
         &self,
         plan: &PresentationPlan,
-        session: crate::tab_strip::TabListMenuSessionId,
+        session: crate::presentation::tab_strip::TabListMenuSessionId,
         expected_revision: PopupRoutingRevision,
     ) -> Result<(), InteractionRejection> {
         let projected = plan.popup();
@@ -732,7 +732,7 @@ impl DockEngine {
         &mut self,
         cause: ReductionCause,
         plan: &PresentationPlan,
-        session: crate::tab_strip::TabListMenuSessionId,
+        session: crate::presentation::tab_strip::TabListMenuSessionId,
         revision: PopupRoutingRevision,
         expected_record: &TabListMenuRecord,
         expected_backdrop: TabListMenuBackdropRecord,
@@ -775,7 +775,7 @@ impl DockEngine {
     fn close_tab_list_menu(
         &mut self,
         cause: ReductionCause,
-        session: crate::tab_strip::TabListMenuSessionId,
+        session: crate::presentation::tab_strip::TabListMenuSessionId,
     ) -> Result<InteractionOutcome, EngineError> {
         let mut states = self.presentation_authority.tab_strip_states.clone();
         let delta = states
@@ -790,7 +790,7 @@ impl DockEngine {
         &mut self,
         cause: ReductionCause,
         plan: &PresentationPlan,
-        session: crate::tab_strip::TabListMenuSessionId,
+        session: crate::presentation::tab_strip::TabListMenuSessionId,
         revision: PopupRoutingRevision,
         expected_record: &TabListMenuRecord,
         adjustment: &TabScrollAdjustment,
@@ -825,7 +825,7 @@ impl DockEngine {
         &mut self,
         cause: ReductionCause,
         plan: &PresentationPlan,
-        session: crate::tab_strip::TabListMenuSessionId,
+        session: crate::presentation::tab_strip::TabListMenuSessionId,
         revision: PopupRoutingRevision,
         expected_record: &TabListMenuRecord,
         target: ItemId,
@@ -984,7 +984,7 @@ impl DockEngine {
     fn resolve_tab_list_menu_scroll(
         &self,
         plan: &PresentationPlan,
-        session: crate::tab_strip::TabListMenuSessionId,
+        session: crate::presentation::tab_strip::TabListMenuSessionId,
         revision: PopupRoutingRevision,
         expected_record: &TabListMenuRecord,
         adjustment: &TabScrollAdjustment,
@@ -1057,7 +1057,7 @@ impl DockEngine {
     fn resolve_tab_list_menu_navigation(
         &self,
         plan: &PresentationPlan,
-        session: crate::tab_strip::TabListMenuSessionId,
+        session: crate::presentation::tab_strip::TabListMenuSessionId,
         revision: PopupRoutingRevision,
         expected_record: &TabListMenuRecord,
         target: ItemId,

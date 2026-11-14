@@ -144,7 +144,7 @@ fn prepared_surface_plan_is_compiled_once_and_installed_without_recompilation() 
         .expect("fixture has an installed source candidate")
         .frozen_witness();
     assert_eq!(previous.plan().bounds(), background_bounds());
-    crate::scene_compiler::reset_surface_compilation_count();
+    crate::presentation::compiler::reset_surface_compilation_count();
     let token = fixture
         .engine
         .begin_surface_contribution(SOURCE_SURFACE)
@@ -161,7 +161,10 @@ fn prepared_surface_plan_is_compiled_once_and_installed_without_recompilation() 
         panic!("changed authoritative bounds must prepare a Ready candidate");
     };
     assert_eq!(candidate.plan().bounds(), changed_bounds);
-    assert_eq!(crate::scene_compiler::surface_compilation_count(), 1);
+    assert_eq!(
+        crate::presentation::compiler::surface_compilation_count(),
+        1
+    );
     let transition =
         submit_surface_measurement(&mut fixture.engine, fixture.presentation_host, prepared);
     assert!(matches!(
@@ -175,7 +178,7 @@ fn prepared_surface_plan_is_compiled_once_and_installed_without_recompilation() 
         })
     ));
     assert_eq!(
-        crate::scene_compiler::surface_compilation_count(),
+        crate::presentation::compiler::surface_compilation_count(),
         1,
         "reduction must install the prepared plan rather than compiling it again"
     );
@@ -213,7 +216,7 @@ fn engine_presented_drop_reuses_the_requirement_workspace_index() {
     let presentation = JournalSurfacePresentation::from_interaction(projection);
     let point = LogicalPoint::new(10.0, 10.0).expect("background point must be finite");
 
-    crate::drop_resolver::structural_work::reset();
+    crate::interaction::targeting::resolver::structural_work::reset();
     let query = fixture
         .engine
         .resolve_presented_drop_with_current_index(
@@ -222,9 +225,9 @@ fn engine_presented_drop_reuses_the_requirement_workspace_index() {
             fixture.engine.policy_snapshot(),
             DragSessionId::new(fixture.engine.version().epoch(), DragGeneration::new(1)),
             source,
-            Some(crate::intent::SurfaceBackgroundRootOffer::new(RootId::new(
-                1_000,
-            ))),
+            Some(crate::input::intent::SurfaceBackgroundRootOffer::new(
+                RootId::new(1_000),
+            )),
             point,
             true,
         )
@@ -233,12 +236,12 @@ fn engine_presented_drop_reuses_the_requirement_workspace_index() {
         query.resolution(),
         DropResolution::Resolved(resolved)
             if resolved.target_id()
-                == crate::drop_target::DropTargetId::SurfaceBackground {
+                == crate::interaction::targeting::targets::DropTargetId::SurfaceBackground {
                     surface: TARGET_SURFACE,
                 }
     ));
 
-    let work = crate::drop_resolver::structural_work::snapshot();
+    let work = crate::interaction::targeting::resolver::structural_work::snapshot();
     assert_eq!(work.drop_targets_assessed, 1);
     assert_eq!(work.geometric_winners, 1);
     assert_eq!(work.transaction_prepares, 1);
@@ -351,7 +354,7 @@ fn surface_resize_clips_presentation_without_rewriting_durable_contained_rects()
     let initial_outer_bounds = initial_plan
         .contained_records()
         .iter()
-        .map(crate::scene::ContainedRecord::outer_bounds)
+        .map(crate::presentation::scene::ContainedRecord::outer_bounds)
         .collect::<Vec<_>>();
     assert_eq!(
         initial_outer_bounds,
@@ -474,7 +477,7 @@ fn surface_resize_clips_presentation_without_rewriting_durable_contained_rects()
             .plan()
             .contained_records()
             .iter()
-            .map(crate::scene::ContainedRecord::outer_bounds)
+            .map(crate::presentation::scene::ContainedRecord::outer_bounds)
             .collect::<Vec<_>>(),
         initial_outer_bounds
     );
@@ -493,7 +496,7 @@ fn surface_resize_clips_presentation_without_rewriting_durable_contained_rects()
             .plan()
             .contained_records()
             .iter()
-            .map(crate::scene::ContainedRecord::outer_bounds)
+            .map(crate::presentation::scene::ContainedRecord::outer_bounds)
             .collect::<Vec<_>>(),
         initial_outer_bounds
     );
@@ -537,7 +540,7 @@ fn background_platform_snapshot(
             .with_close_requested(Authority::Known(close_requested))
             .with_presentation_observation(WindowPresentationObservation::new(
                 source_binding,
-                crate::viewport::PresentationObservationGeneration::new(focus_generation),
+                crate::platform::viewport::PresentationObservationGeneration::new(focus_generation),
                 Authority::Known(WindowPresentationState::Visible),
             ))
     });
@@ -748,7 +751,7 @@ fn native_contribution_requires_an_explicit_tombstone_before_binding_is_removed(
 fn install_pending_native_root_reservation(
     fixture: &mut BackgroundFixture,
     reserved_root: RootId,
-) -> crate::frame::NativeCreateRequest {
+) -> crate::platform::frame::NativeCreateRequest {
     let work_area = publish_native_background_platform(fixture);
     install_pending_native_root_reservation_with_work_area(fixture, reserved_root, work_area)
 }
@@ -757,7 +760,7 @@ fn install_pending_native_root_reservation_with_work_area(
     fixture: &mut BackgroundFixture,
     reserved_root: RootId,
     work_area: WorkAreaToken,
-) -> crate::frame::NativeCreateRequest {
+) -> crate::platform::frame::NativeCreateRequest {
     const NATIVE_SURFACE: SurfaceId = SurfaceId::new(93);
     const RECOVERY_FLOATING: FloatingPresentationId = FloatingPresentationId::new(93);
 
@@ -776,7 +779,7 @@ fn install_pending_native_root_reservation_with_work_area(
         root: reserved_root,
         content: RootContent::Move(payload.clone()),
     };
-    let converted_main = crate::surface_recovery::ConvertedMainRecovery::new(
+    let converted_main = crate::engine::surface_recovery::ConvertedMainRecovery::new(
         reserved_root,
         RECOVERY_FLOATING,
         LogicalSize::new(0.0, 0.0).expect("recovery minimum must be valid"),
@@ -813,12 +816,12 @@ fn install_pending_native_root_reservation_with_work_area(
         .engine
         .interaction_authority(SOURCE_SURFACE)
         .expect("source surface must have presented interaction authority");
-    let prepared = crate::frame::PreparedNativeCreate::new(
+    let prepared = crate::platform::frame::PreparedNativeCreate::new(
         source_presentation,
         payload,
         fixture.engine.version().epoch(),
         command,
-        crate::frame::NativeCreateProposal::from_tear_off(&proposal),
+        crate::platform::frame::NativeCreateProposal::from_tear_off(&proposal),
         obligation,
         focus_causal,
     );
@@ -1043,7 +1046,7 @@ fn direct_surface_close_rejects_a_staging_native_create_without_a_plan() {
 
 fn background_native_window_snapshot(
     fixture: &mut BackgroundFixture,
-    request: crate::frame::NativeCreateRequest,
+    request: crate::platform::frame::NativeCreateRequest,
     presentation: WindowPresentationState,
     generation: u64,
     focus_control: bool,
@@ -1060,7 +1063,7 @@ fn background_native_window_snapshot(
 
 fn background_native_window_snapshot_with_focus(
     fixture: &mut BackgroundFixture,
-    request: crate::frame::NativeCreateRequest,
+    request: crate::platform::frame::NativeCreateRequest,
     presentation: WindowPresentationState,
     generation: u64,
     focus_control: bool,
@@ -1087,7 +1090,7 @@ fn background_native_window_snapshot_with_focus(
 
 fn background_native_window_snapshot_with_capabilities(
     fixture: &mut BackgroundFixture,
-    request: crate::frame::NativeCreateRequest,
+    request: crate::platform::frame::NativeCreateRequest,
     presentation: WindowPresentationState,
     generation: u64,
     focused: GlobalFocusedWindow,
@@ -1111,12 +1114,12 @@ fn background_native_window_snapshot_with_capabilities(
 
 fn background_native_window_snapshot_with_capabilities_and_acknowledgement(
     fixture: &mut BackgroundFixture,
-    request: crate::frame::NativeCreateRequest,
+    request: crate::platform::frame::NativeCreateRequest,
     presentation: WindowPresentationState,
     generation: u64,
     focused: GlobalFocusedWindow,
     capabilities: PlatformCapabilities,
-    acknowledged_effect: Option<crate::effect::EffectId>,
+    acknowledged_effect: Option<crate::platform::effect::EffectId>,
 ) -> PlatformSnapshot {
     const WORK_AREA: WorkAreaToken = WorkAreaToken::new(93);
     let source = ObservedWindow::new(background_source_binding(fixture))
@@ -1136,7 +1139,7 @@ fn background_native_window_snapshot_with_capabilities_and_acknowledgement(
         ))
         .with_presentation_observation(WindowPresentationObservation::new(
             background_source_binding(fixture),
-            crate::viewport::PresentationObservationGeneration::new(generation),
+            crate::platform::viewport::PresentationObservationGeneration::new(generation),
             Authority::Known(WindowPresentationState::Visible),
         ));
     let native = ObservedWindow::new(request.binding())
@@ -1156,7 +1159,7 @@ fn background_native_window_snapshot_with_capabilities_and_acknowledgement(
         ))
         .with_presentation_observation(WindowPresentationObservation::new(
             request.binding(),
-            crate::viewport::PresentationObservationGeneration::new(generation),
+            crate::platform::viewport::PresentationObservationGeneration::new(generation),
             Authority::Known(presentation),
         ))
         .with_create_preparation(crate::platform::WindowCreatePreparationObservation::new(
@@ -1205,7 +1208,7 @@ fn background_native_window_snapshot_with_capabilities_and_acknowledgement(
 
 fn publish_background_native_window(
     fixture: &mut BackgroundFixture,
-    request: crate::frame::NativeCreateRequest,
+    request: crate::platform::frame::NativeCreateRequest,
     presentation: WindowPresentationState,
     generation: u64,
 ) -> EngineTransition {
@@ -1227,7 +1230,7 @@ fn publish_background_native_window(
 
 fn observe_background_presentation_output(
     fixture: &mut BackgroundFixture,
-    output: crate::presentation_observation::HostPresentationOutput,
+    output: crate::presentation::observation::HostPresentationOutput,
 ) -> EngineTransition {
     let mut prelude = fixture
         .engine
@@ -1260,7 +1263,7 @@ fn observe_background_presentation_output(
 
 fn advance_pending_native_root_to_awaiting_visible(
     fixture: &mut BackgroundFixture,
-    request: crate::frame::NativeCreateRequest,
+    request: crate::platform::frame::NativeCreateRequest,
 ) {
     let hidden =
         publish_background_native_window(fixture, request, WindowPresentationState::Hidden, 2);
@@ -1272,7 +1275,7 @@ fn advance_pending_native_root_to_awaiting_visible(
 
 fn advance_pending_native_root_to_ownership_transfer(
     fixture: &mut BackgroundFixture,
-    request: crate::frame::NativeCreateRequest,
+    request: crate::platform::frame::NativeCreateRequest,
 ) -> EngineTransition {
     advance_pending_native_root_to_awaiting_visible(fixture, request);
     let prepared =
@@ -1289,7 +1292,7 @@ fn advance_pending_native_root_to_ownership_transfer(
 
 fn advance_pending_native_root_to_first_live(
     fixture: &mut BackgroundFixture,
-    request: crate::frame::NativeCreateRequest,
+    request: crate::platform::frame::NativeCreateRequest,
 ) -> EngineTransition {
     let _ = advance_pending_native_root_to_ownership_transfer(fixture, request);
     let surface = request.binding().surface();
@@ -1304,7 +1307,7 @@ fn advance_pending_native_root_to_first_live(
     );
     assert_eq!(
         output.continuation(),
-        crate::presentation_observation::HostPresentationContinuation::Presented,
+        crate::presentation::observation::HostPresentationContinuation::Presented,
         "the exact first-live output must wake only after successful presentation",
     );
     transition
@@ -1366,8 +1369,8 @@ fn auto_focused_native_window_waits_for_first_live_before_pane_focus_is_admitted
             .engine
             .viewport()
             .viewport(NATIVE_SURFACE)
-            .map(crate::viewport_registry::ViewportRecord::admission),
-        Some(crate::viewport_registry::ViewportAdmission::Pending)
+            .map(crate::platform::registry::ViewportRecord::admission),
+        Some(crate::platform::registry::ViewportAdmission::Pending)
     );
     let bounds =
         LogicalRect::new(0.0, 0.0, 300.0, 220.0).expect("native target test bounds must be valid");
@@ -1385,8 +1388,8 @@ fn auto_focused_native_window_waits_for_first_live_before_pane_focus_is_admitted
             .engine
             .viewport()
             .viewport(NATIVE_SURFACE)
-            .map(crate::viewport_registry::ViewportRecord::admission),
-        Some(crate::viewport_registry::ViewportAdmission::Admitted)
+            .map(crate::platform::registry::ViewportRecord::admission),
+        Some(crate::platform::registry::ViewportAdmission::Admitted)
     );
     let intent = fixture
         .engine
@@ -1634,7 +1637,7 @@ fn delayed_auto_focus_from_a_superseded_native_create_reasserts_the_current_winn
             .engine
             .viewport_focus()
             .pending_activation()
-            .map(crate::viewport_focus::PendingViewportActivation::request),
+            .map(crate::platform::focus::PendingViewportActivation::request),
         Some(ViewportActivationRequest::pointer_tab_gesture(
             source_binding,
             PanelFocus::Item(ItemId::new(2)),
@@ -1885,7 +1888,7 @@ fn tick_final_runtime_child_vacancy_emits_one_release_before_effect_extraction()
         effect.id() == request.effect()
             && matches!(
                 effect.effect(),
-                crate::effect::PlatformEffect::CreateWindow { binding, .. }
+                crate::platform::effect::PlatformEffect::CreateWindow { binding, .. }
                     if *binding == request.binding()
             )
     }));
@@ -1956,7 +1959,7 @@ fn tick_final_runtime_child_vacancy_emits_one_release_before_effect_extraction()
         .filter(|effect| {
             matches!(
                 effect.effect(),
-                crate::effect::PlatformEffect::ReleaseChild { binding }
+                crate::platform::effect::PlatformEffect::ReleaseChild { binding }
                     if *binding == request.binding()
             )
         })
@@ -1971,7 +1974,7 @@ fn tick_final_runtime_child_vacancy_emits_one_release_before_effect_extraction()
             .any(|(binding, retirement)| binding == request.binding()
                 && matches!(
                     retirement.status(),
-                    crate::frame::BindingRetirementStatus::CleanupRequested { .. }
+                    crate::platform::frame::BindingRetirementStatus::CleanupRequested { .. }
                 ))
     );
 
@@ -1983,7 +1986,7 @@ fn tick_final_runtime_child_vacancy_emits_one_release_before_effect_extraction()
     assert!(next.platform_effects().iter().all(|effect| {
         !matches!(
             effect.effect(),
-            crate::effect::PlatformEffect::ReleaseChild { binding }
+            crate::platform::effect::PlatformEffect::ReleaseChild { binding }
                 if *binding == request.binding()
         )
     }));
@@ -2064,7 +2067,7 @@ fn product_native_root_to_contained_waits_for_presented_target_before_transfer()
     assert_eq!(fixture.engine.version(), source_version);
     assert_eq!(
         fixture.engine.workspace().presentation_for_root(root),
-        Some(crate::RootPresentationOwner::Main {
+        Some(crate::graph::workspace::RootPresentationOwner::Main {
             surface: NATIVE_SURFACE,
         }),
         "staging must preserve native source ownership"
@@ -2284,7 +2287,7 @@ fn product_native_root_to_contained_waits_for_presented_target_before_transfer()
 
     assert!(matches!(
         fixture.engine.workspace().presentation_for_root(root),
-        Some(crate::RootPresentationOwner::Contained {
+        Some(crate::graph::workspace::RootPresentationOwner::Contained {
             surface: TARGET_SURFACE,
             ..
         })
@@ -2315,7 +2318,7 @@ fn product_native_root_to_contained_waits_for_presented_target_before_transfer()
             root: actual_root,
             source_surface: NATIVE_SURFACE,
             target_surface: TARGET_SURFACE,
-            result: crate::event::PresentationRehomeResult::Applied,
+            result: crate::engine::event::PresentationRehomeResult::Applied,
             outcome: Some(DockspaceActionOutcome::RootFloated { .. }),
         } if *actual_root == root
     )));
@@ -2373,7 +2376,7 @@ fn product_single_item_native_child_dock_waits_for_target_presentation() {
     assert_eq!(fixture.engine.version(), source_version);
     assert_eq!(
         fixture.engine.workspace().presentation_for_root(root),
-        Some(crate::RootPresentationOwner::Main {
+        Some(crate::graph::workspace::RootPresentationOwner::Main {
             surface: NATIVE_SURFACE,
         })
     );
@@ -2455,7 +2458,7 @@ fn product_single_item_native_child_dock_waits_for_target_presentation() {
             .engine
             .workspace()
             .presentation_for_root(TARGET_ROOT),
-        Some(crate::RootPresentationOwner::Contained {
+        Some(crate::graph::workspace::RootPresentationOwner::Contained {
             surface: TARGET_SURFACE,
             floating: FloatingPresentationId::new(2),
         })
@@ -2534,7 +2537,7 @@ fn product_native_main_dock_back_uses_bound_recovery_after_target_presentation()
     assert_eq!(fixture.engine.version(), source_version);
     assert_eq!(
         fixture.engine.workspace().presentation_for_root(root),
-        Some(crate::RootPresentationOwner::Main {
+        Some(crate::graph::workspace::RootPresentationOwner::Main {
             surface: NATIVE_SURFACE,
         })
     );
@@ -2567,7 +2570,7 @@ fn product_native_main_dock_back_uses_bound_recovery_after_target_presentation()
 
     assert_eq!(
         fixture.engine.workspace().presentation_for_root(root),
-        Some(crate::RootPresentationOwner::Contained {
+        Some(crate::graph::workspace::RootPresentationOwner::Contained {
             surface: target_surface,
             floating: expected_floating,
         })
@@ -2590,7 +2593,7 @@ fn product_native_main_dock_back_uses_bound_recovery_after_target_presentation()
             root: actual_root,
             source_surface: NATIVE_SURFACE,
             target_surface: actual_target,
-            result: crate::event::PresentationRehomeResult::Applied,
+            result: crate::engine::event::PresentationRehomeResult::Applied,
             outcome: Some(DockspaceActionOutcome::RootFloated { .. }),
         } if *actual_root == root && *actual_target == target_surface
     )));
@@ -2628,7 +2631,7 @@ fn runtime_owned_native_main_dock_back_requires_window_lifecycle_capability() {
             .engine
             .viewport()
             .viewport(NATIVE_SURFACE)
-            .map(crate::viewport_registry::ViewportRecord::ownership),
+            .map(crate::platform::registry::ViewportRecord::ownership),
         Some(ViewportOwnership::RuntimeOwned)
     );
 
@@ -2691,7 +2694,7 @@ fn runtime_owned_native_main_dock_back_requires_window_lifecycle_capability() {
     );
     assert_eq!(
         fixture.engine.workspace().presentation_for_root(root),
-        Some(crate::RootPresentationOwner::Main {
+        Some(crate::graph::workspace::RootPresentationOwner::Main {
             surface: NATIVE_SURFACE,
         })
     );
@@ -2957,7 +2960,7 @@ fn active_surface_local_drag_rejects_programmatic_native_tear_off_atomically() {
     let hover = projection
         .hit_manifest()
         .resolve_exclusive(
-            crate::presentation_hit::PresentationPointerLane::HoverDrop,
+            crate::presentation::hit::PresentationPointerLane::HoverDrop,
             moved,
         )
         .expect("the drag move hover lookup is unambiguous")
@@ -3081,12 +3084,12 @@ fn pending_native_create_reserves_complete_source_root_for_shared_and_public_com
         .engine
         .interaction_authority(SOURCE_SURFACE)
         .expect("source presentation remains authoritative");
-    let converted = crate::surface_recovery::ConvertedMainRecovery::new(
+    let converted = crate::engine::surface_recovery::ConvertedMainRecovery::new(
         SOURCE_ROOT,
         FloatingPresentationId::new(93),
         LogicalSize::new(0.0, 0.0).expect("minimum size validates"),
     );
-    let proposal = crate::frame::NativeCreateProposal::new(
+    let proposal = crate::platform::frame::NativeCreateProposal::new(
         native_surface,
         PhysicalRect::new(700.0, 100.0, 420.0, 320.0).expect("native placement must validate"),
         converted,
@@ -3115,7 +3118,7 @@ fn pending_native_create_reserves_complete_source_root_for_shared_and_public_com
             fixture.engine.policy_snapshot(),
         )
         .expect("complete root recovery validates");
-    let prepared = crate::frame::PreparedNativeCreate::new(
+    let prepared = crate::platform::frame::PreparedNativeCreate::new(
         source_presentation,
         payload,
         fixture.engine.version().epoch(),
@@ -3255,7 +3258,7 @@ fn pending_native_create_reserves_complete_source_root_for_shared_and_public_com
         .expect("target tabs remain capturable");
     let command = WorkspaceCommand::Move {
         payload: MovePayload::Tabs(source),
-        target: crate::command::DockTarget::Center(target),
+        target: crate::graph::command::DockTarget::Center(target),
     };
     let expected = fixture.engine.version();
 
@@ -3392,7 +3395,7 @@ fn product_native_root_to_contained_settles_when_the_source_host_retires() {
     );
     assert_eq!(
         fixture.engine.workspace().presentation_for_root(root),
-        Some(crate::RootPresentationOwner::Main {
+        Some(crate::graph::workspace::RootPresentationOwner::Main {
             surface: NATIVE_SURFACE,
         })
     );
@@ -3402,7 +3405,7 @@ fn product_native_root_to_contained_settles_when_the_source_host_retires() {
             root: actual_root,
             source_surface: NATIVE_SURFACE,
             target_surface: TARGET_SURFACE,
-            result: crate::event::PresentationRehomeResult::SourceUnavailable,
+            result: crate::engine::event::PresentationRehomeResult::SourceUnavailable,
             outcome: None,
         } if *actual_root == root
     )));
@@ -3495,7 +3498,7 @@ fn product_native_root_rehome_terminates_on_exact_backend_failure() {
     );
     assert_eq!(
         fixture.engine.workspace().presentation_for_root(root),
-        Some(crate::RootPresentationOwner::Main {
+        Some(crate::graph::workspace::RootPresentationOwner::Main {
             surface: NATIVE_SURFACE,
         })
     );
@@ -3505,7 +3508,7 @@ fn product_native_root_rehome_terminates_on_exact_backend_failure() {
             root: actual_root,
             source_surface: NATIVE_SURFACE,
             target_surface: TARGET_SURFACE,
-            result: crate::event::PresentationRehomeResult::TargetNotPresented,
+            result: crate::engine::event::PresentationRehomeResult::TargetNotPresented,
             outcome: None,
         } if *actual_root == root
     )));
@@ -3581,7 +3584,7 @@ fn product_native_root_rehome_ignores_target_failure_without_preview_token() {
     );
     assert_eq!(
         fixture.engine.workspace().presentation_for_root(root),
-        Some(crate::RootPresentationOwner::Main {
+        Some(crate::graph::workspace::RootPresentationOwner::Main {
             surface: NATIVE_SURFACE,
         })
     );
@@ -3647,7 +3650,7 @@ fn native_presentation_close_compiles_its_bound_recovery_obligation() {
             .engine
             .workspace()
             .presentation_for_root(RootId::new(95)),
-        Some(crate::RootPresentationOwner::Main {
+        Some(crate::graph::workspace::RootPresentationOwner::Main {
             surface: SurfaceId::new(93),
         }),
         "preparing close recovery must not move the live source"
@@ -3686,7 +3689,7 @@ fn indeterminate_create_survives_inventory_absence_and_its_origin_survives_resto
                     request.effect(),
                     request.binding().epoch(),
                     EffectDispatchResult::Indeterminate(
-                        crate::effect::EffectIndeterminateReason::AcknowledgementLost,
+                        crate::platform::effect::EffectIndeterminateReason::AcknowledgementLost,
                     ),
                 ),
             )
@@ -3719,8 +3722,8 @@ fn indeterminate_create_survives_inventory_absence_and_its_origin_survives_resto
             .engine
             .viewport()
             .native_create_saga(request.saga())
-            .map(crate::frame::NativeCreateSaga::phase),
-        Some(crate::frame::NativeCreatePhase::AwaitingPrepared { create })
+            .map(crate::platform::frame::NativeCreateSaga::phase),
+        Some(crate::platform::frame::NativeCreatePhase::AwaitingPrepared { create })
             if create == request.effect()
     ));
 
@@ -3741,7 +3744,7 @@ fn indeterminate_create_survives_inventory_absence_and_its_origin_survives_resto
     let origin = retirement.origin();
     assert_eq!(
         origin,
-        crate::frame::BindingRetirementOrigin::NativeCreateAborted {
+        crate::platform::frame::BindingRetirementOrigin::NativeCreateAborted {
             create: request.effect(),
         }
     );
@@ -3761,7 +3764,7 @@ fn indeterminate_create_survives_inventory_absence_and_its_origin_survives_resto
     assert_eq!(restored.origin(), origin);
     assert_eq!(
         restored.status(),
-        crate::frame::BindingRetirementStatus::AwaitingAppearance
+        crate::platform::frame::BindingRetirementStatus::AwaitingAppearance
     );
 }
 
@@ -3784,7 +3787,7 @@ fn definitive_create_failure_releases_the_reserved_surface_immediately() {
                     request.effect(),
                     request.binding().epoch(),
                     EffectDispatchResult::DispatchFailed(
-                        crate::effect::DispatchFailureReason::WindowUnavailable,
+                        crate::platform::effect::DispatchFailureReason::WindowUnavailable,
                     ),
                 ),
             )
@@ -4145,7 +4148,7 @@ fn rootless_native_child_rehome_waits_for_target_presentation_before_release() {
             ))
             .with_presentation_observation(WindowPresentationObservation::new(
                 binding,
-                crate::viewport::PresentationObservationGeneration::new(1),
+                crate::platform::viewport::PresentationObservationGeneration::new(1),
                 Authority::Known(WindowPresentationState::Visible),
             ))
     };
@@ -4192,8 +4195,8 @@ fn rootless_native_child_rehome_waits_for_target_presentation_before_release() {
         engine
             .viewport()
             .viewport(child_surface)
-            .map(crate::viewport_registry::ViewportRecord::admission),
-        Some(crate::viewport_registry::ViewportAdmission::Admitted)
+            .map(crate::platform::registry::ViewportRecord::admission),
+        Some(crate::platform::registry::ViewportAdmission::Admitted)
     );
     let _ = engine.viewport.take_new_effects();
     let source_version = engine.version();
@@ -4225,7 +4228,7 @@ fn rootless_native_child_rehome_waits_for_target_presentation_before_release() {
     ));
     assert_eq!(
         engine.workspace().presentation_for_root(child_root),
-        Some(crate::RootPresentationOwner::Contained {
+        Some(crate::graph::workspace::RootPresentationOwner::Contained {
             surface: child_surface,
             floating: child_floating,
         })
@@ -4255,7 +4258,7 @@ fn rootless_native_child_rehome_waits_for_target_presentation_before_release() {
     assert!(
         matches!(
             final_owner,
-        Some(crate::RootPresentationOwner::Contained {
+        Some(crate::graph::workspace::RootPresentationOwner::Contained {
             surface,
             floating,
         }) if surface == host_surface && floating == child_floating
@@ -4555,9 +4558,11 @@ fn stale_roster_precondition_is_a_nonpublishing_recovery_rejection() {
     let source = changed
         .capture_item_source(source_root, source_tabs, ItemId::new(42))
         .unwrap();
-    crate::transaction::WorkspaceTransaction::from_commands([WorkspaceCommand::Select { source }])
-        .apply(&mut changed, &engine.policy)
-        .unwrap();
+    crate::graph::transaction::WorkspaceTransaction::from_commands([WorkspaceCommand::Select {
+        source,
+    }])
+    .apply(&mut changed, &engine.policy)
+    .unwrap();
     engine.workspace = changed.into();
     let before = engine.workspace().clone();
     let version = engine.version();

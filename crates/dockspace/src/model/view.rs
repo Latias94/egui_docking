@@ -87,8 +87,8 @@ impl<'a> DockspaceView<'a> {
             return None;
         };
         let (surface, contained) = match self.workspace.presentation_for_root(root)? {
-            crate::RootPresentationOwner::Main { surface } => (surface, None),
-            crate::RootPresentationOwner::Contained { surface, floating } => {
+            crate::graph::workspace::RootPresentationOwner::Main { surface } => (surface, None),
+            crate::graph::workspace::RootPresentationOwner::Contained { surface, floating } => {
                 (surface, Some(floating))
             }
         };
@@ -293,7 +293,7 @@ impl<'a> DockspaceRootView<'a> {
         self.central.is_some()
             && matches!(
                 self.workspace.presentation_for_root(self.id),
-                Some(crate::workspace::RootPresentationOwner::Main { .. })
+                Some(crate::graph::workspace::RootPresentationOwner::Main { .. })
             )
     }
 

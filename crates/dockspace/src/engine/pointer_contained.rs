@@ -9,7 +9,7 @@ impl DockEngine {
         floating: crate::ids::FloatingPresentationId,
         kind: ContainedGestureKind,
         point: crate::geometry::LogicalPoint,
-        device: crate::pointer_journal::PointerDeviceKind,
+        device: crate::input::journal::PointerDeviceKind,
     ) -> Result<PreparedContainedGesture, InteractionRejection> {
         let surface = presentation.surface();
         let scene = presentation.scene();
@@ -59,7 +59,7 @@ impl DockEngine {
         }
         let root = contained.root();
         if self.workspace.presentation_for_root(root)
-            != Some(crate::RootPresentationOwner::Contained { surface, floating })
+            != Some(crate::graph::workspace::RootPresentationOwner::Contained { surface, floating })
         {
             return Err(
                 InteractionRejection::ContainedTransformPresentationUnavailable {
@@ -132,9 +132,11 @@ impl DockEngine {
                 expected_roster: prepared.expected_roster.clone(),
             };
             if intent == SourcePressIntent::Manipulate {
-                if let Err(source) =
-                    crate::operation::authorize_workspace_command(&self.workspace, policy, &raise)
-                {
+                if let Err(source) = crate::graph::operation::authorize_workspace_command(
+                    &self.workspace,
+                    policy,
+                    &raise,
+                ) {
                     return Ok(InteractionOutcome::Rejected(
                         InteractionRejection::CommandRejected(source),
                     ));
@@ -650,7 +652,7 @@ impl DockEngine {
         };
         if contained.root != transform.root
             || self.workspace.presentation_for_root(transform.root)
-                != Some(crate::RootPresentationOwner::Contained {
+                != Some(crate::graph::workspace::RootPresentationOwner::Contained {
                     surface: transform.surface,
                     floating: transform.floating,
                 })
@@ -686,13 +688,13 @@ mod tests {
     };
     use super::*;
     use crate::graph::{ContainedFloating, RootRecord, SurfacePresentation};
-    use crate::pointer_journal::HostLocalPointerRoute;
-    use crate::pointer_receiver::{
+    use crate::input::journal::HostLocalPointerRoute;
+    use crate::input::receiver::{
         PointerReceiverDelivery, PointerReceiverDeliveryDisposition, PointerReceiverObservation,
         PointerReceiverProbeReceipt, PointerReceiverReceiptBatch,
         PresentedPointerReceiverObservation,
     };
-    use crate::scene::ContainedResizeDirection;
+    use crate::presentation::scene::ContainedResizeDirection;
     #[test]
     fn host_local_rear_contained_resize_keeps_exact_source_continuation_without_hover_authority() {
         let surface = SurfaceId::new(1);
@@ -781,7 +783,7 @@ mod tests {
             let route = HostLocalPointerRoute::new(authority, point);
             let edge = PointerEdge::new(
                 PointerEdgeSequence::new(index + 1),
-                crate::intent::PointerId::new(7),
+                crate::input::intent::PointerId::new(7),
                 kind,
                 PointerEdgeLocation::HostLocal {
                     manipulation: Authority::Known(route),
@@ -811,7 +813,7 @@ mod tests {
                 );
                 let foreign_pointer = PointerEdge::new(
                     edge.sequence(),
-                    crate::intent::PointerId::new(8),
+                    crate::input::intent::PointerId::new(8),
                     kind,
                     edge.location(),
                     Authority::Known(PointerCaptureOwner::ProviderEndpoint),

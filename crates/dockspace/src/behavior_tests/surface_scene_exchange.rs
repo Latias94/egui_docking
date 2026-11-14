@@ -4,18 +4,20 @@ use super::support;
 
 use std::collections::BTreeSet;
 
+use dockspace::engine::transition::{
+    PresentationHostRetirementOutcome, SurfaceContributionOutcome,
+};
 use dockspace::engine::{DockEngine, EngineError};
 use dockspace::geometry::LogicalRect;
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, NodeId, RootId, SurfaceId};
-use dockspace::pointer_journal::PointerEdgeSequence;
+use dockspace::input::journal::PointerEdgeSequence;
 use dockspace::policy::DockPolicy;
-use dockspace::presentation_observation::{
+use dockspace::presentation::observation::{
     HostPresentationObservation, HostPresentationObservationOutcome,
     HostPresentationObservationRejection, PresentationHostRetirementReason,
 };
-use dockspace::scene::SurfaceScene;
-use dockspace::transition::{PresentationHostRetirementOutcome, SurfaceContributionOutcome};
+use dockspace::presentation::scene::SurfaceScene;
 use support::{
     TestPresentationHost, complete_host_frame_with_current_outputs,
     complete_host_frame_with_unavailable,
@@ -44,7 +46,7 @@ fn engine() -> DockEngine {
 
 fn ready_authority(
     engine: &DockEngine,
-) -> dockspace::presentation_observation::PresentedSurfaceAuthority {
+) -> dockspace::presentation::observation::PresentedSurfaceAuthority {
     engine
         .interaction_authority(SURFACE)
         .expect("surface has observed interaction authority")
@@ -97,7 +99,7 @@ fn a_compiled_candidate_is_not_interactive_until_a_later_observation() {
     assert!(observed.presentation_observations().iter().any(|outcome| {
         matches!(
             outcome,
-            dockspace::presentation_observation::HostPresentationObservationOutcome::Retired {
+            dockspace::presentation::observation::HostPresentationObservationOutcome::Retired {
                 promotion_eligible: true,
                 ..
             }
@@ -157,7 +159,7 @@ fn a_superseded_host_can_settle_but_cannot_reauthorize_the_surface() {
             .any(|outcome| {
                 matches!(
             outcome,
-            dockspace::presentation_observation::HostPresentationObservationOutcome::Retired {
+            dockspace::presentation::observation::HostPresentationObservationOutcome::Retired {
                 stream,
                 promotion_eligible: false,
                 ..
@@ -173,7 +175,7 @@ fn a_superseded_host_can_settle_but_cannot_reauthorize_the_surface() {
             .any(|outcome| {
                 matches!(
             outcome,
-            dockspace::presentation_observation::HostPresentationObservationOutcome::Retired {
+            dockspace::presentation::observation::HostPresentationObservationOutcome::Retired {
                 stream,
                 promotion_eligible: true,
                 ..
@@ -216,7 +218,7 @@ fn an_enrolled_superseded_host_must_submit_before_the_frame_can_finish() {
         .expect("observer scope must freeze");
     prelude
         .submit_presentation_observation(
-            dockspace::presentation_observation::HostPresentationObservation::NoUpdate,
+            dockspace::presentation::observation::HostPresentationObservation::NoUpdate,
         )
         .expect("rendering host observation must submit");
 
@@ -339,7 +341,7 @@ fn retirement_discards_pending_outputs_and_terminates_the_complete_host_roster()
             .and_then(SurfaceScene::ready)
             .map(|ready| ready.output_ticket()),
         match output.payload() {
-            dockspace::presentation_observation::HostPresentationOutputPayload::Paint {
+            dockspace::presentation::observation::HostPresentationOutputPayload::Paint {
                 scene: ticket,
                 ..
             } => {

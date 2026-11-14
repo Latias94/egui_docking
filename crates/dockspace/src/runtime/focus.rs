@@ -6,12 +6,12 @@ use thiserror::Error;
 
 use crate::engine::EngineInput;
 use crate::ids::{EngineAuthorityDomainId, ItemId, SurfaceId, WorkspaceEpoch};
-use crate::viewport_focus::{
+use crate::platform::focus::{
     PaneFocusIntent, PaneFocusObservationGeneration, PaneFocusRequestObservation,
     PaneFocusRequestObservationState,
 };
 
-pub use crate::viewport_focus::HostFocusState as DockspaceHostFocus;
+pub use crate::platform::focus::HostFocusState as DockspaceHostFocus;
 
 use super::{DockspaceHostFrame, DockspaceRuntimeError, DockspaceSession};
 
@@ -95,7 +95,7 @@ impl DockspaceHostFrame<'_> {
             .focus
             .next_after(baseline)
             .ok_or_else(DockspaceRuntimeError::pane_focus_observation_generation_exhausted)?;
-        let observation = crate::viewport_focus::HostFocusObservation::new(
+        let observation = crate::platform::focus::HostFocusObservation::new(
             generation,
             probe.host(),
             probe.stream(),

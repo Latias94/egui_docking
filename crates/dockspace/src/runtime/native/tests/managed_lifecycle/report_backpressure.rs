@@ -1,7 +1,7 @@
 //! Accepted native input must drain before deferred effects consume report slots.
 
 use super::*;
-use crate::effect::{DispatchFailureReason, EffectPhase};
+use crate::platform::effect::{DispatchFailureReason, EffectPhase};
 use std::num::NonZeroUsize;
 
 fn pending_created_window() -> (
@@ -313,9 +313,9 @@ fn assert_pending_close_backpressure(abandon_create: bool) {
     assert_eq!(*retired_binding, binding.binding);
     assert_eq!(
         retirement.origin(),
-        crate::frame::BindingRetirementOrigin::NativeCreateAborted { create }
+        crate::platform::frame::BindingRetirementOrigin::NativeCreateAborted { create }
     );
-    let crate::frame::BindingRetirementStatus::CleanupRequested { effect: cleanup } =
+    let crate::platform::frame::BindingRetirementStatus::CleanupRequested { effect: cleanup } =
         retirement.status()
     else {
         panic!("the accepted close must retain its exact compensating request");

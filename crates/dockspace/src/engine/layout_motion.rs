@@ -4,9 +4,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use super::*;
-use crate::layout::SplitWeightOverride;
 use crate::motion::{MotionFrame, RectMotion, Transition};
-use crate::scene::{ContainedLayoutProjection, SurfacePlanScene};
+use crate::presentation::layout::SplitWeightOverride;
+use crate::presentation::scene::{ContainedLayoutProjection, SurfacePlanScene};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct LayoutMotionState {
@@ -250,7 +250,7 @@ impl DockEngine {
             active,
         });
         if geometry_changed {
-            let sampled = crate::scene_compiler::materialize_presentation_sample(
+            let sampled = crate::presentation::compiler::materialize_presentation_sample(
                 &self.workspace,
                 &self.policy,
                 &self.presentation_authority.presentation_requirements,

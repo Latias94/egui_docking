@@ -6,7 +6,7 @@ mod tests;
 use super::contained_geometry::{contained_manipulation_point, contained_move_geometry};
 use super::*;
 use crate::interaction::DragSessionId;
-use crate::scene::{ContainedLayoutOwner, ContainedLayoutProjection};
+use crate::presentation::scene::{ContainedLayoutOwner, ContainedLayoutProjection};
 use std::sync::Arc;
 
 impl DockEngine {

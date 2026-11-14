@@ -465,7 +465,7 @@ impl<'frame> HostFrameView<'frame> {
     pub(crate) fn splitter_resize_delta_interval(
         &self,
         plan: &PresentationPlan,
-        target: crate::scene::SplitterResizeTarget,
+        target: crate::presentation::scene::SplitterResizeTarget,
         axis: Axis,
     ) -> Option<crate::interaction::ResizeDeltaInterval> {
         self.engine
@@ -519,7 +519,7 @@ impl<'frame> HostFrameView<'frame> {
     pub(crate) fn root_close_is_available(&self, root: RootId) -> bool {
         self.engine
             .capture_content_close(
-                crate::command::ContentCloseTarget::Root(root),
+                crate::graph::command::ContentCloseTarget::Root(root),
                 self.engine.policy_snapshot(),
             )
             .is_ok()
@@ -529,7 +529,7 @@ impl<'frame> HostFrameView<'frame> {
         &self,
         root: RootId,
         surface: SurfaceId,
-        plan: &crate::scene::PresentationPlan,
+        plan: &crate::presentation::scene::PresentationPlan,
     ) -> Result<crate::geometry::LogicalRect, crate::model::DockspaceActionRejection> {
         self.engine
             .derive_product_root_float_rect_from_plan(root, surface, plan)
@@ -614,7 +614,7 @@ impl<'frame> HostFrameView<'frame> {
         preview: &crate::interaction::InteractionPreview,
     ) -> Option<(
         &'frame PresentationPlan,
-        crate::drop_target::DropTargetId,
+        crate::interaction::targeting::targets::DropTargetId,
         Option<&'frame MovePayload>,
     )> {
         let PreviewVisual::Dock {
@@ -657,7 +657,8 @@ impl<'frame> HostFrameView<'frame> {
         let plan = presented.plan();
         if presented.output().stamp() != token.scene() {
             let projection = plan.contained_projection()?;
-            if projection.owner != crate::scene::ContainedLayoutOwner::Drag(token.session())
+            if projection.owner
+                != crate::presentation::scene::ContainedLayoutOwner::Drag(token.session())
                 || projection.target_basis.is_none()
                 || projection.target_basis != published.target_layout_basis()
                 || target.root() == Some(projection.root)
@@ -768,8 +769,8 @@ impl<'frame> HostFrameView<'frame> {
     pub fn prepare_tab_list_menu_row_activation(
         &self,
         surface: SurfaceId,
-        session: crate::tab_strip::TabListMenuSessionId,
-        tab: crate::scene::TabSceneId,
+        session: crate::presentation::tab_strip::TabListMenuSessionId,
+        tab: crate::presentation::scene::TabSceneId,
     ) -> Result<PreparedTabListMenuRowActivation, InteractionRejection> {
         let projection = self
             .prepared_action_projection(surface)
@@ -784,7 +785,7 @@ impl<'frame> HostFrameView<'frame> {
     pub fn prepare_tab_list_menu_dismiss(
         &self,
         surface: SurfaceId,
-        session: crate::tab_strip::TabListMenuSessionId,
+        session: crate::presentation::tab_strip::TabListMenuSessionId,
     ) -> Result<PreparedTabListMenuDismiss, InteractionRejection> {
         let projection = self
             .prepared_action_projection(surface)
@@ -831,7 +832,7 @@ impl<'frame> HostFrameView<'frame> {
     pub fn prepare_tab_strip_scroll(
         &self,
         surface: SurfaceId,
-        bar: crate::scene::TabBarSceneId,
+        bar: crate::presentation::scene::TabBarSceneId,
         adjustment: TabScrollAdjustment,
     ) -> Result<PreparedTabStripScroll, InteractionRejection> {
         let key = TabStripStateKey::new(surface, bar);
@@ -885,7 +886,7 @@ impl<'frame> HostFrameView<'frame> {
     pub fn prepare_tab_list_menu_scroll(
         &self,
         surface: SurfaceId,
-        session: crate::tab_strip::TabListMenuSessionId,
+        session: crate::presentation::tab_strip::TabListMenuSessionId,
         adjustment: TabScrollAdjustment,
     ) -> Result<PreparedTabListMenuScroll, InteractionRejection> {
         let projection = self
@@ -904,7 +905,7 @@ impl<'frame> HostFrameView<'frame> {
     pub fn prepare_tab_list_menu_navigation(
         &self,
         surface: SurfaceId,
-        session: crate::tab_strip::TabListMenuSessionId,
+        session: crate::presentation::tab_strip::TabListMenuSessionId,
         navigation: TabListMenuNavigation,
     ) -> Result<PreparedTabListMenuNavigation, InteractionRejection> {
         let projection = self
@@ -1044,9 +1045,9 @@ impl CoreHostFrame {
     pub(crate) fn capture_host_focus_observation(
         &self,
         surface: SurfaceId,
-        generation: crate::viewport_focus::PaneFocusObservationGeneration,
-        state: crate::viewport_focus::HostFocusState,
-    ) -> Option<crate::viewport_focus::HostFocusObservation> {
+        generation: crate::platform::focus::PaneFocusObservationGeneration,
+        state: crate::platform::focus::HostFocusState,
+    ) -> Option<crate::platform::focus::HostFocusObservation> {
         let (stream, host, _) = self
             .candidate
             .presentation_authority
@@ -1054,7 +1055,7 @@ impl CoreHostFrame {
             .active_surface_scope(surface)?;
         (host == self.presentation_host && self.candidate.workspace.surface(surface).is_some())
             .then(|| {
-                crate::viewport_focus::HostFocusObservation::new(
+                crate::platform::focus::HostFocusObservation::new(
                     generation, host, stream, surface, state,
                 )
             })
@@ -1248,7 +1249,7 @@ impl CoreHostFrame {
     fn refresh_presentation_after_pointer_segment(
         &mut self,
         before: PointerPresentationFence,
-        reduced: &[crate::transition::ReducedPointerEdge],
+        reduced: &[crate::engine::transition::ReducedPointerEdge],
     ) -> Result<(), EngineError> {
         let after = PointerPresentationFence::capture(&self.candidate);
         if before.workspace == after.workspace && before.requirements == after.requirements {
@@ -1477,16 +1478,17 @@ impl CoreHostFrame {
         &self,
     ) -> impl Iterator<
         Item = (
-            crate::viewport::ViewportBinding,
-            crate::viewport::ViewportBinding,
+            crate::platform::viewport::ViewportBinding,
+            crate::platform::viewport::ViewportBinding,
         ),
     > + '_ {
         self.reduced_inputs
             .iter()
             .filter_map(|reduced| match reduced.outcome() {
-                crate::transition::InputOutcome::WorkspaceReplaced { reconciliation, .. } => {
-                    Some(reconciliation.rebound())
-                }
+                crate::engine::transition::InputOutcome::WorkspaceReplaced {
+                    reconciliation,
+                    ..
+                } => Some(reconciliation.rebound()),
                 _ => None,
             })
             .flat_map(|pairs| pairs.iter().copied())
@@ -1496,7 +1498,7 @@ impl CoreHostFrame {
         self.reduced_inputs.iter().any(|reduced| {
             matches!(
                 reduced.outcome(),
-                crate::transition::InputOutcome::NativeSurfacePlacementsChanged {
+                crate::engine::transition::InputOutcome::NativeSurfacePlacementsChanged {
                     changed: true,
                     ..
                 }
@@ -2141,7 +2143,7 @@ impl CoreHostFrame {
         };
         let segment_cause = reduced
             .last()
-            .map(crate::transition::ReducedPointerEdge::cause);
+            .map(crate::engine::transition::ReducedPointerEdge::cause);
         if let Some(cause) = segment_cause
             && let Err(error) = self
                 .candidate
@@ -2814,7 +2816,7 @@ impl CoreHostFrame {
         surface: SurfaceId,
     ) -> (
         &[HostPresentationObservationOutcome],
-        crate::presentation_observation::PresentationStreamAdmission,
+        crate::presentation::observation::PresentationStreamAdmission,
     ) {
         let endpoint = self
             .candidate
@@ -2824,7 +2826,7 @@ impl CoreHostFrame {
         (
             &self.presentation_observation_outcomes,
             endpoint.map_or(
-                crate::presentation_observation::PresentationStreamAdmission::New,
+                crate::presentation::observation::PresentationStreamAdmission::New,
                 |endpoint| {
                     self.candidate
                         .presentation_authority
@@ -2949,20 +2951,6 @@ impl CoreHostPresentationFrame {
         self.frame.surfaces()
     }
 
-    /// Returns whether the input prefix changed any presentation fact.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn presentation_changed_since_seal(&self) -> bool {
-        self.frame.presentation_changed_since_seal()
-    }
-
-    /// Returns whether input changed geometry or surface-roster authority.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn presentation_projection_changed_since_seal(&self) -> bool {
-        self.frame.presentation_projection_changed_since_seal()
-    }
-
     /// Issues every post-input physical presentation obligation exactly once.
     pub fn take_presentation_obligations(
         &mut self,
@@ -3030,15 +3018,6 @@ impl CoreHostPresentationFrame {
         &self,
     ) -> impl ExactSizeIterator<Item = &PreparedSurfaceContribution> {
         self.frame.surface_contributions()
-    }
-
-    /// Prepares the complete candidate without publishing it.
-    #[cfg(test)]
-    pub fn prepare<'a>(
-        self,
-        engine: &'a mut DockEngine,
-    ) -> Result<PreparedHostFrameCommit<'a>, EngineError> {
-        self.frame.prepare(engine)
     }
 
     /// Prepares the complete candidate without borrowing its destination engine.

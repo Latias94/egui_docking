@@ -4,19 +4,19 @@ use super::support;
 
 use std::cell::{Cell, RefCell};
 
+use dockspace::engine::event::WorkspaceEventKind;
 use dockspace::engine::{DockEngine, EngineInput};
-use dockspace::event::WorkspaceEventKind;
 use dockspace::geometry::{GeometryError, LogicalRect};
+use dockspace::graph::validation::WorkspaceValidationError;
 use dockspace::graph::{
     Axis, ContainedFloating, InvalidSplitWeight, Node, RootRecord, SurfacePresentation, Workspace,
 };
 use dockspace::ids::{FloatingPresentationId, ItemId, RootId, StableInputSourceId, SurfaceId};
-use dockspace::persistence::{
+use dockspace::persistence::snapshot::{
     SnapshotAxis, SnapshotEntityKind, SnapshotNode, SnapshotNodeRecord, SnapshotReferenceOwner,
     SnapshotRestoreError, SnapshotRootRecord, SnapshotSurfaceRecord, WorkspaceSnapshot,
 };
 use dockspace::policy::DockPolicy;
-use dockspace::validation::WorkspaceValidationError;
 use support::{TestPresentationHost, submit_input};
 
 const MAIN_ROOT: RootId = RootId::new(10);

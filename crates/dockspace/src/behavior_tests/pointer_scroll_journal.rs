@@ -4,28 +4,28 @@ use dockspace::engine::{CoreHostFrame, CoreHostFrameError, DockEngine};
 use dockspace::geometry::{LogicalPoint, LogicalRect};
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, RootId, SurfaceId};
-use dockspace::intent::{Authority, AuthorityUnavailableReason, PointerId};
-use dockspace::interaction::{
-    InteractionEventKind, InteractionOutcome, ScrollReductionOutcome, ScrollTerminationReason,
-};
-use dockspace::pointer_journal::{
+use dockspace::input::intent::{Authority, AuthorityUnavailableReason, PointerId};
+use dockspace::input::journal::{
     FiniteScrollVector, PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind,
     PointerEdgeLocation, PointerEdgeSequence, ScrollCancelReason, ScrollDeliveryEndpoint,
     ScrollDelta, ScrollDeviceId, ScrollEdge, ScrollModifiers, ScrollMomentum, ScrollPhase,
     ScrollSequenceToken, SurfaceLocalPointerEndpoint, SurfaceLocalPointerProvider,
     SurfaceLocalPointerScope,
 };
-use dockspace::pointer_receiver::{
+use dockspace::input::receiver::{
     PointerReceiverDelivery, PointerReceiverDeliveryDisposition, PointerReceiverObservation,
     PointerReceiverProbeReceipt, PointerReceiverReceipt, PointerReceiverReceiptBatch,
     PointerReceiverUnknownReason, PresentedPointerReceiverObservation, ScrollReceiverChallenge,
 };
+use dockspace::interaction::{
+    InteractionEventKind, InteractionOutcome, ScrollReductionOutcome, ScrollTerminationReason,
+};
 use dockspace::policy::DockPolicy;
-use dockspace::presentation_hit::{PresentationHitRegionId, PresentationHitRegionKind};
-use dockspace::scene::SurfaceScene;
-use dockspace::scene_manifest::{
+use dockspace::presentation::hit::{PresentationHitRegionId, PresentationHitRegionKind};
+use dockspace::presentation::manifest::{
     TabListMenuMetrics, TabStripControlMetric, TabStripControlMetrics, TabStripControlPlacement,
 };
+use dockspace::presentation::scene::SurfaceScene;
 use support::{
     MeasurementProfile, TestPresentationHost, complete_host_frame_with_current_outputs,
     complete_host_frame_with_retained_or_unavailable, measurements, publish_surface_with,
@@ -188,7 +188,7 @@ impl ScrollFixture {
         phase: ScrollPhase,
         token: Option<ScrollSequenceToken>,
         delta: Option<ScrollDelta>,
-    ) -> dockspace::transition::EngineTransition {
+    ) -> dockspace::engine::transition::EngineTransition {
         self.submit_known_for_device(ScrollDeviceId::new(1), phase, token, delta)
     }
 
@@ -197,7 +197,7 @@ impl ScrollFixture {
         phase: ScrollPhase,
         token: Option<ScrollSequenceToken>,
         delta: Option<ScrollDelta>,
-    ) -> Result<dockspace::transition::EngineTransition, CoreHostFrameError> {
+    ) -> Result<dockspace::engine::transition::EngineTransition, CoreHostFrameError> {
         self.try_submit_with_receipt_and_modifiers_and_inspect(
             ScrollDeviceId::new(1),
             phase,
@@ -216,7 +216,7 @@ impl ScrollFixture {
         phase: ScrollPhase,
         token: Option<ScrollSequenceToken>,
         delta: Option<ScrollDelta>,
-    ) -> dockspace::transition::EngineTransition {
+    ) -> dockspace::engine::transition::EngineTransition {
         self.submit_with_disposition(
             device,
             phase,
@@ -233,7 +233,7 @@ impl ScrollFixture {
         token: Option<ScrollSequenceToken>,
         delta: Option<ScrollDelta>,
         disposition: PointerReceiverDeliveryDisposition,
-    ) -> dockspace::transition::EngineTransition {
+    ) -> dockspace::engine::transition::EngineTransition {
         self.submit_with_receipt(
             device,
             phase,
@@ -250,7 +250,7 @@ impl ScrollFixture {
         token: ScrollSequenceToken,
         delta: ScrollDelta,
         endpoint: ScrollDeliveryEndpoint,
-    ) -> dockspace::transition::EngineTransition {
+    ) -> dockspace::engine::transition::EngineTransition {
         self.submit_with_receipt(
             ScrollDeviceId::new(1),
             phase,
@@ -270,7 +270,7 @@ impl ScrollFixture {
         delta: Option<ScrollDelta>,
         endpoint: ScrollDeliveryEndpoint,
         disposition: Option<PointerReceiverDeliveryDisposition>,
-    ) -> dockspace::transition::EngineTransition {
+    ) -> dockspace::engine::transition::EngineTransition {
         self.submit_with_receipt_and_modifiers(
             device,
             phase,
@@ -292,7 +292,7 @@ impl ScrollFixture {
         endpoint: ScrollDeliveryEndpoint,
         disposition: Option<PointerReceiverDeliveryDisposition>,
         modifiers: ScrollModifiers,
-    ) -> dockspace::transition::EngineTransition {
+    ) -> dockspace::engine::transition::EngineTransition {
         self.submit_with_receipt_and_modifiers_and_inspect(
             device,
             phase,
@@ -315,8 +315,8 @@ impl ScrollFixture {
         endpoint: ScrollDeliveryEndpoint,
         disposition: Option<PointerReceiverDeliveryDisposition>,
         modifiers: ScrollModifiers,
-        inspect: impl FnOnce(&dockspace::pointer_receiver::PointerReceiverCandidate),
-    ) -> dockspace::transition::EngineTransition {
+        inspect: impl FnOnce(&dockspace::input::receiver::PointerReceiverCandidate),
+    ) -> dockspace::engine::transition::EngineTransition {
         self.try_submit_with_receipt_and_modifiers_and_inspect(
             device,
             phase,
@@ -340,8 +340,8 @@ impl ScrollFixture {
         endpoint: ScrollDeliveryEndpoint,
         disposition: Option<PointerReceiverDeliveryDisposition>,
         modifiers: ScrollModifiers,
-        inspect: impl FnOnce(&dockspace::pointer_receiver::PointerReceiverCandidate),
-    ) -> Result<dockspace::transition::EngineTransition, CoreHostFrameError> {
+        inspect: impl FnOnce(&dockspace::input::receiver::PointerReceiverCandidate),
+    ) -> Result<dockspace::engine::transition::EngineTransition, CoreHostFrameError> {
         let sequence = self.watermark + 1;
         let edge = self.scroll_edge(sequence, device, phase, token, delta, endpoint, modifiers);
         let journal = PointerEdgeJournal::new(
@@ -391,7 +391,7 @@ impl ScrollFixture {
         Ok(transition)
     }
 
-    fn end_pointer_stream(&mut self) -> dockspace::transition::EngineTransition {
+    fn end_pointer_stream(&mut self) -> dockspace::engine::transition::EngineTransition {
         let sequence = self.watermark + 1;
         let edge = PointerEdge::new(
             PointerEdgeSequence::new(sequence),
@@ -448,7 +448,7 @@ impl ScrollFixture {
             .expect("empty receipt roster reduces");
     }
 
-    fn compile_surface(&mut self, width: f64) -> dockspace::transition::EngineTransition {
+    fn compile_surface(&mut self, width: f64) -> dockspace::engine::transition::EngineTransition {
         let contribution =
             measurements(&self.engine, SURFACE, bounds(width), measurement_profile());
         let mut frame = self.host.begin(&self.engine);
@@ -467,14 +467,14 @@ impl ScrollFixture {
         self.host.finish(frame, &mut self.engine)
     }
 
-    fn emit_current_surface(&mut self) -> dockspace::transition::EngineTransition {
+    fn emit_current_surface(&mut self) -> dockspace::engine::transition::EngineTransition {
         let mut frame = self.host.begin(&self.engine);
         self.stage_empty_pointer(&mut frame);
         let frame = complete_host_frame_with_current_outputs(&self.engine, frame);
         self.host.finish_presentation(frame, &mut self.engine)
     }
 
-    fn observe_emission(&mut self) -> dockspace::transition::EngineTransition {
+    fn observe_emission(&mut self) -> dockspace::engine::transition::EngineTransition {
         let mut frame = self.host.begin(&self.engine);
         self.stage_empty_pointer(&mut frame);
         complete_host_frame_with_retained_or_unavailable(&self.engine, &mut frame);
@@ -487,7 +487,7 @@ fn line_delta(x: f64, y: f64) -> ScrollDelta {
 }
 
 fn scroll_terminal_reasons(
-    transition: &dockspace::transition::EngineTransition,
+    transition: &dockspace::engine::transition::EngineTransition,
 ) -> Vec<ScrollTerminationReason> {
     transition
         .interaction_events()

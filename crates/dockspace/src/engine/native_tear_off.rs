@@ -7,8 +7,8 @@ use crate::model::{
     DockspaceActionOutcome, DockspaceActionRejection, NativeTearOffSource, NativeWindowPlacement,
 };
 use crate::platform::ObservedWorkArea;
-use crate::scene_compiler::{contained_minimum_size, pane_outer_minimum};
-use crate::scene_manifest::PaneMinimumKey;
+use crate::presentation::compiler::{contained_minimum_size, pane_outer_minimum};
+use crate::presentation::manifest::PaneMinimumKey;
 
 #[cfg(test)]
 mod tests;
@@ -39,7 +39,7 @@ struct PreparedProductNativeTearOff {
     payload: MovePayload,
     source_presentation: PresentedSurfaceAuthority,
     command: WorkspaceCommand,
-    proposal: crate::frame::NativeCreateProposal,
+    proposal: crate::platform::frame::NativeCreateProposal,
     pane_focus: PaneFocusDisposition,
     items: Vec<ItemId>,
 }
@@ -48,7 +48,7 @@ impl DockEngine {
     pub(super) fn root_is_bound_native_main(&self, root: RootId) -> bool {
         matches!(
             self.workspace.presentation_for_root(root),
-            Some(crate::RootPresentationOwner::Main { surface })
+            Some(crate::graph::workspace::RootPresentationOwner::Main { surface })
                 if self.bound_surface_recoveries.contains_key(&surface)
         )
     }
@@ -58,10 +58,13 @@ impl DockEngine {
         root: RootId,
     ) -> Result<(SurfaceId, Option<FloatingPresentationId>), DockspaceActionRejection> {
         match self.workspace.presentation_for_root(root) {
-            Some(crate::RootPresentationOwner::Main { surface }) => Ok((surface, None)),
-            Some(crate::RootPresentationOwner::Contained { surface, floating }) => {
-                Ok((surface, Some(floating)))
+            Some(crate::graph::workspace::RootPresentationOwner::Main { surface }) => {
+                Ok((surface, None))
             }
+            Some(crate::graph::workspace::RootPresentationOwner::Contained {
+                surface,
+                floating,
+            }) => Ok((surface, Some(floating))),
             None => Err(DockspaceActionRejection::RootUnavailable { root }),
         }
     }
@@ -70,7 +73,7 @@ impl DockEngine {
         &self,
         payload: &MovePayload,
         complete_root: bool,
-        plan: &crate::scene::PresentationPlan,
+        plan: &crate::presentation::scene::PresentationPlan,
     ) -> Result<(Option<LogicalRect>, LogicalSize), DockspaceActionRejection> {
         let (root, node) = match payload {
             MovePayload::Item(source) => (source.root(), source.tabs()),
@@ -95,7 +98,10 @@ impl DockEngine {
                         .presentation_requirements()
                         .surface(surface)
                         .and_then(|requirements| {
-                            requirements.tab_bar(crate::scene::TabBarSceneId { root, tabs: node })
+                            requirements.tab_bar(crate::presentation::scene::TabBarSceneId {
+                                root,
+                                tabs: node,
+                            })
                         })
                         // A partial item becomes a fresh single-member leaf;
                         // it cannot inherit the source group's temporary reveal.
@@ -116,7 +122,9 @@ impl DockEngine {
             let pane = plan
                 .pane_records()
                 .iter()
-                .find(|pane| pane.id() == (crate::scene::PaneSceneId { root, tabs: node }))
+                .find(|pane| {
+                    pane.id() == (crate::presentation::scene::PaneSceneId { root, tabs: node })
+                })
                 .ok_or(unavailable)?;
             let bounds = pane.bounds();
             // A partial payload uses its pane and measured recovery minimum,
@@ -134,7 +142,7 @@ impl DockEngine {
             let rect = plan
                 .contained_record(floating)
                 .filter(|record| record.root() == root)
-                .map(crate::scene::ContainedRecord::outer_bounds);
+                .map(crate::presentation::scene::ContainedRecord::outer_bounds);
             let minimum = plan
                 .contained_minimums()
                 .iter()
@@ -164,7 +172,7 @@ impl DockEngine {
         let coordinates = self
             .viewport
             .viewport(surface)
-            .and_then(crate::viewport_registry::ViewportRecord::coordinates)
+            .and_then(crate::platform::registry::ViewportRecord::coordinates)
             .ok_or(unavailable)?;
         let source_outer = coordinates.outer_bounds().ok_or(unavailable)?;
         let requested = if complete_main {
@@ -346,7 +354,7 @@ impl DockEngine {
             reservation.root(),
             complete,
         );
-        let proposal = crate::frame::NativeCreateProposal::new(
+        let proposal = crate::platform::frame::NativeCreateProposal::new(
             reservation.surface(),
             placement.outer_rect(),
             ConvertedMainRecovery::new(reservation.root(), reservation.floating(), minimum_size),
@@ -372,7 +380,7 @@ impl DockEngine {
                 Ok(prepared) => prepared,
                 Err(reason) => return Ok(Err(reason)),
             };
-        if let Err(error) = crate::operation::authorize_workspace_command(
+        if let Err(error) = crate::graph::operation::authorize_workspace_command(
             &self.workspace,
             policy,
             &prepared.command,
@@ -469,11 +477,13 @@ impl DockEngine {
         source_presentation: PresentedSurfaceAuthority,
         payload: MovePayload,
         command: WorkspaceCommand,
-        proposal: crate::frame::NativeCreateProposal,
+        proposal: crate::platform::frame::NativeCreateProposal,
         pane_focus: PaneFocusDisposition,
         policy: &DockPolicySnapshot,
-    ) -> Result<Result<crate::frame::NativeCreateRequest, NativeRootCreateRejection>, EngineError>
-    {
+    ) -> Result<
+        Result<crate::platform::frame::NativeCreateRequest, NativeRootCreateRejection>,
+        EngineError,
+    > {
         let source_surface = source_presentation.surface();
         if !self.viewport.native_binding_allocation_available() {
             // Accepted pointer release must terminate with a semantic rejection;
@@ -528,7 +538,7 @@ impl DockEngine {
         let proposal_surface = proposal.surface();
         let proposal_root = proposal.root();
         let proposal_floating = proposal.converted_main().floating();
-        let prepared = crate::frame::PreparedNativeCreate::new(
+        let prepared = crate::platform::frame::PreparedNativeCreate::new(
             source_presentation,
             payload,
             self.version.epoch(),
@@ -570,7 +580,7 @@ impl DockEngine {
         {
             return Ok(Err(CommandError::SurfaceLifecycleFrozen { surface }));
         }
-        let prepared = match crate::operation::prepare_transaction(
+        let prepared = match crate::graph::operation::prepare_transaction(
             &self.workspace,
             policy,
             std::slice::from_ref(command),

@@ -2,18 +2,18 @@
 
 use super::presentation_authority::PresentationRequirementFailure;
 use super::*;
-use crate::tab_strip::PopupPlaneRequirement;
+use crate::presentation::tab_strip::PopupPlaneRequirement;
 
 /// Provenance of a first-live layout, not permission to publish its workspace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct NativeFirstLiveProjectionStamp {
     pub(super) saga: NativeCreateSagaId,
-    pub(super) binding: crate::viewport::ViewportBinding,
+    pub(super) binding: crate::platform::viewport::ViewportBinding,
     pub(super) resource: NativeStagingResourceId,
-    ready_basis: crate::frame::NativeReadyBasis,
+    ready_basis: crate::platform::frame::NativeReadyBasis,
     base: WorkspaceVersion,
-    config: crate::presentation_config::PresentationConfigRevision,
-    policy: crate::scene_manifest::PolicyRevision,
+    config: crate::presentation::config::PresentationConfigRevision,
+    policy: crate::presentation::manifest::PolicyRevision,
 }
 
 /// A short-lived compiler input. It is never installed as a topology owner.
@@ -47,7 +47,7 @@ impl NativeFirstLiveProjection {
         self.version
     }
 
-    pub(crate) fn requirements(&self) -> &crate::scene_manifest::SurfaceRequirements {
+    pub(crate) fn requirements(&self) -> &crate::presentation::manifest::SurfaceRequirements {
         self.manifest
             .surface(self.surface())
             .expect("the checked native projection contains its target surface")
@@ -60,14 +60,14 @@ impl NativeFirstLiveProjection {
     #[cfg(test)]
     pub(crate) fn compile(
         &self,
-        measurements: &crate::scene_manifest::SurfaceMeasurements,
+        measurements: &crate::presentation::manifest::SurfaceMeasurements,
     ) -> Result<PresentationPlan, SurfaceContributionPrepareError> {
         self.compile_with_state(measurements, self.manifest.popup(), &self.tab_strip_states)
     }
 
     pub(crate) fn compile_with_state(
         &self,
-        measurements: &crate::scene_manifest::SurfaceMeasurements,
+        measurements: &crate::presentation::manifest::SurfaceMeasurements,
         popup: PopupPlaneRequirement,
         tab_strip_states: &TabStripStateStore,
     ) -> Result<PresentationPlan, SurfaceContributionPrepareError> {
@@ -250,7 +250,7 @@ impl DockEngine {
                         && saga.resource() == stamp.resource
                         && matches!(
                             saga.phase(),
-                            crate::frame::NativeCreatePhase::AwaitingFirstLivePresentation { .. }
+                            crate::platform::frame::NativeCreatePhase::AwaitingFirstLivePresentation { .. }
                         )
                 })
             && self
@@ -259,7 +259,7 @@ impl DockEngine {
                 .is_some_and(|record| {
                     record.binding() == stamp.binding
                         && record.admission()
-                            == crate::viewport_registry::ViewportAdmission::Pending
+                            == crate::platform::registry::ViewportAdmission::Pending
                 })
     }
 

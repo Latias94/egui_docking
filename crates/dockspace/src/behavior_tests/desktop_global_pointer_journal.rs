@@ -1,20 +1,39 @@
 use super::support;
 
-use dockspace::drop_target::DropTargetId;
-use dockspace::effect::{
-    DispatchFailureReason, EffectDispatchResult, EffectId, EffectPhase, EffectResult,
-    EffectUnsupportedReason, PlatformEffect,
-};
+use dockspace::engine::surface_recovery::SurfaceRecoveryBootstrap;
+use dockspace::engine::transition::InputOutcome;
 use dockspace::engine::{CoreHostFrame, DockEngine, EngineInput};
 use dockspace::geometry::{LogicalPoint, LogicalRect, PhysicalPoint, PhysicalRect, ScaleFactor};
 use dockspace::graph::{ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{
     FloatingPresentationId, ItemId, NodeId, RootId, StableInputSourceId, SurfaceId,
 };
-use dockspace::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
+use dockspace::input::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
+use dockspace::input::journal::{
+    DesktopRouteFact, DesktopWorkAreaRoute, FiniteScrollVector, PointerCaptureOwner, PointerEdge,
+    PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation, PointerEdgeSequence,
+    PointerEventDeliveryOwner, PointerInputLease, PointerProviderScope, ScrollDeliveryEndpoint,
+    ScrollDelta, ScrollDeviceId, ScrollEdge, ScrollModifiers, ScrollMomentum, ScrollPhase,
+};
+use dockspace::input::receiver::{
+    PointerReceiverDelivery, PointerReceiverDeliveryDisposition, PointerReceiverHoverHit,
+    PointerReceiverHoverHitDisposition, PointerReceiverObservation, PointerReceiverProbeReceipt,
+    PointerReceiverProbeRequest, PointerReceiverReceipt, PointerReceiverReceiptBatch,
+    PointerReceiverUnknownReason, PresentedPointerReceiverObservation,
+};
+use dockspace::interaction::targeting::targets::DropTargetId;
 use dockspace::interaction::{
     InteractionCancelReason, InteractionDelivery, InteractionOutcome, InteractionRejection,
     InteractionStatus, PreviewResolutionStatus, PreviewVisual, ScrollReductionOutcome,
+};
+use dockspace::platform::effect::{
+    DispatchFailureReason, EffectDispatchResult, EffectId, EffectPhase, EffectResult,
+    EffectUnsupportedReason, PlatformEffect,
+};
+use dockspace::platform::focus::{FocusObservationGeneration, unknown_focus_observation};
+use dockspace::platform::viewport::{
+    CoordinateObservationGeneration, InputObservationGeneration, PresentationObservationGeneration,
+    ViewportBinding, ViewportRole, WindowToken, WorkAreaGeneration, WorkAreaToken,
 };
 use dockspace::platform::{
     InputEffectAcknowledgement, NativeDragSourceInput, ObservedWindow, ObservedWorkArea,
@@ -22,28 +41,9 @@ use dockspace::platform::{
     PlatformSnapshot, WindowCoordinateObservation, WindowInputObservation, WindowInputState,
     WindowPresentationObservation, WindowPresentationState,
 };
-use dockspace::pointer_journal::{
-    DesktopRouteFact, DesktopWorkAreaRoute, FiniteScrollVector, PointerCaptureOwner, PointerEdge,
-    PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation, PointerEdgeSequence,
-    PointerEventDeliveryOwner, PointerInputLease, PointerProviderScope, ScrollDeliveryEndpoint,
-    ScrollDelta, ScrollDeviceId, ScrollEdge, ScrollModifiers, ScrollMomentum, ScrollPhase,
-};
-use dockspace::pointer_receiver::{
-    PointerReceiverDelivery, PointerReceiverDeliveryDisposition, PointerReceiverHoverHit,
-    PointerReceiverHoverHitDisposition, PointerReceiverObservation, PointerReceiverProbeReceipt,
-    PointerReceiverProbeRequest, PointerReceiverReceipt, PointerReceiverReceiptBatch,
-    PointerReceiverUnknownReason, PresentedPointerReceiverObservation,
-};
 use dockspace::policy::DockPolicy;
-use dockspace::presentation_hit::PresentationHitRegionKind;
-use dockspace::presentation_observation::HostPresentationObservationOutcome;
-use dockspace::surface_recovery::SurfaceRecoveryBootstrap;
-use dockspace::transition::InputOutcome;
-use dockspace::viewport::{
-    CoordinateObservationGeneration, InputObservationGeneration, PresentationObservationGeneration,
-    ViewportBinding, ViewportRole, WindowToken, WorkAreaGeneration, WorkAreaToken,
-};
-use dockspace::viewport_focus::{FocusObservationGeneration, unknown_focus_observation};
+use dockspace::presentation::hit::PresentationHitRegionKind;
+use dockspace::presentation::observation::HostPresentationObservationOutcome;
 use support::{
     TestPresentationHost, complete_host_frame_with_current_outputs,
     complete_host_frame_with_retained_or_unavailable, publish_surfaces, submit_input,
@@ -282,7 +282,7 @@ fn publish_native_snapshot_with_geometry_and_work_area_scale(
     let windows = vec![source_window, target_window];
     let inventory_observation = support::known_inventory_observation(generation, &windows);
     let snapshot = PlatformSnapshot::new(
-        dockspace::viewport::PlatformSnapshotGeneration::new(generation),
+        dockspace::platform::viewport::PlatformSnapshotGeneration::new(generation),
         support::known_capability_observation(generation, capabilities()),
         unknown_focus_observation(
             FocusObservationGeneration::new(generation),
@@ -361,7 +361,7 @@ fn publish_pointer_passthrough_confirmation(
     target: ViewportBinding,
     pointer_through: u64,
     effect: EffectId,
-) -> dockspace::transition::EngineTransition {
+) -> dockspace::engine::transition::EngineTransition {
     publish_pointer_input_confirmation(
         engine,
         host,
@@ -384,7 +384,7 @@ fn publish_pointer_input_confirmation(
     pointer_through: u64,
     source_state: WindowInputState,
     effect: EffectId,
-) -> dockspace::transition::EngineTransition {
+) -> dockspace::engine::transition::EngineTransition {
     let generation = host.next_platform_observation_generation();
     let coordinate_generation = CoordinateObservationGeneration::new(generation);
     let presentation_generation = PresentationObservationGeneration::new(generation);
@@ -422,7 +422,7 @@ fn publish_pointer_input_confirmation(
         .map(|(_, work_area)| work_area)
         .collect::<Vec<_>>();
     let snapshot = PlatformSnapshot::new(
-        dockspace::viewport::PlatformSnapshotGeneration::new(generation),
+        dockspace::platform::viewport::PlatformSnapshotGeneration::new(generation),
         support::known_capability_observation(generation, capabilities()),
         unknown_focus_observation(
             FocusObservationGeneration::new(generation),
@@ -485,7 +485,7 @@ fn report_platform_effect_during_drag(
     pointer_through: u64,
     effect: EffectId,
     result: EffectDispatchResult,
-) -> dockspace::transition::EngineTransition {
+) -> dockspace::engine::transition::EngineTransition {
     let expected_epoch = engine.version().epoch();
     let input_sequence = engine
         .semantic_input_watermark()
@@ -531,7 +531,7 @@ fn publish_capabilities_during_drag(
     target: ViewportBinding,
     pointer_through: u64,
     capabilities: PlatformCapabilities,
-) -> dockspace::transition::EngineTransition {
+) -> dockspace::engine::transition::EngineTransition {
     let generation = host.next_platform_observation_generation();
     let coordinate_generation = CoordinateObservationGeneration::new(generation);
     let presentation_generation = PresentationObservationGeneration::new(generation);
@@ -575,7 +575,7 @@ fn publish_capabilities_during_drag(
         .map(|(_, work_area)| work_area)
         .collect::<Vec<_>>();
     let snapshot = PlatformSnapshot::new(
-        dockspace::viewport::PlatformSnapshotGeneration::new(generation),
+        dockspace::platform::viewport::PlatformSnapshotGeneration::new(generation),
         support::known_capability_observation(generation, capabilities),
         unknown_focus_observation(
             FocusObservationGeneration::new(generation),
@@ -662,7 +662,7 @@ fn publish_resized_source_snapshot(
     let windows = vec![source_window, target_window];
     let inventory_observation = support::known_inventory_observation(generation, &windows);
     let snapshot = PlatformSnapshot::new(
-        dockspace::viewport::PlatformSnapshotGeneration::new(generation),
+        dockspace::platform::viewport::PlatformSnapshotGeneration::new(generation),
         support::known_capability_observation(generation, capabilities()),
         unknown_focus_observation(
             FocusObservationGeneration::new(generation),
@@ -733,7 +733,7 @@ fn source_only_native_snapshot(generation: u64, source: ViewportBinding) -> Plat
     let windows = vec![source_window];
     let inventory_observation = support::known_inventory_observation(generation, &windows);
     PlatformSnapshot::new(
-        dockspace::viewport::PlatformSnapshotGeneration::new(generation),
+        dockspace::platform::viewport::PlatformSnapshotGeneration::new(generation),
         support::known_capability_observation(generation, capabilities()),
         unknown_focus_observation(
             FocusObservationGeneration::new(generation),
@@ -785,7 +785,7 @@ fn resized_target_native_snapshot(
     let windows = vec![source_window, target_window];
     let inventory_observation = support::known_inventory_observation(generation, &windows);
     PlatformSnapshot::new(
-        dockspace::viewport::PlatformSnapshotGeneration::new(generation),
+        dockspace::platform::viewport::PlatformSnapshotGeneration::new(generation),
         support::known_capability_observation(generation, capabilities()),
         unknown_focus_observation(
             FocusObservationGeneration::new(generation),
@@ -802,17 +802,17 @@ fn resized_target_native_snapshot(
 fn interaction(
     engine: &DockEngine,
     surface: SurfaceId,
-) -> dockspace::scene::SurfaceInteractionProjection<'_> {
+) -> dockspace::presentation::scene::SurfaceInteractionProjection<'_> {
     engine
         .interaction_projection(surface)
         .expect("native test surface has an exact interactive output")
 }
 
 fn tab_point(
-    projection: dockspace::scene::SurfaceInteractionProjection<'_>,
+    projection: dockspace::presentation::scene::SurfaceInteractionProjection<'_>,
     item: ItemId,
 ) -> (
-    dockspace::presentation_hit::PresentationHitRegionId,
+    dockspace::presentation::hit::PresentationHitRegionId,
     LogicalPoint,
 ) {
     let region = projection
@@ -836,10 +836,10 @@ fn tab_point(
 }
 
 fn tab_close_point(
-    projection: dockspace::scene::SurfaceInteractionProjection<'_>,
+    projection: dockspace::presentation::scene::SurfaceInteractionProjection<'_>,
     item: ItemId,
 ) -> (
-    dockspace::presentation_hit::PresentationHitRegionId,
+    dockspace::presentation::hit::PresentationHitRegionId,
     LogicalPoint,
 ) {
     let region = projection
@@ -863,10 +863,10 @@ fn tab_close_point(
 }
 
 fn center_drop_point(
-    projection: dockspace::scene::SurfaceInteractionProjection<'_>,
+    projection: dockspace::presentation::scene::SurfaceInteractionProjection<'_>,
     tabs: NodeId,
 ) -> (
-    dockspace::presentation_hit::PresentationHitRegionId,
+    dockspace::presentation::hit::PresentationHitRegionId,
     LogicalPoint,
 ) {
     let region = projection
@@ -892,7 +892,7 @@ fn center_drop_point(
 
 fn desktop_route(
     binding: ViewportBinding,
-    projection: dockspace::scene::SurfaceInteractionProjection<'_>,
+    projection: dockspace::presentation::scene::SurfaceInteractionProjection<'_>,
     origin_x: f64,
     scale: f64,
     local: LogicalPoint,
@@ -1339,7 +1339,7 @@ fn desktop_owned_child_fixture_from_workspace(
     assert_eq!(source.role(), ViewportRole::Child);
     assert_eq!(
         source.ownership(),
-        dockspace::viewport_registry::ViewportOwnership::RuntimeOwned
+        dockspace::platform::registry::ViewportOwnership::RuntimeOwned
     );
 
     publish_native_snapshot_with_work_area_scale(
@@ -1646,7 +1646,7 @@ fn submit_native_tab_press(
     source_binding: ViewportBinding,
     item: ItemId,
     capture: Authority<PointerCaptureOwner>,
-) -> dockspace::transition::EngineTransition {
+) -> dockspace::engine::transition::EngineTransition {
     submit_native_tab_press_with_delivery(
         engine,
         host,
@@ -1667,7 +1667,7 @@ fn submit_native_tab_press_with_delivery(
     item: ItemId,
     delivery_owner: Authority<PointerEventDeliveryOwner>,
     capture: Authority<PointerCaptureOwner>,
-) -> dockspace::transition::EngineTransition {
+) -> dockspace::engine::transition::EngineTransition {
     let projection = interaction(engine, SOURCE_SURFACE);
     let (source_tab, source_point) = tab_point(projection, item);
     let source_route = desktop_route(
@@ -1824,12 +1824,12 @@ fn begin_native_drag_with_capture(
     );
     assert_ne!(
         source_projection.authority().coordinate_generation(),
-        dockspace::viewport::CoordinateGeneration::default(),
+        dockspace::platform::viewport::CoordinateGeneration::default(),
         "native source output must carry a real coordinate authority"
     );
     assert_ne!(
         target_projection.authority().coordinate_generation(),
-        dockspace::viewport::CoordinateGeneration::default(),
+        dockspace::platform::viewport::CoordinateGeneration::default(),
         "native target output must carry a real coordinate authority"
     );
 
@@ -1937,7 +1937,7 @@ fn begin_native_drag_with_capture(
         assert_eq!(source.role(), ViewportRole::Child);
         assert_eq!(
             source.ownership(),
-            dockspace::viewport_registry::ViewportOwnership::RuntimeOwned
+            dockspace::platform::registry::ViewportOwnership::RuntimeOwned
         );
         assert_eq!(
             effect,
@@ -1957,7 +1957,7 @@ fn begin_native_drag_with_capture(
         assert_eq!(source.role(), ViewportRole::Root);
         assert_eq!(
             source.ownership(),
-            dockspace::viewport_registry::ViewportOwnership::External
+            dockspace::platform::registry::ViewportOwnership::External
         );
         assert_eq!(
             engine.viewport().confirmed_drag_source(POINTER),
@@ -2020,7 +2020,7 @@ fn external_root_partial_tab_drag_preserves_input_and_continues_on_source() {
     assert_eq!(source.role(), ViewportRole::Root);
     assert_eq!(
         source.ownership(),
-        dockspace::viewport_registry::ViewportOwnership::External
+        dockspace::platform::registry::ViewportOwnership::External
     );
 
     arm_native_tab_press(
@@ -3421,7 +3421,7 @@ fn submit_active_drag_edge(
     target_point: LogicalPoint,
     kind: PointerEdgeKind,
     capture: Authority<PointerCaptureOwner>,
-) -> dockspace::transition::EngineTransition {
+) -> dockspace::engine::transition::EngineTransition {
     submit_active_drag_edge_after(
         engine,
         host,
@@ -3447,7 +3447,7 @@ fn submit_active_drag_edge_with_delivery(
     target_point: LogicalPoint,
     kind: PointerEdgeKind,
     capture: Authority<PointerCaptureOwner>,
-) -> dockspace::transition::EngineTransition {
+) -> dockspace::engine::transition::EngineTransition {
     submit_active_drag_edge_after(
         engine,
         host,
@@ -3474,7 +3474,7 @@ fn submit_active_drag_edge_after(
     kind: PointerEdgeKind,
     capture: Authority<PointerCaptureOwner>,
     previous: u64,
-) -> dockspace::transition::EngineTransition {
+) -> dockspace::engine::transition::EngineTransition {
     let surface = target_binding.surface();
     let projection = interaction(engine, surface);
     let (origin_x, scale) = match surface {
@@ -4319,7 +4319,7 @@ fn submit_capture_change(
     route_scale: f64,
     route_point: LogicalPoint,
     capture: Authority<PointerCaptureOwner>,
-) -> dockspace::transition::EngineTransition {
+) -> dockspace::engine::transition::EngineTransition {
     let route = desktop_route(
         route_binding,
         interaction(engine, route_binding.surface()),
@@ -5389,12 +5389,12 @@ fn desktop_global_journal_uses_target_native_route_for_cross_surface_drop() {
     );
     assert_ne!(
         source_projection.authority().coordinate_generation(),
-        dockspace::viewport::CoordinateGeneration::default(),
+        dockspace::platform::viewport::CoordinateGeneration::default(),
         "native source output must carry a real coordinate authority"
     );
     assert_ne!(
         target_projection.authority().coordinate_generation(),
-        dockspace::viewport::CoordinateGeneration::default(),
+        dockspace::platform::viewport::CoordinateGeneration::default(),
         "native target output must carry a real coordinate authority"
     );
 

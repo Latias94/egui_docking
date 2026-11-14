@@ -14,14 +14,14 @@ use thiserror::Error;
 
 #[cfg(test)]
 use crate::graph::WorkspaceBuilder;
+#[cfg(test)]
+use crate::graph::transaction::{clone_workspace_data_draft, clone_workspace_draft};
+use crate::graph::validation::WorkspaceValidationErrors;
 use crate::graph::{
     InvalidSplitWeight, InvalidSplitWeights, NORMALIZED_WEIGHT_TOLERANCE, Node, SplitWeight,
     Workspace, WorkspaceData, is_exact_tab_mru,
 };
 use crate::ids::{ItemId, NodeId, RootId};
-#[cfg(test)]
-use crate::transaction::{clone_workspace_data_draft, clone_workspace_draft};
-use crate::validation::WorkspaceValidationErrors;
 
 /// Summary of one successfully published canonicalization transaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,7 +169,7 @@ pub enum CanonicalizationError {
     InvalidOutput(#[source] WorkspaceValidationErrors),
     /// Graph ownership could not be completed for a canonical candidate.
     #[error("canonical root authority could not be completed: {0}")]
-    AuthorityCompletion(#[source] crate::error::CommandError),
+    AuthorityCompletion(#[source] crate::graph::error::CommandError),
     /// An internal iterative traversal invariant was violated.
     #[error("canonicalization traversal invariant failed during {stage}")]
     TraversalInvariant {
@@ -454,7 +454,7 @@ fn canonicalize_validated_draft(
     workspace: &mut WorkspaceData,
 ) -> Result<CanonicalEffects, CanonicalizationError> {
     #[cfg(test)]
-    crate::drop_resolver::structural_work::record_canonical_full_pass();
+    crate::interaction::targeting::resolver::structural_work::record_canonical_full_pass();
     let original_items = workspace.item_multiset();
     let protected_central: HashSet<NodeId> = workspace
         .roots
@@ -967,10 +967,10 @@ fn collect_reachable(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::drop_resolver::structural_work::{self, WorkspaceCloneVolume};
+    use crate::graph::validation::WorkspaceValidationError;
     use crate::graph::{Axis, SurfacePresentation};
     use crate::ids::SurfaceId;
-    use crate::validation::WorkspaceValidationError;
+    use crate::interaction::targeting::resolver::structural_work::{self, WorkspaceCloneVolume};
 
     const ROOT: RootId = RootId::new(1);
 

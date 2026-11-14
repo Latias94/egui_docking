@@ -1,7 +1,7 @@
 //! Tab strip, overflow menu, and popup authority reducer tests.
 
 use super::*;
-use crate::viewport_focus::unknown_focus_observation;
+use crate::platform::focus::unknown_focus_observation;
 
 #[test]
 fn auto_hidden_single_bar_reveals_through_its_exact_presented_corner_control() {
@@ -122,7 +122,7 @@ fn becoming_auto_hidden_retires_an_open_overflow_popup_before_manifest_publicati
         .replace_node(fixture.bar.tabs, Node::tabs([fixture.items[0]]))
         .unwrap();
     let workspace = builder.build().unwrap();
-    let draft = crate::scene_compiler::derive_scene_requirement_draft(
+    let draft = crate::presentation::compiler::derive_scene_requirement_draft(
         fixture.engine.authority_domain,
         &workspace,
         fixture.engine.version(),
@@ -207,7 +207,7 @@ fn requirement_pipeline_reconciles_popup_before_finalizing_disabled_policy() {
             .presentation_authority
             .presentation_requirements
             .popup(),
-        crate::tab_strip::PopupPlaneRequirement::Inactive { .. }
+        crate::presentation::tab_strip::PopupPlaneRequirement::Inactive { .. }
     ));
 
     let mut disabled_policy = DockPolicy::default();
@@ -1375,7 +1375,7 @@ fn prepared_menu_end_then_enter_binds_the_event_cause_and_requests_pane_focus() 
                         ))
                         .with_presentation_observation(WindowPresentationObservation::new(
                             binding,
-                            crate::viewport::PresentationObservationGeneration::new(1),
+                            crate::platform::viewport::PresentationObservationGeneration::new(1),
                             Authority::Known(WindowPresentationState::Visible),
                         )),
                 ],
@@ -1538,7 +1538,7 @@ fn strip_scroll_controls_align_the_adjacent_partial_tab_and_stop_at_boundaries()
             .presentation_authority
             .tab_strip_states
             .state(key)
-            .and_then(crate::tab_strip::TabStripState::scroll_offset),
+            .and_then(crate::presentation::tab_strip::TabStripState::scroll_offset),
         Some(expected)
     );
 
@@ -1574,7 +1574,7 @@ fn strip_scroll_controls_align_the_adjacent_partial_tab_and_stop_at_boundaries()
             .presentation_authority
             .tab_strip_states
             .state(forward_key)
-            .and_then(crate::tab_strip::TabStripState::scroll_offset),
+            .and_then(crate::presentation::tab_strip::TabStripState::scroll_offset),
         Some(expected)
     );
 
@@ -1745,7 +1745,7 @@ fn owner_popup_geometry_unavailable_closes_only_after_the_contribution_batch() {
             .presentation_authority
             .tab_strip_states
             .active_menu()
-            .map(crate::tab_strip::ActiveTabListMenu::session),
+            .map(crate::presentation::tab_strip::ActiveTabListMenu::session),
         Some(session),
         "preparation is read-only and cannot close the active session"
     );
@@ -1772,7 +1772,7 @@ fn owner_popup_geometry_unavailable_closes_only_after_the_contribution_batch() {
     );
     assert!(matches!(
         fixture.engine.presentation_requirements().popup(),
-        crate::tab_strip::PopupPlaneRequirement::Inactive { .. }
+        crate::presentation::tab_strip::PopupPlaneRequirement::Inactive { .. }
     ));
     assert!(fixture.engine.interaction_projection(surface).is_none());
     assert!(matches!(
@@ -2090,7 +2090,7 @@ fn menu_control_replaces_cross_surface_session_and_invalidates_both_owners() {
         );
         assert!(matches!(
             settled.presentation_requirements().popup(),
-            crate::tab_strip::PopupPlaneRequirement::Inactive { .. }
+            crate::presentation::tab_strip::PopupPlaneRequirement::Inactive { .. }
         ));
         assert!(settled.interaction_projection(first_surface).is_some());
         assert!(settled.interaction_projection(second_surface).is_none());

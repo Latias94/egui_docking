@@ -202,7 +202,8 @@ impl DockspaceHostFrame<'_> {
         &self,
         mappings: &[(NativeSurfaceBinding, SurfaceId)],
         workspace: &Workspace,
-    ) -> Result<Vec<crate::frame::PreparedNativeRootContinuation>, DockspaceRuntimeError> {
+    ) -> Result<Vec<crate::platform::frame::PreparedNativeRootContinuation>, DockspaceRuntimeError>
+    {
         let viewport = self.frame.view().viewport();
         let predecessors = mappings
             .iter()

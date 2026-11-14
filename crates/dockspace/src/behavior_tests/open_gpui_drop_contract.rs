@@ -17,18 +17,18 @@
 
 use super::support;
 
-use dockspace::command::{
-    CommandOutcome, DockFraction, DockTarget, Edge, MovePayload, WorkspaceCommand,
-};
-use dockspace::drop_guide::{DropGuideScope, DropGuideSlot};
-use dockspace::drop_target::DropTargetId;
+use dockspace::engine::transition::InputOutcome;
 use dockspace::engine::{DockEngine, EngineInput};
 use dockspace::geometry::LogicalRect;
+use dockspace::graph::command::{
+    CommandOutcome, DockFraction, DockTarget, Edge, MovePayload, WorkspaceCommand,
+};
 use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, NodeId, RootId, StableInputSourceId, SurfaceId};
+use dockspace::interaction::targeting::guide::{DropGuideScope, DropGuideSlot};
+use dockspace::interaction::targeting::targets::DropTargetId;
 use dockspace::policy::DockPolicy;
-use dockspace::scene::PresentationPlan;
-use dockspace::transition::InputOutcome;
+use dockspace::presentation::scene::PresentationPlan;
 
 const SOURCE_ROOT: RootId = RootId::new(1);
 const TARGET_ROOT: RootId = RootId::new(2);

@@ -1,23 +1,25 @@
 use super::support;
 
-use dockspace::command::{DockTarget, Edge, MovePayload, WorkspaceCommand};
-use dockspace::drop_guide::{
+use dockspace::engine::DockEngine;
+use dockspace::geometry::{LogicalPoint, LogicalRect};
+use dockspace::graph::command::{DockTarget, Edge, MovePayload, WorkspaceCommand};
+use dockspace::graph::{Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
+use dockspace::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
+use dockspace::interaction::targeting::guide::{
     DropGuideClusterRecord, DropGuideScope, DropGuideSlot, DropGuideTargetRecord,
 };
-use dockspace::drop_target::{
+use dockspace::interaction::targeting::targets::{
     DropTargetAvailability, DropTargetId, DropTargetLocation, DropTargetRecord,
     DropTargetUnavailable,
 };
-use dockspace::engine::DockEngine;
-use dockspace::geometry::{LogicalPoint, LogicalRect};
-use dockspace::graph::{Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
-use dockspace::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
 use dockspace::interaction::{DragGeneration, DragSessionId};
 use dockspace::policy::{
     CloseCapability, DockItemRule, DockPolicy, DockSurfaceRule, DockTargetRule, DockTargetRuleKey,
     TabBarInteraction, TabBarPolicy, TabBarVisibility,
 };
-use dockspace::scene::{SplitterGapPresentation, TabBarSceneId, TabGroupDragRegionKind};
+use dockspace::presentation::scene::{
+    SplitterGapPresentation, TabBarSceneId, TabGroupDragRegionKind,
+};
 use support::{TestPresentationHost, install_surface_projection, next_plan, publish_surface};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -142,7 +144,7 @@ fn rect_contains(outer: LogicalRect, inner: LogicalRect) -> bool {
 }
 
 fn canonical_target<'a>(
-    plan: &'a dockspace::scene::PresentationPlan,
+    plan: &'a dockspace::presentation::scene::PresentationPlan,
     guide: &DropGuideTargetRecord,
 ) -> &'a DropTargetRecord {
     plan.drop_targets()
@@ -446,7 +448,7 @@ fn empty_central_root_compiles_a_center_and_four_explicit_outer_guides() {
             .capture_item_source(source_root, source_tabs, source_item)
             .expect("source item is current"),
     );
-    let query = dockspace::drop_resolver::resolve_drop(
+    let query = dockspace::interaction::targeting::resolver::resolve_drop(
         engine.scene(),
         engine.workspace(),
         engine.policy_snapshot(),
@@ -457,7 +459,9 @@ fn empty_central_root_compiles_a_center_and_four_explicit_outer_guides() {
         point,
     )
     .expect("an empty central target must bind through the normal drop resolver");
-    let dockspace::drop_resolver::DropResolution::Resolved(resolved) = query.resolution() else {
+    let dockspace::interaction::targeting::resolver::DropResolution::Resolved(resolved) =
+        query.resolution()
+    else {
         panic!("the empty central center must accept a current source item");
     };
     assert!(matches!(

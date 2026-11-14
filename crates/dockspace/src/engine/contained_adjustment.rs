@@ -7,9 +7,9 @@ impl DockEngine {
     pub(super) fn resize_contained_from_candidate(
         &mut self,
         input: InputSequence,
-        candidate: &crate::scene::SurfacePlanScene,
+        candidate: &crate::presentation::scene::SurfacePlanScene,
         floating: FloatingPresentationId,
-        direction: crate::scene::ContainedResizeDirection,
+        direction: crate::presentation::scene::ContainedResizeDirection,
         delta: f64,
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
@@ -68,7 +68,7 @@ impl DockEngine {
         expected: WorkspaceVersion,
         scene: SurfaceSceneStamp,
         floating: FloatingPresentationId,
-        direction: crate::scene::ContainedResizeDirection,
+        direction: crate::presentation::scene::ContainedResizeDirection,
         delta: f64,
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
@@ -113,9 +113,9 @@ impl DockEngine {
     pub(super) fn prepare_cardinal_contained_resize_placement(
         &self,
         scene: SurfaceSceneStamp,
-        plan: &crate::scene::PresentationPlan,
+        plan: &crate::presentation::scene::PresentationPlan,
         floating: FloatingPresentationId,
-        direction: crate::scene::ContainedResizeDirection,
+        direction: crate::presentation::scene::ContainedResizeDirection,
         delta: f64,
     ) -> Result<ContainedPlacementInput, InteractionRejection> {
         let surface = scene.surface();
@@ -222,7 +222,7 @@ impl DockEngine {
     }
 
     pub(super) fn contained_placement_from_local_candidate(
-        candidate: &crate::scene::SurfacePlanScene,
+        candidate: &crate::presentation::scene::SurfacePlanScene,
         workspace: WorkspaceVersion,
         surface: crate::ids::SurfaceId,
         requested_rect: crate::geometry::LogicalRect,
@@ -318,7 +318,7 @@ impl DockEngine {
 
     pub(super) fn validate_contained_placement_geometry(
         proof: ContainedPlacementProof,
-        ready: &crate::scene::SurfacePlanScene,
+        ready: &crate::presentation::scene::SurfacePlanScene,
     ) -> Result<(), ContainedPlacementUnavailable> {
         if ready.stamp() != proof.scene() {
             return Err(ContainedPlacementUnavailable::StaleScene {

@@ -1,12 +1,12 @@
 use std::collections::BTreeSet;
 
-use dockspace::command::{
+use dockspace::graph::command::{
     DockFraction, DockTarget, Edge, MovePayload, SplitResize, WorkspaceCommand,
 };
+use dockspace::graph::transaction::WorkspaceTransaction;
 use dockspace::graph::{Axis, Node, RootRecord, SplitWeight, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, NodeId, RootId, SurfaceId};
 use dockspace::policy::DockPolicySnapshot;
-use dockspace::transaction::WorkspaceTransaction;
 
 const ROOT: RootId = RootId::new(1);
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -444,7 +444,7 @@ fn axis_for_edge(edge: Edge) -> Axis {
 
 fn assert_success_postcondition(
     delta: &ModelDelta,
-    report: &dockspace::transaction::TransactionReport,
+    report: &dockspace::graph::transaction::TransactionReport,
     before: &Workspace,
     after: &Workspace,
 ) {
@@ -454,7 +454,7 @@ fn assert_success_postcondition(
         ModelDelta::Select { tabs, item } => {
             assert!(matches!(
                 report.outcomes(),
-                [dockspace::command::CommandOutcome::Selected {
+                [dockspace::graph::command::CommandOutcome::Selected {
                     item: actual_item,
                     tabs: actual_tabs,
                     ..
@@ -478,7 +478,7 @@ fn assert_success_postcondition(
         } => {
             assert!(matches!(
                 report.outcomes(),
-                [dockspace::command::CommandOutcome::Reordered {
+                [dockspace::graph::command::CommandOutcome::Reordered {
                     item: actual_item,
                     tabs: actual_tabs,
                     from: actual_from,
@@ -502,7 +502,7 @@ fn assert_success_postcondition(
         } => {
             assert!(matches!(
                 report.outcomes(),
-                [dockspace::command::CommandOutcome::Moved {
+                [dockspace::graph::command::CommandOutcome::Moved {
                     items,
                     target_root: actual_root,
                     ..
@@ -527,7 +527,7 @@ fn assert_success_postcondition(
             fraction,
         } => {
             let [
-                dockspace::command::CommandOutcome::Moved {
+                dockspace::graph::command::CommandOutcome::Moved {
                     items,
                     target_root: actual_root,
                     changed,
@@ -574,7 +574,7 @@ fn assert_success_postcondition(
         ModelDelta::Open { target_tabs, item } => {
             assert!(matches!(
                 report.outcomes(),
-                [dockspace::command::CommandOutcome::Opened { item: actual, root }]
+                [dockspace::graph::command::CommandOutcome::Opened { item: actual, root }]
                     if actual == item && *root == ROOT
             ));
             assert!(matches!(
@@ -586,7 +586,7 @@ fn assert_success_postcondition(
         ModelDelta::Resize { split, weights } => {
             assert!(matches!(
                 report.outcomes(),
-                [dockspace::command::CommandOutcome::SplitsResized {
+                [dockspace::graph::command::CommandOutcome::SplitsResized {
                     splits,
                     changed: true,
                 }] if splits == &[*split]

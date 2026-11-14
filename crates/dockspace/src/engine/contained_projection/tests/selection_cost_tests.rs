@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::drop_resolver::structural_work;
+use crate::interaction::targeting::resolver::structural_work;
 
 fn assert_linear_resize_selection_cost(pane_count: usize) {
     let (mut session, before) = fixture(pane_count);

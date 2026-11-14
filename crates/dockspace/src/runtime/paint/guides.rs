@@ -2,14 +2,14 @@
 
 use std::fmt;
 
-use crate::drop_guide::{DropGuideScope, DropGuideSlot};
-use crate::drop_resolver::{
+use crate::geometry::LogicalRect;
+use crate::ids::{RootId, SurfaceId};
+use crate::interaction::targeting::guide::{DropGuideScope, DropGuideSlot};
+use crate::interaction::targeting::resolver::{
     DropAffordance, DropAffordanceCluster, DropAffordanceTarget,
     DropGuideEligibility as CoreDropGuideEligibility, DropGuideTargetKey,
 };
-use crate::drop_target::DropTargetId;
-use crate::geometry::LogicalRect;
-use crate::ids::{RootId, SurfaceId};
+use crate::interaction::targeting::targets::DropTargetId;
 
 use super::{DockspacePaintLayer, DockspaceVisualId, VisualIdentity};
 
@@ -41,10 +41,10 @@ impl DockspaceDropDirection {
     const fn from_core(slot: DropGuideSlot) -> Self {
         match slot {
             DropGuideSlot::Center => Self::Center,
-            DropGuideSlot::Edge(crate::command::Edge::Left) => Self::Left,
-            DropGuideSlot::Edge(crate::command::Edge::Right) => Self::Right,
-            DropGuideSlot::Edge(crate::command::Edge::Top) => Self::Top,
-            DropGuideSlot::Edge(crate::command::Edge::Bottom) => Self::Bottom,
+            DropGuideSlot::Edge(crate::graph::command::Edge::Left) => Self::Left,
+            DropGuideSlot::Edge(crate::graph::command::Edge::Right) => Self::Right,
+            DropGuideSlot::Edge(crate::graph::command::Edge::Top) => Self::Top,
+            DropGuideSlot::Edge(crate::graph::command::Edge::Bottom) => Self::Bottom,
         }
     }
 }
@@ -62,7 +62,7 @@ pub enum DockspaceDropEligibility {
 #[derive(Clone, Copy)]
 pub struct DropGuideTargetPaintRecord<'plan> {
     pub(super) slot: DropGuideSlot,
-    pub(super) record: &'plan crate::drop_guide::DropGuideTargetRecord,
+    pub(super) record: &'plan crate::interaction::targeting::guide::DropGuideTargetRecord,
 }
 
 impl fmt::Debug for DropGuideTargetPaintRecord<'_> {
@@ -277,7 +277,7 @@ impl<'plan> DropAffordancePaintRecord<'plan> {
 /// Read-only complete docking-guide cluster.
 #[derive(Clone, Copy)]
 pub struct DropGuidePaintRecord<'plan> {
-    pub(super) record: &'plan crate::drop_guide::DropGuideClusterRecord,
+    pub(super) record: &'plan crate::interaction::targeting::guide::DropGuideClusterRecord,
 }
 
 impl fmt::Debug for DropGuidePaintRecord<'_> {

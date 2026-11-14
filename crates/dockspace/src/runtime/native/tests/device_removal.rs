@@ -1,5 +1,5 @@
 use super::*;
-use crate::pointer_journal::AnyButtonDownAuthority;
+use crate::input::journal::AnyButtonDownAuthority;
 use crate::runtime::{HostInputOutcome, NativeInputBudget, NativeMonotonicClock};
 use std::time::Duration;
 

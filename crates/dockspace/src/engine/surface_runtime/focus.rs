@@ -8,7 +8,7 @@ impl DockEngine {
         input: InputSequence,
         provider: PlatformObservationLease,
         expected_epoch: crate::ids::WorkspaceEpoch,
-        observation: crate::viewport_focus::FocusObservationEnvelope,
+        observation: crate::platform::focus::FocusObservationEnvelope,
         focus_causal: FocusCausalStamp,
         application_base: &mut crate::model::WorkspaceVersion,
         events: &mut Vec<WorkspaceEvent>,
@@ -38,7 +38,7 @@ impl DockEngine {
         &mut self,
         input: InputSequence,
         provider: PlatformObservationLease,
-        observation: crate::viewport_focus::FocusObservationEnvelope,
+        observation: crate::platform::focus::FocusObservationEnvelope,
         focus_causal: FocusCausalStamp,
         events: &mut Vec<WorkspaceEvent>,
     ) -> Result<FocusObservationTransition, EngineError> {
@@ -46,11 +46,11 @@ impl DockEngine {
         let activatable = self.focus_binding_snapshot(|record| record.can_accept_activation());
         let reportable = self.focus_fact_window_snapshot(|record| record.can_report_focus_fact());
         let isolated = self.focus_fact_window_snapshot(|record| {
-            record.admission() == crate::viewport_registry::ViewportAdmission::Pending
+            record.admission() == crate::platform::registry::ViewportAdmission::Pending
                 || self.native_source_surface_is_held(record.binding().surface())
         });
         let mut retired_binding = false;
-        if let Authority::Known(crate::viewport_focus::GlobalFocusedWindow::Dock(binding)) =
+        if let Authority::Known(crate::platform::focus::GlobalFocusedWindow::Dock(binding)) =
             observation.focused()
             && !reportable.contains(binding)
         {
@@ -72,7 +72,7 @@ impl DockEngine {
             Authority::Known(Some(_) | None) => Authority::Known(None),
             Authority::Unknown(reason) => Authority::Unknown(reason),
         };
-        let observation = crate::viewport_focus::FocusObservationEnvelope::new(
+        let observation = crate::platform::focus::FocusObservationEnvelope::new(
             observation.generation(),
             *observation.focused(),
             acknowledged_effect,
@@ -121,7 +121,7 @@ impl DockEngine {
     fn focus_effect_acknowledgement_is_valid(
         &self,
         provider: PlatformObservationLease,
-        effect: crate::effect::EffectId,
+        effect: crate::platform::effect::EffectId,
     ) -> bool {
         let Some(binding) = self.focus_effect_binding(effect) else {
             return false;
@@ -129,7 +129,7 @@ impl DockEngine {
         self.viewport
             .viewport(binding.surface())
             .filter(|record| record.can_observe_focus())
-            .map(crate::viewport_registry::ViewportRecord::binding)
+            .map(crate::platform::registry::ViewportRecord::binding)
             == Some(binding)
             && self
                 .viewport
@@ -139,7 +139,7 @@ impl DockEngine {
     fn settle_acknowledged_focus_effect(
         &mut self,
         provider: PlatformObservationLease,
-        observation: crate::viewport_focus::FocusObservationEnvelope,
+        observation: crate::platform::focus::FocusObservationEnvelope,
     ) -> Option<ObservedPlatformFocusEffect> {
         let Authority::Known(Some(effect)) = *observation.acknowledged_effect() else {
             return None;
@@ -168,7 +168,7 @@ impl DockEngine {
                 .viewport
                 .viewport(binding.surface())
                 .filter(|record| record.can_observe_focus())
-                .map(crate::viewport_registry::ViewportRecord::binding)
+                .map(crate::platform::registry::ViewportRecord::binding)
                 != Some(binding)
         {
             return false;
@@ -180,11 +180,11 @@ impl DockEngine {
 
     fn focus_effect_binding(
         &self,
-        effect: crate::effect::EffectId,
-    ) -> Option<crate::viewport::ViewportBinding> {
+        effect: crate::platform::effect::EffectId,
+    ) -> Option<crate::platform::viewport::ViewportBinding> {
         let record = self.viewport.effects().record(effect)?;
         match record.request().effect() {
-            crate::effect::PlatformEffect::RequestFocus { binding, .. } => Some(*binding),
+            crate::platform::effect::PlatformEffect::RequestFocus { binding, .. } => Some(*binding),
             _ => None,
         }
     }
@@ -203,7 +203,7 @@ impl DockEngine {
                 accepted_base: application_base,
             });
         }
-        if request.cause() != crate::viewport_focus::ViewportActivationCause::Explicit {
+        if request.cause() != crate::platform::focus::ViewportActivationCause::Explicit {
             return Ok(InputOutcome::ViewportActivationRejected { request });
         }
         let activation = self.start_viewport_activation(request, focus_causal, events)?;
@@ -257,7 +257,7 @@ impl DockEngine {
                             matches!(
                                 observation.focused(),
                                 Authority::Known(
-                                    crate::viewport_focus::GlobalFocusedWindow::Dock(binding)
+                                    crate::platform::focus::GlobalFocusedWindow::Dock(binding)
                                 ) if *binding == request.target().window()
                             )
                         });
@@ -442,11 +442,11 @@ impl DockEngine {
                 source,
             })?;
         let stale_tear_off_was_superseded = request.cause()
-            == crate::viewport_focus::ViewportActivationCause::TearOffCommitted
+            == crate::platform::focus::ViewportActivationCause::TearOffCommitted
             && matches!(
                 activation.outcome(),
                 ActivationStartOutcome::Suppressed(
-                    crate::viewport_focus::ActivationSuppression::CausallySuperseded { .. }
+                    crate::platform::focus::ActivationSuppression::CausallySuperseded { .. }
                 )
             );
         if stale_tear_off_was_superseded
@@ -473,7 +473,7 @@ impl DockEngine {
 
     fn establish_winning_focus_lifecycle_barrier(
         &mut self,
-        stale_target: crate::viewport::ViewportBinding,
+        stale_target: crate::platform::viewport::ViewportBinding,
         focus_causal: FocusCausalStamp,
         events: &mut Vec<WorkspaceEvent>,
     ) -> Result<Option<ActivationStart>, EngineError> {
@@ -545,7 +545,7 @@ impl DockEngine {
         if self
             .viewport_focus
             .attach_platform_focus_effect(pending.generation(), effect)
-            != crate::viewport_focus::FocusEffectAttachment::Applied
+            != crate::platform::focus::FocusEffectAttachment::Applied
         {
             return Err(EngineError::ViewportFocus {
                 input,
@@ -592,18 +592,18 @@ impl DockEngine {
             CommandApplication::Applied { .. } => Ok(None),
             CommandApplication::Rejected(error) => {
                 let reason = match error {
-                    crate::error::CommandError::SurfaceLifecycleFrozen { surface } => {
+                    crate::graph::error::CommandError::SurfaceLifecycleFrozen { surface } => {
                         PaneFocusRevealRejection::SurfaceLifecycleFrozen { surface }
                     }
-                    crate::error::CommandError::Policy(_) => {
+                    crate::graph::error::CommandError::Policy(_) => {
                         PaneFocusRevealRejection::PolicyRejected
                     }
-                    crate::error::CommandError::MissingRoot { .. }
-                    | crate::error::CommandError::MissingNode { .. }
-                    | crate::error::CommandError::NodeOutsideRoot { .. }
-                    | crate::error::CommandError::StaleNode { .. }
-                    | crate::error::CommandError::NodeIsNotTabs { .. }
-                    | crate::error::CommandError::ItemNotInTabs { .. } => {
+                    crate::graph::error::CommandError::MissingRoot { .. }
+                    | crate::graph::error::CommandError::MissingNode { .. }
+                    | crate::graph::error::CommandError::NodeOutsideRoot { .. }
+                    | crate::graph::error::CommandError::StaleNode { .. }
+                    | crate::graph::error::CommandError::NodeIsNotTabs { .. }
+                    | crate::graph::error::CommandError::ItemNotInTabs { .. } => {
                         PaneFocusRevealRejection::ItemUnavailable { item }
                     }
                     _ => PaneFocusRevealRejection::WorkspaceRejected,
@@ -655,8 +655,8 @@ impl DockEngine {
 
     fn focus_binding_snapshot(
         &self,
-        include: impl Fn(crate::viewport_registry::ViewportRecord<'_>) -> bool,
-    ) -> BTreeSet<crate::viewport::ViewportBinding> {
+        include: impl Fn(crate::platform::registry::ViewportRecord<'_>) -> bool,
+    ) -> BTreeSet<crate::platform::viewport::ViewportBinding> {
         self.viewport
             .registry()
             .records()
@@ -669,8 +669,8 @@ impl DockEngine {
 
     fn focus_fact_window_snapshot(
         &self,
-        include: impl Fn(crate::viewport_registry::ViewportRecord<'_>) -> bool,
-    ) -> BTreeSet<crate::viewport::WindowBinding> {
+        include: impl Fn(crate::platform::registry::ViewportRecord<'_>) -> bool,
+    ) -> BTreeSet<crate::platform::viewport::WindowBinding> {
         self.viewport
             .registry()
             .records()

@@ -2,15 +2,15 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::command::{NodeSource, SplitResize};
 use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize};
+use crate::graph::command::{NodeSource, SplitResize};
 use crate::graph::{Axis, Node, SplitWeight, Workspace};
 use crate::ids::{NodeId, RootId};
 use crate::interaction::{
     ActiveResize, FrozenResizeAxisGroup, FrozenResizeSplit, ResizeDeltaInterval,
 };
-use crate::layout::{LayoutProjection, SplitProjection};
-use crate::scene::{PresentationPlan, SplitterRecord};
+use crate::presentation::layout::{LayoutProjection, SplitProjection};
+use crate::presentation::scene::{PresentationPlan, SplitterRecord};
 
 pub(super) fn split_resize_updates(
     resize: &ActiveResize,
@@ -52,7 +52,7 @@ pub(super) fn prepare_resize_axis_groups(
                         id.root,
                         id.split,
                         source.reference(),
-                        crate::error::ReferenceRole::Source,
+                        crate::graph::error::ReferenceRole::Source,
                     )
                     .ok()?;
                 entry.insert(source.clone());

@@ -2,30 +2,30 @@ use super::support;
 
 use support::TestPresentationHost;
 
-use dockspace::command::{DockTarget, WorkspaceCommand};
+use dockspace::engine::transition::{InputOutcome, InputPriority};
 use dockspace::engine::{
     CoreHostFrame, CoreHostFrameError, DockEngine, EngineError, EngineInput,
     HostPresentationUnavailableReason,
 };
 use dockspace::geometry::{LogicalPoint, LogicalRect};
+use dockspace::graph::command::{DockTarget, WorkspaceCommand};
 use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{
     ItemId, ReducerTickId, RootId, SourceSequence, StableInputSourceId, SurfaceId,
 };
-use dockspace::intent::{Authority, PointerButton, PointerId};
-use dockspace::interaction::{InteractionCancelReason, InteractionOutcome, InteractionStatus};
-use dockspace::pointer_journal::{
+use dockspace::input::intent::{Authority, PointerButton, PointerId};
+use dockspace::input::journal::{
     PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
     PointerEdgeSequence, SurfaceLocalPointerEndpoint, SurfaceLocalPointerProvider,
     SurfaceLocalPointerScope,
 };
-use dockspace::pointer_receiver::{
+use dockspace::input::receiver::{
     PointerReceiverDelivery, PointerReceiverDeliveryDisposition, PointerReceiverObservation,
     PointerReceiverProbeReceipt, PointerReceiverReceiptBatch, PresentedPointerReceiverObservation,
 };
+use dockspace::interaction::{InteractionCancelReason, InteractionOutcome, InteractionStatus};
 use dockspace::policy::DockPolicy;
-use dockspace::presentation_hit::{PresentationHitRegionId, PresentationHitRegionKind};
-use dockspace::transition::{InputOutcome, InputPriority};
+use dockspace::presentation::hit::{PresentationHitRegionId, PresentationHitRegionKind};
 
 const SOURCE_A: StableInputSourceId = StableInputSourceId::new(10);
 const SOURCE_B: StableInputSourceId = StableInputSourceId::new(20);
@@ -504,7 +504,7 @@ fn explicit_unavailable_roster_frames_are_boundaries_without_input_progress() {
     assert!(second.reduced_inputs().is_empty());
     assert!(first.surface_contributions().iter().all(|outcome| matches!(
         outcome,
-        dockspace::transition::SurfaceContributionOutcome::Unavailable { .. }
+        dockspace::engine::transition::SurfaceContributionOutcome::Unavailable { .. }
     )));
     assert_eq!(engine.last_input_sequence().get(), 0);
 }
@@ -589,7 +589,7 @@ fn stage_pointer_edge(
 
 fn active_resize_region(
     engine: &DockEngine,
-    splitter: dockspace::scene::SplitterSceneId,
+    splitter: dockspace::presentation::scene::SplitterSceneId,
 ) -> Option<PresentationHitRegionId> {
     engine
         .interaction_projection(RESIZE_SURFACE)?
@@ -626,7 +626,12 @@ fn publish_resize_scene(
     engine: &mut DockEngine,
     host: &mut TestPresentationHost,
     split: dockspace::ids::NodeId,
-) -> (dockspace::scene::SplitterSceneId, LogicalPoint, f64, f64) {
+) -> (
+    dockspace::presentation::scene::SplitterSceneId,
+    LogicalPoint,
+    f64,
+    f64,
+) {
     let bounds = LogicalRect::new(0.0, 0.0, 400.0, 200.0).expect("bounds are valid");
     support::publish_surface(engine, host, SurfaceId::new(1), bounds);
     let painted = engine

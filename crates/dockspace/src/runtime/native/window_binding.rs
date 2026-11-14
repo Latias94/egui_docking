@@ -1,7 +1,7 @@
 //! Opaque provider-bound identity of one real native-window lifetime.
 
-use crate::platform_provider::PlatformObservationLease;
-use crate::viewport::WindowBinding;
+use crate::platform::provider::PlatformObservationLease;
+use crate::platform::viewport::WindowBinding;
 
 use super::HostWindowToken;
 
@@ -51,9 +51,9 @@ impl NativeWindowBinding {
 mod tests {
     use super::*;
     use crate::ids::{EngineAuthorityDomainId, SurfaceId, WorkspaceEpoch};
-    use crate::platform_provider::PlatformObservationAuthority;
+    use crate::platform::provider::PlatformObservationAuthority;
+    use crate::platform::viewport::{ViewportBinding, WindowIncarnation, WindowToken};
     use crate::runtime::native::NativeSurfaceBinding;
-    use crate::viewport::{ViewportBinding, WindowIncarnation, WindowToken};
 
     fn surface(
         provider: PlatformObservationLease,

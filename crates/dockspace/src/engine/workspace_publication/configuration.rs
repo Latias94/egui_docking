@@ -9,8 +9,8 @@ impl DockEngine {
         focus_causal: FocusCausalStamp,
         workspace: &Workspace,
         restored_identity_frontier: Option<PresentationIdentityFrontier>,
-        native_surfaces: Option<&crate::frame::NativeSurfaceRestorePlan>,
-        root_continuations: &[crate::frame::PreparedNativeRootContinuation],
+        native_surfaces: Option<&crate::platform::frame::NativeSurfaceRestorePlan>,
+        root_continuations: &[crate::platform::frame::PreparedNativeRootContinuation],
         application_base: &mut WorkspaceVersion,
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
@@ -21,7 +21,7 @@ impl DockEngine {
                 reason: crate::policy::PolicyRejection::ArrangementLocked,
             });
         }
-        let replacement = crate::operation::WorkspaceSnapshot::validated(workspace.clone())
+        let replacement = crate::graph::operation::WorkspaceSnapshot::validated(workspace.clone())
             .map_err(EngineError::InvalidWorkspace)?;
         let previous_focus = self.viewport_focus.workspace_replacement_focus();
         let mut native_focus_surfaces = self
@@ -77,7 +77,7 @@ impl DockEngine {
                 if !self.viewport.viewport(root).is_some_and(|record| {
                     record.role() == ViewportRole::Root
                         && record.ownership()
-                            == crate::viewport_registry::ViewportOwnership::External
+                            == crate::platform::registry::ViewportOwnership::External
                 }) || !self.root_recovery_anchors.contains_key(&root)
                 {
                     return Err(EngineError::NativeWorkspaceRootUnavailable {

@@ -8,7 +8,7 @@ use crate::engine::*;
 impl DockEngine {
     pub(super) fn stage_workspace_publication(
         &self,
-        candidate: impl Into<crate::operation::WorkspaceSnapshot>,
+        candidate: impl Into<crate::graph::operation::WorkspaceSnapshot>,
         policy: &DockPolicySnapshot,
     ) -> Result<StagedWorkspacePublication, CommandError> {
         self.stage_workspace_publication_with_authority(
@@ -20,7 +20,7 @@ impl DockEngine {
 
     pub(super) fn stage_workspace_publication_with_authority(
         &self,
-        candidate: impl Into<crate::operation::WorkspaceSnapshot>,
+        candidate: impl Into<crate::graph::operation::WorkspaceSnapshot>,
         policy: &DockPolicySnapshot,
         authority: WorkspacePublicationAuthority,
     ) -> Result<StagedWorkspacePublication, CommandError> {
@@ -128,7 +128,7 @@ impl DockEngine {
                     == Some((*surface, obligation.id()))
                     || window_recovery == Some(bound.binding.window()))
                     && candidate.presentation_for_root(converted.source_root())
-                        == Some(crate::RootPresentationOwner::Contained {
+                        == Some(crate::graph::workspace::RootPresentationOwner::Contained {
                             surface: obligation.target().host_surface(),
                             floating: converted.floating(),
                         });
@@ -141,7 +141,7 @@ impl DockEngine {
                             && floating == converted.floating()
                 ) && candidate
                     .presentation_for_root(converted.source_root())
-                    == Some(crate::RootPresentationOwner::Contained {
+                    == Some(crate::graph::workspace::RootPresentationOwner::Contained {
                         surface: obligation.target().host_surface(),
                         floating: converted.floating(),
                     });
@@ -184,7 +184,7 @@ impl DockEngine {
                 // unrelated create while that exact source is unchanged.
                 let source_preserved = matches!(
                     self.workspace.presentation_for_root(converted.source_root()),
-                    Some(crate::RootPresentationOwner::Contained { surface: source_surface, floating })
+                    Some(crate::graph::workspace::RootPresentationOwner::Contained { surface: source_surface, floating })
                         if source_surface == prepared.source_surface() && floating == converted.floating()
                 ) && candidate
                     .presentation_for_root(converted.source_root())
@@ -319,9 +319,9 @@ impl DockEngine {
         {
             return Ok((
                 None,
-                CommandApplication::Rejected(crate::error::CommandError::SurfaceLifecycleFrozen {
-                    surface,
-                }),
+                CommandApplication::Rejected(
+                    crate::graph::error::CommandError::SurfaceLifecycleFrozen { surface },
+                ),
             ));
         }
         let application = Self::command_application_from_report(input, report)?;
@@ -431,7 +431,7 @@ impl DockEngine {
 
     pub(super) fn command_application_from_report(
         input: InputSequence,
-        report: crate::transaction::TransactionReport,
+        report: crate::graph::transaction::TransactionReport,
     ) -> Result<CommandApplication, EngineError> {
         let changed = report.changed();
         let outcome = report

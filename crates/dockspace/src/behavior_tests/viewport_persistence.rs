@@ -2,11 +2,11 @@
 
 use dockspace::geometry::{PhysicalRect, ScaleFactor};
 use dockspace::ids::SurfaceId;
-use dockspace::viewport::WorkAreaToken;
-use dockspace::viewport_persistence::{
+use dockspace::persistence::placement::{
     ViewportPlacementPreference, ViewportPlacementPreferences, ViewportPlacementRestoreError,
     WindowPresentationPreference,
 };
+use dockspace::platform::viewport::WorkAreaToken;
 
 const FIRST_SURFACE: SurfaceId = SurfaceId::new(7);
 const SECOND_SURFACE: SurfaceId = SurfaceId::new(11);

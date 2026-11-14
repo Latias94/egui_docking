@@ -3,7 +3,7 @@
 use crate::geometry::LogicalRect;
 use crate::ids::{ItemId, RootId};
 use crate::policy::TabBarInteraction;
-use crate::scene::{
+use crate::presentation::scene::{
     PaneRecord, TabBarRecord, TabBarSceneId, TabGroupDragRegionKind, TabGroupDragRegionRecord,
     TabRecord, TabStripMemberRecord, TabStripMemberVisibility as CoreTabStripMemberVisibility,
 };
@@ -256,10 +256,12 @@ impl<'plan> TabBarPaintRecord<'plan> {
     #[must_use]
     pub const fn pane_visual_id(self) -> DockspaceVisualId {
         let bar = self.record.id();
-        DockspaceVisualId(VisualIdentity::Pane(crate::scene::PaneSceneId {
-            root: bar.root,
-            tabs: bar.tabs,
-        }))
+        DockspaceVisualId(VisualIdentity::Pane(
+            crate::presentation::scene::PaneSceneId {
+                root: bar.root,
+                tabs: bar.tabs,
+            },
+        ))
     }
 
     #[must_use]

@@ -36,9 +36,11 @@ impl DockEngine {
         let staged = if let Some(prepared) = prepared {
             // Release still checks the exact current command and policy. Only
             // its already validated, uniquely owned graph draft is reused.
-            if let Err(error) =
-                crate::operation::authorize_workspace_command(&self.workspace, policy, command)
-            {
+            if let Err(error) = crate::graph::operation::authorize_workspace_command(
+                &self.workspace,
+                policy,
+                command,
+            ) {
                 return Ok(Err(error));
             }
             let (workspace, report) =
@@ -133,8 +135,8 @@ impl DockEngine {
         policy: &DockPolicySnapshot,
         authority: WorkspacePublicationAuthority,
         activation: JournalDeliveryActivation,
-        workspace: impl Into<crate::operation::WorkspaceSnapshot>,
-        report: &crate::transaction::TransactionReport,
+        workspace: impl Into<crate::graph::operation::WorkspaceSnapshot>,
+        report: &crate::graph::transaction::TransactionReport,
     ) -> Result<Result<StagedJournalWorkspaceCommand, CommandError>, EngineError> {
         let mut workspace = workspace.into();
         let mut changed = report.changed();
@@ -147,10 +149,10 @@ impl DockEngine {
                 .filter(|(root, _, _)| *root == source_root)
                 .and_then(|(root, _, _)| workspace.presentation_for_root(root))
                 .and_then(|owner| match owner {
-                    crate::RootPresentationOwner::Contained { floating, .. } => {
-                        Some(JournalDeliveryActivation::RaiseContained(floating))
-                    }
-                    crate::RootPresentationOwner::Main { .. } => None,
+                    crate::graph::workspace::RootPresentationOwner::Contained {
+                        floating, ..
+                    } => Some(JournalDeliveryActivation::RaiseContained(floating)),
+                    crate::graph::workspace::RootPresentationOwner::Main { .. } => None,
                 }),
             JournalDeliveryActivation::None | JournalDeliveryActivation::RaiseContained(_) => None,
         };
@@ -238,8 +240,9 @@ impl DockEngine {
                 let contained = workspace
                     .contained_floating(floating)
                     .ok_or(CommandError::MissingFloating { floating })?;
-                let Some(crate::RootPresentationOwner::Contained { surface, .. }) =
-                    workspace.presentation_for_root(contained.root)
+                let Some(crate::graph::workspace::RootPresentationOwner::Contained {
+                    surface, ..
+                }) = workspace.presentation_for_root(contained.root)
                 else {
                     return Err(CommandError::Invariant {
                         stage: "raise delivered contained manipulation",
@@ -294,8 +297,8 @@ impl DockEngine {
 
     pub(in crate::engine) fn coordinate_capture_matches_current(
         capture: SurfaceCoordinateCapture,
-        current: Option<crate::viewport_registry::ViewportRecord<'_>>,
-        current_authority: crate::viewport::CoordinateGeneration,
+        current: Option<crate::platform::registry::ViewportRecord<'_>>,
+        current_authority: crate::platform::viewport::CoordinateGeneration,
     ) -> bool {
         match capture {
             SurfaceCoordinateCapture::Headless {
@@ -342,8 +345,8 @@ impl DockEngine {
 
     pub(in crate::engine) fn coordinate_capture_incarnation_is_current(
         capture: SurfaceCoordinateCapture,
-        current: Option<crate::viewport_registry::ViewportRecord<'_>>,
-        current_authority: crate::viewport::CoordinateGeneration,
+        current: Option<crate::platform::registry::ViewportRecord<'_>>,
+        current_authority: crate::platform::viewport::CoordinateGeneration,
     ) -> bool {
         match Self::coordinate_capture_binding(capture) {
             Some(binding) => current.is_some_and(|record| record.binding() == binding),
@@ -353,7 +356,7 @@ impl DockEngine {
 
     pub(in crate::engine) const fn coordinate_capture_binding(
         capture: SurfaceCoordinateCapture,
-    ) -> Option<crate::viewport::ViewportBinding> {
+    ) -> Option<crate::platform::viewport::ViewportBinding> {
         match capture {
             SurfaceCoordinateCapture::Headless { .. } => None,
             SurfaceCoordinateCapture::NativeUnavailable { binding, .. } => Some(binding),

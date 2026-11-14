@@ -36,11 +36,11 @@ fn a_resize_frontier_validates_each_root_once_without_lending_its_source_proof()
             )
         })
         .collect::<Vec<_>>();
-    crate::drop_resolver::structural_work::reset();
+    crate::interaction::targeting::resolver::structural_work::reset();
     let validated = validate_split_resizes_structure(&workspace, &splits).unwrap();
     assert_eq!(validated.len(), SPLITS);
     assert!(validated.iter().all(|(_, changed)| *changed));
-    let work = crate::drop_resolver::structural_work::snapshot();
+    let work = crate::interaction::targeting::resolver::structural_work::snapshot();
     assert_eq!(work.root_fingerprint_builds, 0);
     assert_eq!(work.root_fingerprint_node_visits, 0);
 

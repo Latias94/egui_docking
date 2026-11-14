@@ -1,5 +1,5 @@
 use super::*;
-use crate::backend_ingress::BackendIngressPayload;
+use crate::input::ingress::BackendIngressPayload;
 use std::cell::Cell;
 use std::num::NonZeroUsize;
 use std::panic::{AssertUnwindSafe, catch_unwind};

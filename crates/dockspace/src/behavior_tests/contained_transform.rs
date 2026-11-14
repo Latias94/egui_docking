@@ -1,26 +1,26 @@
 use super::support;
 
+use dockspace::engine::transition::EngineTransition;
 use dockspace::engine::{CoreHostFrame, DockEngine};
 use dockspace::geometry::{LogicalPoint, LogicalRect};
 use dockspace::graph::{ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
-use dockspace::intent::{Authority, PointerButton, PointerId};
-use dockspace::interaction::{InteractionOutcome, InteractionStatus};
-use dockspace::pointer_journal::{
+use dockspace::input::intent::{Authority, PointerButton, PointerId};
+use dockspace::input::journal::{
     PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
     PointerEdgeSequence, SurfaceLocalPointerEndpoint, SurfaceLocalPointerProvider,
     SurfaceLocalPointerScope,
 };
-use dockspace::pointer_receiver::{
+use dockspace::input::receiver::{
     PointerReceiverDelivery, PointerReceiverDeliveryDisposition, PointerReceiverObservation,
     PointerReceiverProbe, PointerReceiverProbeReceipt, PointerReceiverReceiptBatch,
     PresentedPointerReceiverObservation,
 };
+use dockspace::interaction::{InteractionOutcome, InteractionStatus};
 use dockspace::policy::DockPolicy;
-use dockspace::presentation_config::DockPresentationConfig;
-use dockspace::presentation_hit::{PresentationHitRegionId, PresentationHitRegionKind};
-use dockspace::scene::ContainedResizeDirection;
-use dockspace::transition::EngineTransition;
+use dockspace::presentation::config::DockPresentationConfig;
+use dockspace::presentation::hit::{PresentationHitRegionId, PresentationHitRegionKind};
+use dockspace::presentation::scene::ContainedResizeDirection;
 use support::{
     TestPresentationHost, complete_host_frame_with_current_outputs,
     complete_host_frame_with_retained_or_unavailable, publish_surface,
@@ -248,7 +248,7 @@ fn submit_edge(
 
 fn receiver_observation(
     frame: &CoreHostFrame,
-    probes: dockspace::pointer_receiver::PointerReceiverProbeRequest,
+    probes: dockspace::input::receiver::PointerReceiverProbeRequest,
     delivery: Option<PresentationHitRegionId>,
     position: LogicalPoint,
 ) -> PointerReceiverObservation {

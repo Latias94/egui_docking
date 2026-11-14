@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::presentation_observation::{HostFrameKey, HostPresentationObservationOutcome};
+use crate::presentation::observation::{HostFrameKey, HostPresentationObservationOutcome};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::engine) enum PresentationProgress {

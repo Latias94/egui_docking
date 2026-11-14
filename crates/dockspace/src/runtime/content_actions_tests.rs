@@ -1,7 +1,7 @@
 //! Core host-frame regressions for content actions and published close queries.
 
 use super::*;
-use crate::close_plan::{
+use crate::close::plan::{
     CloseDecision, CloseItemDecisionState, ClosePlanTarget, DeferredCloseDecision,
 };
 use crate::geometry::{LogicalRect, LogicalSize};

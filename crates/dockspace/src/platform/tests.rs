@@ -1,5 +1,5 @@
 use super::*;
-use crate::viewport_focus::{FocusObservationGeneration, unknown_focus_observation};
+use crate::platform::focus::{FocusObservationGeneration, unknown_focus_observation};
 
 fn unknown_focus(generation: u64) -> FocusObservationEnvelope {
     unknown_focus_observation(
@@ -46,7 +46,7 @@ fn binding(incarnation: u64) -> ViewportBinding {
         crate::ids::WorkspaceEpoch::new(1),
         crate::ids::SurfaceId::new(2),
         WindowToken::new(3),
-        crate::viewport::WindowIncarnation::new(incarnation),
+        crate::platform::viewport::WindowIncarnation::new(incarnation),
     )
 }
 
@@ -175,7 +175,7 @@ fn create_preparation_requires_its_exact_binding_and_coordinate_envelope() {
 
 #[test]
 fn snapshot_payload_capacity_counts_spare_vector_storage() {
-    let mut registry = crate::viewport_registry::ViewportRegistry::new(
+    let mut registry = crate::platform::registry::ViewportRegistry::new(
         crate::ids::EngineAuthorityDomainId::new_for_test(1),
     );
     let binding = registry
@@ -183,7 +183,7 @@ fn snapshot_payload_capacity_counts_spare_vector_storage() {
             crate::ids::WorkspaceEpoch::new(1),
             crate::ids::SurfaceId::new(2),
             WindowToken::new(3),
-            crate::viewport::ViewportRole::Root,
+            crate::platform::viewport::ViewportRole::Root,
         )
         .expect("the registry mints the observed binding");
     let mut inventory = Vec::with_capacity(7);
@@ -901,7 +901,7 @@ fn snapshot_requires_the_focused_dock_binding_to_match_an_exact_window_fact() {
     let current = binding(2);
     let focus = FocusObservationEnvelope::new(
         FocusObservationGeneration::new(1),
-        Authority::Known(crate::viewport_focus::GlobalFocusedWindow::Dock(
+        Authority::Known(crate::platform::focus::GlobalFocusedWindow::Dock(
             delayed.window(),
         )),
         Authority::Known(None),

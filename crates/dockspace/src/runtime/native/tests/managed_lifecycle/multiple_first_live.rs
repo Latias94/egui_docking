@@ -1,9 +1,9 @@
 //! Concurrent native creates retain their sources until exact first-live admission.
 
 use super::*;
-use crate::frame::{BindingRetirementOrigin, NativeCreatePhase};
+use crate::platform::frame::{BindingRetirementOrigin, NativeCreatePhase};
+use crate::platform::registry::ViewportAdmission;
 use crate::runtime::{HostInputOutcome, SurfacePaintDisposition, SurfacePaintProgramOperation};
-use crate::viewport_registry::ViewportAdmission;
 
 const SECOND_HOST: SurfaceId = SurfaceId::new(2);
 const SECOND_ROOT: RootId = RootId::new(3);

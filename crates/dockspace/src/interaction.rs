@@ -13,48 +13,48 @@ pub(crate) use timed::{
 
 use thiserror::Error;
 
-use crate::close_plan::ContentCloseScope;
-use crate::close_plan::{CloseItemRequirement, ClosePlan, ClosePlanTarget};
-use crate::command::{
-    CommandOutcome, ContainedRosterSource, MovePayload, NodeSource, SplitResize, WorkspaceCommand,
-};
-use crate::drop_resolver::DropAffordance;
-use crate::drop_target::DropTargetId;
-use crate::event::{PendingReductionCause, ReductionCause};
-use crate::frame::NativeCreateRequest;
+use crate::close::plan::ContentCloseScope;
+use crate::close::plan::{CloseItemRequirement, ClosePlan, ClosePlanTarget};
+use crate::engine::event::{PendingReductionCause, ReductionCause};
+use crate::engine::transition::WorkspaceVersion;
 use crate::geometry::{
     Constraints, LogicalPoint, LogicalRect, LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor,
+};
+use crate::graph::command::{
+    CommandOutcome, ContainedRosterSource, MovePayload, NodeSource, SplitResize, WorkspaceCommand,
 };
 use crate::graph::{Axis, SplitWeight};
 use crate::ids::{
     FloatingPresentationId, InputSequence, ItemId, RootId, SurfaceId, WorkspaceEpoch,
 };
-use crate::intent::{
+use crate::input::intent::{
     Authority, CloseSceneTarget, ContainedGestureKind, ContainedPresentationOffer,
     ContainedTearOffProposal, ContainedTransformKind, NativePresentationOffer, PointerButton,
     PointerId, SurfaceBackgroundRootOffer, SurfacePointer, TabGestureSource,
 };
-use crate::model::{DockspaceActionOutcome, DockspaceActionRejection};
-use crate::pointer_journal::{
+use crate::input::journal::{
     DesktopRouteValidation, HostLocalPointerRoute, PointerCaptureOwner, PointerEventDeliveryOwner,
     PointerInputLease, PointerProviderScope, PointerStreamId, ScrollCancelReason, ScrollPhase,
     ScrollSequenceToken,
 };
+use crate::interaction::targeting::resolver::DropAffordance;
+use crate::interaction::targeting::targets::DropTargetId;
+use crate::model::{DockspaceActionOutcome, DockspaceActionRejection};
+use crate::platform::frame::NativeCreateRequest;
+use crate::platform::viewport::{CoordinateGeneration, ViewportBinding};
 use crate::policy::PolicyRevision;
-use crate::presentation_config::PresentationConfigRevision;
-use crate::presentation_hit::PresentationHitRegionId;
-use crate::presentation_observation::PresentedSurfaceAuthority;
-use crate::scene::{
+use crate::presentation::config::PresentationConfigRevision;
+use crate::presentation::hit::PresentationHitRegionId;
+use crate::presentation::manifest::{RequirementRevision, SurfaceMeasurementTicket};
+use crate::presentation::observation::PresentedSurfaceAuthority;
+use crate::presentation::scene::{
     PresentationLayoutFacts, SplitterResizeTarget, SurfaceCoordinateCapture, SurfaceSceneStamp,
     TabBarSceneId, TabListMenuBackdropRecord, TabListMenuRecord, TabListMenuRowRecord, TabSceneId,
     TabStripControlRecord,
 };
-use crate::scene_manifest::{RequirementRevision, SurfaceMeasurementTicket};
-use crate::tab_strip::{
+use crate::presentation::tab_strip::{
     PopupRoutingRevision, TabListMenuSessionId, TabStripControlId, TabStripStateKey,
 };
-use crate::transition::WorkspaceVersion;
-use crate::viewport::{CoordinateGeneration, ViewportBinding};
 
 macro_rules! interaction_counter {
     ($constructor_visibility:vis $name:ident, $description:literal) => {
@@ -119,13 +119,6 @@ impl ClickSessionId {
     pub const fn epoch(self) -> WorkspaceEpoch {
         self.epoch
     }
-
-    /// Returns the click generation.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn generation(self) -> u64 {
-        self.generation.get()
-    }
 }
 interaction_counter!(
     pub ContainedTransformGeneration,
@@ -175,20 +168,6 @@ impl ResizeSessionId {
     #[must_use]
     pub const fn new(epoch: WorkspaceEpoch, generation: ResizeGeneration) -> Self {
         Self { epoch, generation }
-    }
-
-    /// Returns the workspace epoch in which the resize began.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn epoch(self) -> WorkspaceEpoch {
-        self.epoch
-    }
-
-    /// Returns the resize generation.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn generation(self) -> ResizeGeneration {
-        self.generation
     }
 }
 
@@ -307,15 +286,17 @@ impl PreviewVisual {
 pub struct InteractionPreview {
     token: PreviewToken,
     visual: PreviewVisual,
-    tab_strip: Option<Arc<crate::scene_compiler::FutureTabStrip>>,
+    tab_strip: Option<Arc<crate::presentation::compiler::FutureTabStrip>>,
 }
 
 impl InteractionPreview {
-    pub(crate) fn tab_strip(&self) -> Option<&crate::scene_compiler::FutureTabStrip> {
+    pub(crate) fn tab_strip(&self) -> Option<&crate::presentation::compiler::FutureTabStrip> {
         self.tab_strip.as_deref()
     }
 
-    pub(crate) fn shared_tab_strip(&self) -> Option<Arc<crate::scene_compiler::FutureTabStrip>> {
+    pub(crate) fn shared_tab_strip(
+        &self,
+    ) -> Option<Arc<crate::presentation::compiler::FutureTabStrip>> {
         self.tab_strip.clone()
     }
 
@@ -604,20 +585,6 @@ pub struct ActiveClickView {
 }
 
 impl ActiveClickView {
-    /// Returns the core-minted click session.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn session(self) -> ClickSessionId {
-        self.session
-    }
-
-    /// Returns the exact stable receiver pressed by the owning stream.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn region(self) -> PresentationHitRegionId {
-        self.region
-    }
-
     /// Returns the logical surface owning the pressed receiver.
     #[must_use]
     pub const fn surface(self) -> SurfaceId {
@@ -672,45 +639,10 @@ impl<'state> ActiveResizeView<'state> {
         self.session
     }
 
-    /// Returns the provider-owned pointer identity for this resize.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn pointer(self) -> PointerId {
-        self.owner.pointer()
-    }
-
-    /// Returns the exact journal stream which owns this resize.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn journal_stream(self) -> PointerStreamId {
-        self.owner.stream()
-    }
-
-    /// Returns the button which owns this resize.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn button(self) -> PointerButton {
-        self.button
-    }
-
     /// Returns the frozen logical owner surface.
     #[must_use]
     pub const fn surface(self) -> SurfaceId {
         self.surface
-    }
-
-    /// Returns the painted scene which authorized activation.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn scene(self) -> SurfaceSceneStamp {
-        self.scene
-    }
-
-    /// Returns the exact structural splitter target frozen at press time.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn target(self) -> SplitterResizeTarget {
-        self.target
     }
 
     /// Returns the latest validated atomic transient updates.
@@ -733,25 +665,11 @@ impl<'state> ActiveDragView<'state> {
         self.session
     }
 
-    /// Returns the provider-owned pointer identity for this drag.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn pointer(self) -> PointerId {
-        self.owner.pointer()
-    }
-
     /// Returns the exact journal stream which owns this drag.
     #[must_use]
     #[cfg(test)]
     pub const fn journal_stream(self) -> PointerStreamId {
         self.owner.stream()
-    }
-
-    /// Returns the pointer button which armed the drag.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn button(self) -> PointerButton {
-        self.button
     }
 
     /// Returns the frozen payload captured when the drag was armed.
@@ -780,20 +698,6 @@ impl<'state> ActiveDragView<'state> {
     pub const fn contained_offer(self) -> Option<&'state ContainedPresentationOffer> {
         self.contained_offer
     }
-
-    /// Returns the first background-root identity offer frozen for this session.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn surface_background_offer(self) -> Option<&'state SurfaceBackgroundRootOffer> {
-        self.surface_background_offer
-    }
-
-    /// Returns the first native presentation offer frozen for this session.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn native_offer(self) -> Option<&'state NativePresentationOffer> {
-        self.native_offer
-    }
 }
 
 /// Read-only view of the exact contained transform owned by the core.
@@ -817,87 +721,10 @@ pub struct ActiveContainedTransformView<'state> {
 }
 
 impl<'state> ActiveContainedTransformView<'state> {
-    /// Returns the exact transform generation.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn session(self) -> ContainedTransformSessionId {
-        self.session
-    }
-
-    /// Returns the provider-owned pointer identity for this transform.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn pointer(self) -> PointerId {
-        self.owner.pointer()
-    }
-
-    /// Returns the exact journal stream which owns this transform.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn journal_stream(self) -> PointerStreamId {
-        self.owner.stream()
-    }
-
-    /// Returns the pointer button which began the transform.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn button(self) -> PointerButton {
-        self.button
-    }
-
     /// Returns the frozen host surface.
     #[must_use]
     pub const fn surface(self) -> SurfaceId {
         self.surface
-    }
-
-    /// Returns the frozen contained root.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn root(self) -> RootId {
-        self.root
-    }
-
-    /// Returns the frozen contained presentation identity.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn floating(self) -> FloatingPresentationId {
-        self.floating
-    }
-
-    /// Returns the exact durable rectangle captured at begin.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn source_rect(self) -> LogicalRect {
-        self.source_rect
-    }
-
-    /// Returns the absolute pointer location captured at begin.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn initial_pointer(self) -> LogicalPoint {
-        self.initial_pointer
-    }
-
-    /// Returns the latest absolute pointer location reduced by the core.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn current_pointer(self) -> LogicalPoint {
-        self.current_pointer
-    }
-
-    /// Returns the exact move or resize operation.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn kind(self) -> ContainedTransformKind {
-        self.kind
-    }
-
-    /// Returns the frozen minimum contained size.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn minimum_size(self) -> LogicalSize {
-        self.minimum_size
     }
 
     /// Returns the exact current preview eligible for painting.
@@ -970,7 +797,7 @@ pub enum InteractionCancelReason {
 pub enum InteractionRejection {
     /// The prepared action's receiver is absent from its frozen scene.
     ActionReceiverUnavailable {
-        target: crate::presentation_hit::PresentationHitRegionKind,
+        target: crate::presentation::hit::PresentationHitRegionKind,
     },
     /// The close intent named a target absent from the exact painted scene.
     CloseSceneTargetUnavailable { target: CloseSceneTarget },
@@ -990,7 +817,7 @@ pub enum InteractionRejection {
     /// The scene's coordinate capture no longer matches current platform authority.
     CloseCoordinateAuthorityUnavailable { surface: SurfaceId },
     /// Current topology cannot reproduce the source represented by the close control.
-    CloseSourceUnavailable(crate::error::CommandError),
+    CloseSourceUnavailable(crate::graph::error::CommandError),
     /// The claimed tab-strip control is absent from the exact current plan.
     TabStripControlUnavailable { control: TabStripControlId },
     /// The exact current plan exposes this control only as a disabled blocker.
@@ -1195,9 +1022,9 @@ pub enum InteractionRejection {
     /// Release re-resolution selected a different semantic target or command.
     TargetChanged,
     /// The proposed workspace command was rejected during final revalidation.
-    CommandRejected(crate::error::CommandError),
+    CommandRejected(crate::graph::error::CommandError),
     /// Split weights were rejected during candidate validation.
-    ResizeRejected(crate::error::CommandError),
+    ResizeRejected(crate::graph::error::CommandError),
     /// The pressed point lies outside the claimed painted surface.
     SplitterGesturePointerOutsideSurface { surface: SurfaceId },
     /// No splitter target owns the pressed point on the authoritative layer.
@@ -1239,7 +1066,7 @@ pub enum InteractionRejection {
     /// Absolute pointer arithmetic could not produce finite transform geometry.
     ContainedTransformGeometryUnavailable,
     /// The current scene cannot authorize the contained transform placement.
-    ContainedPlacementUnavailable(crate::intent::ContainedPlacementUnavailable),
+    ContainedPlacementUnavailable(crate::input::intent::ContainedPlacementUnavailable),
     /// Release re-resolution no longer matches the exact painted transform proof.
     ContainedTransformChanged,
 }
@@ -1285,7 +1112,7 @@ impl ManipulationRejection {
             InteractionRejection::CommandRejected(error)
             | InteractionRejection::ResizeRejected(error)
             | InteractionRejection::CloseSourceUnavailable(error) => match error {
-                crate::error::CommandError::Policy(_) => Self::PolicyDenied,
+                crate::graph::error::CommandError::Policy(_) => Self::PolicyDenied,
                 error if error.is_expected_rejection() => Self::Conflict,
                 _ => Self::Internal,
             },
@@ -1424,13 +1251,6 @@ impl ScrollApplication {
         self.receiver
     }
 
-    /// Returns the native phase carried by the reduced edge.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn phase(self) -> ScrollPhase {
-        self.phase
-    }
-
     /// Returns the requested signed canonical offset change before clamping.
     #[must_use]
     #[cfg(test)]
@@ -1442,13 +1262,6 @@ impl ScrollApplication {
     #[must_use]
     pub const fn applied_delta(self) -> f64 {
         self.applied_delta
-    }
-
-    /// Returns the signed requested change which could not be applied.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn unapplied_delta(self) -> f64 {
-        self.unapplied_delta
     }
 
     /// Returns the resulting core-owned logical offset.
@@ -1766,13 +1579,6 @@ impl InteractionEvent {
             .expect("published interaction events always have a bound reduction cause")
     }
 
-    /// Returns the engine version published with this event.
-    #[must_use]
-    #[cfg(test)]
-    pub const fn version(&self) -> WorkspaceVersion {
-        self.version
-    }
-
     /// Returns the semantic event payload.
     #[must_use]
     pub const fn kind(&self) -> &InteractionEventKind {
@@ -1883,8 +1689,8 @@ pub(crate) enum ManipulationPositionKey {
         hover: Option<HostLocalPointerRoute>,
     },
     JournalNativeLocal {
-        manipulation: Option<crate::pointer_journal::NativeSurfacePointerRoute>,
-        hover: Option<crate::pointer_journal::NativeSurfacePointerRoute>,
+        manipulation: Option<crate::input::journal::NativeSurfacePointerRoute>,
+        hover: Option<crate::input::journal::NativeSurfacePointerRoute>,
     },
     JournalDesktop(DesktopRouteValidation),
 }
@@ -1905,7 +1711,7 @@ impl ManipulationPositionKey {
                 ..
             } => Some(scope.surface()),
             Self::JournalDesktop(DesktopRouteValidation::Known(
-                crate::pointer_journal::ValidatedDesktopRoute::Dock(route),
+                crate::input::journal::ValidatedDesktopRoute::Dock(route),
             )) => Some(route.binding().surface()),
             Self::JournalSurface { .. } | Self::JournalDesktop(_) => None,
         }
@@ -1929,7 +1735,7 @@ impl ManipulationPositionKey {
                 position: Authority::Known(point),
             } => Some(SurfacePointer::new(scope.surface(), point)),
             Self::JournalDesktop(DesktopRouteValidation::Known(
-                crate::pointer_journal::ValidatedDesktopRoute::Dock(route),
+                crate::input::journal::ValidatedDesktopRoute::Dock(route),
             )) => Some(SurfacePointer::new(
                 route.binding().surface(),
                 route.surface_position(),
@@ -1949,7 +1755,7 @@ impl ManipulationPositionKey {
         !matches!(
             self,
             Self::JournalDesktop(DesktopRouteValidation::Known(
-                crate::pointer_journal::ValidatedDesktopRoute::NoWindow { .. },
+                crate::input::journal::ValidatedDesktopRoute::NoWindow { .. },
             ))
         )
     }
@@ -1971,11 +1777,11 @@ impl ManipulationPositionKey {
                 ..
             } => Some(scope.surface()),
             Self::JournalDesktop(DesktopRouteValidation::Known(
-                crate::pointer_journal::ValidatedDesktopRoute::Dock(route),
+                crate::input::journal::ValidatedDesktopRoute::Dock(route),
             )) => Some(route.binding().surface()),
             Self::JournalDesktop(DesktopRouteValidation::Known(
-                crate::pointer_journal::ValidatedDesktopRoute::NoWindow { .. }
-                | crate::pointer_journal::ValidatedDesktopRoute::Foreign { .. },
+                crate::input::journal::ValidatedDesktopRoute::NoWindow { .. }
+                | crate::input::journal::ValidatedDesktopRoute::Foreign { .. },
             ))
             | Self::JournalDesktop(DesktopRouteValidation::Unavailable(_))
             | Self::JournalSurface { .. } => None,
@@ -2189,7 +1995,7 @@ impl DragTargetState {
 pub(crate) enum GestureLane {
     Desktop,
     NativeLocal {
-        binding: crate::viewport::WindowBinding,
+        binding: crate::platform::viewport::WindowBinding,
         coordinate_generation: CoordinateGeneration,
     },
     HostLocal,
@@ -3095,7 +2901,7 @@ impl InteractionState {
         surface: SurfaceId,
         root: RootId,
         floating: FloatingPresentationId,
-        anchor: crate::intent::SurfacePointer,
+        anchor: crate::input::intent::SurfacePointer,
         requested_rect: LogicalRect,
         minimum_size: LogicalSize,
         reserve_background_root: bool,
@@ -3128,7 +2934,7 @@ impl InteractionState {
                     || root != origin.root
                     || floating != origin.floating
                     || anchor
-                        != crate::intent::SurfacePointer::new(
+                        != crate::input::intent::SurfacePointer::new(
                             origin.surface,
                             origin.initial_pointer,
                         )
@@ -3203,7 +3009,7 @@ impl InteractionState {
         visual: PreviewVisual,
         proof: PreviewProof,
         acquisition: Option<TargetAcquisition>,
-        tab_strip: Option<Arc<crate::scene_compiler::FutureTabStrip>>,
+        tab_strip: Option<Arc<crate::presentation::compiler::FutureTabStrip>>,
     ) -> Result<(InteractionPreview, bool), InteractionCounterError> {
         if !preview_acquisition_matches(scene, &proof, acquisition) {
             return Err(InteractionCounterError::StateInvariant);
@@ -3758,34 +3564,34 @@ pub enum InteractionCounterError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::coordinates::CoordinateSnapshot;
-    use crate::drop_guide::{DropGuideClusterRecord, DropGuideTargetRecord};
-    use crate::drop_resolver::{DropResolution, resolve_presented_drop};
-    use crate::drop_target::{
+    use crate::graph::workspace::WorkspaceIndex;
+    use crate::graph::{ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
+    use crate::ids::{EngineAuthorityDomainId, ReducerTickId, WorkspaceRevision};
+    use crate::input::intent::Authority;
+    use crate::input::journal::{PointerInputLease, PointerProviderScope, PointerStreamId};
+    use crate::interaction::targeting::guide::{DropGuideClusterRecord, DropGuideTargetRecord};
+    use crate::interaction::targeting::resolver::{DropResolution, resolve_presented_drop};
+    use crate::interaction::targeting::targets::{
         DropTargetAvailability, DropTargetLocation, DropTargetRecord, DropVisual, SceneLayerKey,
     };
-    use crate::graph::{ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
-    use crate::hit_region::HitRegion;
-    use crate::ids::{EngineAuthorityDomainId, ReducerTickId, WorkspaceRevision};
-    use crate::intent::Authority;
     use crate::platform::WindowCoordinateObservation;
-    use crate::pointer_journal::{PointerInputLease, PointerProviderScope, PointerStreamId};
+    use crate::platform::coordinates::CoordinateSnapshot;
+    use crate::platform::viewport::{
+        CoordinateGeneration, CoordinateObservationGeneration, WindowIncarnation, WindowToken,
+    };
     use crate::policy::DockPolicySnapshot;
-    use crate::presentation_config::PresentationConfigRevision;
-    use crate::presentation_hit::{PresentationHitManifest, PresentationHitRegionKind};
-    use crate::presentation_observation::{
+    use crate::presentation::config::PresentationConfigRevision;
+    use crate::presentation::hit::region::HitRegion;
+    use crate::presentation::hit::{PresentationHitManifest, PresentationHitRegionKind};
+    use crate::presentation::manifest::{SurfaceRequirementRevision, SurfaceSceneRevision};
+    use crate::presentation::observation::{
         PresentationLedger, PresentationOutputSerial, SurfacePresentationOutputTicket,
     };
-    use crate::scene::{
+    use crate::presentation::scene::{
         PresentationPlan, SurfaceProgramRootOperation, SurfaceProgramRootPresentation,
         TabBarSceneId, TabStripControlRecord,
     };
-    use crate::scene_manifest::{SurfaceRequirementRevision, SurfaceSceneRevision};
-    use crate::tab_strip::{TabStripControlId, TabStripStateKey};
-    use crate::viewport::{
-        CoordinateGeneration, CoordinateObservationGeneration, WindowIncarnation, WindowToken,
-    };
-    use crate::workspace::WorkspaceIndex;
+    use crate::presentation::tab_strip::{TabStripControlId, TabStripStateKey};
 
     fn frozen_scene(surface: SurfaceId, epoch: WorkspaceEpoch) -> SurfaceSceneStamp {
         SurfaceSceneStamp::new(
@@ -3891,7 +3697,7 @@ mod tests {
                 epoch,
                 owner,
                 capture_authority: Authority::Unknown(
-                    crate::intent::AuthorityUnavailableReason::ProviderUnavailable,
+                    crate::input::intent::AuthorityUnavailableReason::ProviderUnavailable,
                 ),
                 button: PointerButton::Primary,
                 region,
@@ -3968,7 +3774,9 @@ mod tests {
                         PhysicalRect::new(400.0, -300.0, 1200.0, 900.0)
                             .expect("test content bounds must be valid"),
                     ),
-                    Authority::Unknown(crate::intent::AuthorityUnavailableReason::NotReported),
+                    Authority::Unknown(
+                        crate::input::intent::AuthorityUnavailableReason::NotReported,
+                    ),
                     Authority::Known(ScaleFactor::new(2.0).expect("test native scale is valid")),
                     Authority::Known(
                         ScaleFactor::new(2.5).expect("test presentation scale is valid"),
@@ -4295,7 +4103,7 @@ mod tests {
             panic!("test owner must be native-local");
         };
         let local_point = LogicalPoint::new(42.0, 18.0).expect("test local point is finite");
-        let route = crate::pointer_journal::NativeSurfacePointerRoute::new(
+        let route = crate::input::journal::NativeSurfacePointerRoute::new(
             ViewportBinding::from_window(binding, state.active_surface().unwrap()),
             coordinate_generation,
             PhysicalPoint::new(105.0, 45.0).expect("test client point is finite"),
@@ -4560,7 +4368,7 @@ mod tests {
                 else {
                     panic!("test owner must be native-local");
                 };
-                let route = crate::pointer_journal::NativeSurfacePointerRoute::new(
+                let route = crate::input::journal::NativeSurfacePointerRoute::new(
                     ViewportBinding::from_window(binding, state.active_surface().unwrap()),
                     coordinate_generation,
                     PhysicalPoint::new(point.x() * 2.5, point.y() * 2.5)
@@ -4619,7 +4427,7 @@ mod tests {
             WindowIncarnation::new(1),
         );
         let route = |x, y| {
-            crate::pointer_journal::NativeSurfacePointerRoute::new(
+            crate::input::journal::NativeSurfacePointerRoute::new(
                 binding,
                 CoordinateGeneration::new(1),
                 PhysicalPoint::new(x, y).expect("test client position must be finite"),

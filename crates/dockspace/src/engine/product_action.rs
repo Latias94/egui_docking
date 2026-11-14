@@ -1,15 +1,15 @@
 use super::*;
 
-use crate::command::{
+use crate::graph::command::{
     DockFraction as CommandDockFraction, DockTarget, Edge as CommandEdge, NodeSource, RootContent,
 };
+use crate::graph::workspace::WorkspaceIndex;
 use crate::ids::NodeId;
 use crate::model::{
     DockAnchor, DockEdge, DockPlacement, DockspaceActionOutcome, DockspaceActionRejection,
     NativeTearOffSource, NativeWindowPlacement, PreparedDockAction,
     PreparedDockActionAuthorityMismatch, PreparedTabsGroup, ProductAction,
 };
-use crate::workspace::WorkspaceIndex;
 
 mod contained;
 
@@ -168,7 +168,7 @@ impl DockEngine {
         input: InputSequence,
         cause: ReductionCause,
         focus_causal: FocusCausalStamp,
-        candidate: &crate::scene::SurfacePlanScene,
+        candidate: &crate::presentation::scene::SurfacePlanScene,
         action: ProductAction,
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
@@ -183,8 +183,8 @@ impl DockEngine {
         };
         let source_surface = match self.workspace.presentation_for_root(root) {
             Some(
-                crate::RootPresentationOwner::Main { surface }
-                | crate::RootPresentationOwner::Contained { surface, .. },
+                crate::graph::workspace::RootPresentationOwner::Main { surface }
+                | crate::graph::workspace::RootPresentationOwner::Contained { surface, .. },
             ) => surface,
             None => {
                 return Ok(InputOutcome::ProductActionRejected {
@@ -296,7 +296,7 @@ impl DockEngine {
             return Ok(Err(DockspaceActionRejection::Conflict));
         }
         if let ProductActionPlan::Command { command, .. } = &plan
-            && let Err(error) = crate::operation::authorize_workspace_command(
+            && let Err(error) = crate::graph::operation::authorize_workspace_command(
                 &self.workspace,
                 &self.policy,
                 &command,
@@ -669,7 +669,7 @@ impl DockEngine {
         };
         self.viewport_focus.pending_pane_intent()
             .filter(|intent| intent.surface() == surface)
-            .and_then(crate::viewport_focus::PaneFocusIntent::item)
+            .and_then(crate::platform::focus::PaneFocusIntent::item)
             .filter(is_visible_source)
             .or_else(|| match self.viewport_focus.panel_focus(surface) {
                 PanelFocusRecord::Item(item) if is_visible_source(&item) => Some(item),
@@ -801,7 +801,7 @@ impl DockEngine {
     fn capture_product_item(
         &self,
         item: ItemId,
-    ) -> Result<crate::command::ItemSource, DockspaceActionRejection> {
+    ) -> Result<crate::graph::command::ItemSource, DockspaceActionRejection> {
         self.workspace
             .capture_item_source_by_id(item)
             .map_err(|_| DockspaceActionRejection::Conflict)?
@@ -854,7 +854,7 @@ impl DockEngine {
     fn compile_product_move(
         &self,
         item: ItemId,
-        source: crate::command::ItemSource,
+        source: crate::graph::command::ItemSource,
         placement: DockPlacement,
     ) -> Result<ProductActionPlan, DockspaceActionRejection> {
         let source_root = source.root();
@@ -1078,7 +1078,7 @@ impl DockEngine {
             .presentation_for_root(root)
             .ok_or(DockspaceActionRejection::Conflict)?;
         match owner {
-            crate::RootPresentationOwner::Contained {
+            crate::graph::workspace::RootPresentationOwner::Contained {
                 surface: current_surface,
                 floating,
             } if current_surface == surface => {
@@ -1092,7 +1092,7 @@ impl DockEngine {
                     disposition: CompleteRootMainDisposition::PromoteContained { floating },
                 })
             }
-            crate::RootPresentationOwner::Main {
+            crate::graph::workspace::RootPresentationOwner::Main {
                 surface: current_surface,
             } if current_surface == surface => Ok(CompleteRootMainPlan {
                 command: WorkspaceCommand::RehomeRoot {
@@ -1101,8 +1101,8 @@ impl DockEngine {
                 },
                 disposition: CompleteRootMainDisposition::Rehome,
             }),
-            crate::RootPresentationOwner::Main { .. }
-            | crate::RootPresentationOwner::Contained { .. } => {
+            crate::graph::workspace::RootPresentationOwner::Main { .. }
+            | crate::graph::workspace::RootPresentationOwner::Contained { .. } => {
                 self.require_rootless_surface(surface)?;
                 Ok(CompleteRootMainPlan {
                     command: WorkspaceCommand::RehomeRoot {

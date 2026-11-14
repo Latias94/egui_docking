@@ -1,13 +1,13 @@
 //! Managed live-input cancellation without discarding accepted obligations.
 
 use super::*;
-use crate::pointer_journal::ScrollCancelReason;
+use crate::input::journal::ScrollCancelReason;
 
 impl DockEngine {
     pub(crate) fn validate_native_pointer_roster_resync(
         &self,
         provider: BackendIngressLease,
-        checkpoint: &crate::pointer_journal::PointerAuthorityCheckpoint,
+        checkpoint: &crate::input::journal::PointerAuthorityCheckpoint,
     ) -> Result<(), EngineError> {
         if self.backend_ingress.active() != Some(provider)
             || self.pointer_provider() != Some(provider.pointer_provider())
@@ -84,7 +84,7 @@ impl DockEngine {
             return Err(EngineError::Viewport {
                 input: self.last_input,
                 source: ViewportCoordinatorError::Registry(
-                    crate::viewport_registry::ViewportRegistryError::StaleBinding { binding },
+                    crate::platform::registry::ViewportRegistryError::StaleBinding { binding },
                 ),
             });
         }

@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use crate::close_plan::{CloseDecision, DeferredCloseDecision};
+use crate::close::plan::{CloseDecision, DeferredCloseDecision};
 use crate::geometry::{LogicalRect, LogicalSize};
 use crate::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
 use crate::model::{

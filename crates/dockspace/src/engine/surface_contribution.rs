@@ -41,13 +41,10 @@ pub enum PreparedSurfacePaintCandidate<'a> {
     /// The host explicitly retained the current exact ready candidate.
     ///
     /// This does not carry a replacement plan. The adapter must continue to
-    /// paint the current core projection identified by `ticket`; a later exact
+    /// paint the current core projection; a later exact
     /// presentation observation remains the only way to grant hit
     /// authority.
-    Retained {
-        /// Exact current ready candidate retained by this contribution.
-        ticket: SurfacePresentationOutputTicket,
-    },
+    Retained,
     /// Exact measurements were accepted but cannot currently authorize a ready plan.
     Unavailable {
         /// Explicit non-authoritative reason retained for reduction.
@@ -122,8 +119,8 @@ impl PreparedSurfaceContribution {
             PreparedSurfaceContributionState::Ready { plan } => {
                 PreparedSurfacePaintCandidate::Ready(PreparedReadySurfacePaintCandidate { plan })
             }
-            PreparedSurfaceContributionState::Retained { ticket } => {
-                PreparedSurfacePaintCandidate::Retained { ticket: *ticket }
+            PreparedSurfaceContributionState::Retained { .. } => {
+                PreparedSurfacePaintCandidate::Retained
             }
             PreparedSurfaceContributionState::Unavailable(reason) => {
                 PreparedSurfacePaintCandidate::Unavailable { reason: *reason }
@@ -409,7 +406,7 @@ impl DockEngine {
                 .surface(surface)
                 .and_then(|requirements| requirements.tab_bar(rebind.bar))
             && let Some(Node::Tabs { selected, .. }) = self.workspace.node(rebind.bar.tabs)
-            && crate::scene_compiler::selection_geometry_unchanged(
+            && crate::presentation::compiler::selection_geometry_unchanged(
                 &rebind.plan,
                 &self.presentation_authority.presentation_config,
                 requirement,
@@ -498,7 +495,9 @@ impl DockEngine {
             ),
             Err(SurfaceContributionPrepareError::Compilation(
                 PresentationCompilationError::Scene(
-                    crate::scene_compiler::SceneCompilationError::EmptySurfaceBounds { .. },
+                    crate::presentation::compiler::SceneCompilationError::EmptySurfaceBounds {
+                        ..
+                    },
                 ),
             )) => PreparedSurfaceContributionState::Unavailable(
                 SurfaceContributionUnavailableReason::EmptyBounds,
@@ -534,26 +533,26 @@ impl DockEngine {
         let owner = popup.owner()?;
         let reason = match error {
             PresentationCompilationError::Scene(
-                crate::scene_compiler::SceneCompilationError::EmptyPopupPlaneBounds {
+                crate::presentation::compiler::SceneCompilationError::EmptyPopupPlaneBounds {
                     surface: actual,
                 },
             ) if *actual == surface => PopupGeometryUnavailableReason::EmptyPlane,
             PresentationCompilationError::Scene(
-                crate::scene_compiler::SceneCompilationError::TabListMenuAnchorOutsidePopupPlane {
+                crate::presentation::compiler::SceneCompilationError::TabListMenuAnchorOutsidePopupPlane {
                     key,
                 },
             ) if *key == owner && owner.surface() == surface => {
                 PopupGeometryUnavailableReason::AnchorOutsidePlane
             }
             PresentationCompilationError::Scene(
-                crate::scene_compiler::SceneCompilationError::TabListMenuPopupSpaceUnavailable {
+                crate::presentation::compiler::SceneCompilationError::TabListMenuPopupSpaceUnavailable {
                     key,
                 },
             ) if *key == owner && owner.surface() == surface => {
                 PopupGeometryUnavailableReason::NoSpace
             }
             PresentationCompilationError::Scene(
-                crate::scene_compiler::SceneCompilationError::ActiveTabListMenuProjectionUnavailable {
+                crate::presentation::compiler::SceneCompilationError::ActiveTabListMenuProjectionUnavailable {
                     session: actual,
                 },
             ) if *actual == session && owner.surface() == surface => {
@@ -675,7 +674,7 @@ impl DockEngine {
     fn surface_resize_overrides(
         &self,
         surface: SurfaceId,
-    ) -> Vec<crate::layout::SplitWeightOverride<'_>> {
+    ) -> Vec<crate::presentation::layout::SplitWeightOverride<'_>> {
         self.interaction
             .resize_overrides()
             .map(|(_, updates)| {
@@ -684,15 +683,15 @@ impl DockEngine {
                     .filter(|update| {
                         matches!(
                             self.workspace.presentation_for_root(update.split().root()),
-                            Some(crate::RootPresentationOwner::Main { surface: owner })
-                                | Some(crate::RootPresentationOwner::Contained {
+                            Some(crate::graph::workspace::RootPresentationOwner::Main { surface: owner })
+                                | Some(crate::graph::workspace::RootPresentationOwner::Contained {
                                     surface: owner,
                                     ..
                                 }) if owner == surface
                         )
                     })
                     .map(|update| {
-                        crate::layout::SplitWeightOverride::new(update.split(), update.weights())
+                        crate::presentation::layout::SplitWeightOverride::new(update.split(), update.weights())
                     })
                     .collect()
             })

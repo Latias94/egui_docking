@@ -7,26 +7,39 @@ use support::{
 };
 
 use crate::platform::{NativeCreateReadiness, WindowCreatePreparationObservation};
-use dockspace::RootPresentationOwner;
-use dockspace::close_plan::NativeCloseEdge;
-use dockspace::command::WorkspaceCommand;
-use dockspace::effect::{
-    DispatchFailureReason, EffectDispatchResult, EffectId, EffectInvalidation, EffectPhase,
-    EffectRecordLookup, EffectResult, EffectUnsupportedReason, PlatformEffect,
-    PlatformEffectEmission,
+use dockspace::close::plan::NativeCloseEdge;
+use dockspace::engine::surface_recovery::{
+    ConvertedMainRecovery, RootRecoveryAnchor, SurfaceRecoveryBlockedReason, SurfaceRecoveryError,
+    SurfaceRecoveryTarget,
 };
+use dockspace::engine::transition::{EngineTransition, InputOutcome, SurfaceContributionOutcome};
 use dockspace::engine::{
     CoreHostFrame, DockEngine, EngineError, EngineInput, SurfaceContributionBeginError,
 };
-use dockspace::frame::{BindingRetirementOrigin, BindingRetirementStatus, RecoveryPendingStatus};
 use dockspace::geometry::{LogicalRect, LogicalSize, PhysicalRect, ScaleFactor};
+use dockspace::graph::command::WorkspaceCommand;
+use dockspace::graph::workspace::RootPresentationOwner;
 use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{
     FloatingPresentationId, ItemId, NodeId, RootId, StableInputSourceId, SurfaceId,
 };
-use dockspace::intent::{Authority, AuthorityUnavailableReason};
+use dockspace::input::intent::{Authority, AuthorityUnavailableReason};
 use dockspace::interaction::{InteractionOutcome, InteractionRejection};
 use dockspace::model::DockspaceActionRejection;
+use dockspace::platform::effect::{
+    DispatchFailureReason, EffectDispatchResult, EffectId, EffectInvalidation, EffectPhase,
+    EffectRecordLookup, EffectResult, EffectUnsupportedReason, PlatformEffect,
+    PlatformEffectEmission,
+};
+use dockspace::platform::focus::{FocusObservationGeneration, unknown_focus_observation};
+use dockspace::platform::frame::{
+    BindingRetirementOrigin, BindingRetirementStatus, RecoveryPendingStatus,
+};
+use dockspace::platform::registry::ViewportAdmission;
+use dockspace::platform::viewport::{
+    CloseObservationGeneration, CoordinateObservationGeneration, PresentationObservationGeneration,
+    ViewportBinding, ViewportRole, WindowToken, WorkAreaToken,
+};
 use dockspace::platform::{
     CloseEffectAcknowledgement, ObservedWindow, ObservedWorkArea, PlatformCapabilities,
     PlatformCapability, PlatformSnapshot, WindowCloseObservation, WindowCloseState,
@@ -34,19 +47,8 @@ use dockspace::platform::{
     WindowPresentationState,
 };
 use dockspace::policy::DockPolicy;
+use dockspace::presentation::scene::SurfaceScene;
 use dockspace::runtime::DockspaceSession;
-use dockspace::scene::SurfaceScene;
-use dockspace::surface_recovery::{
-    ConvertedMainRecovery, RootRecoveryAnchor, SurfaceRecoveryBlockedReason, SurfaceRecoveryError,
-    SurfaceRecoveryTarget,
-};
-use dockspace::transition::{EngineTransition, InputOutcome, SurfaceContributionOutcome};
-use dockspace::viewport::{
-    CloseObservationGeneration, CoordinateObservationGeneration, PresentationObservationGeneration,
-    ViewportBinding, ViewportRole, WindowToken, WorkAreaToken,
-};
-use dockspace::viewport_focus::{FocusObservationGeneration, unknown_focus_observation};
-use dockspace::viewport_registry::ViewportAdmission;
 
 const ROOT_HOST: RootId = RootId::new(1);
 const ROOT_CHILD: RootId = RootId::new(2);
@@ -407,7 +409,7 @@ fn platform_snapshot_with_facts_at_generation(
     let inventory_observation =
         support::known_inventory_observation(observation_generation, &windows);
     PlatformSnapshot::new(
-        dockspace::viewport::PlatformSnapshotGeneration::new(observation_generation),
+        dockspace::platform::viewport::PlatformSnapshotGeneration::new(observation_generation),
         support::known_capability_observation(observation_generation, capabilities),
         unknown_focus_observation(
             FocusObservationGeneration::new(observation_generation),
@@ -441,7 +443,7 @@ fn platform_snapshot_with_facts_at_generation(
 fn child_next_tab_input(
     frame: &CoreHostFrame,
     binding: ViewportBinding,
-) -> (dockspace::scene::TabSceneId, EngineInput) {
+) -> (dockspace::presentation::scene::TabSceneId, EngineInput) {
     let projection = frame
         .view()
         .prepared_action_projection(SURFACE_CHILD)
@@ -455,14 +457,14 @@ fn child_next_tab_input(
         .expect("child left leaf must select item 2");
     assert_eq!(
         projection.authority().endpoint(),
-        dockspace::presentation_observation::HostPresentationEndpoint::Native(binding)
+        dockspace::presentation::observation::HostPresentationEndpoint::Native(binding)
     );
     let input = EngineInput::SelectLocalSceneTab {
         expected: frame.view().version(),
         scene: projection.plan_stamp(),
         selection: crate::engine::LocalTabSelection::Navigate {
             source: tab,
-            target: dockspace::scene::TabSceneId {
+            target: dockspace::presentation::scene::TabSceneId {
                 item: ItemId::new(3),
                 ..tab
             },
@@ -542,7 +544,7 @@ fn publish_scene(engine: &mut DockEngine, host: &mut TestPresentationHost) {
             .iter()
             .all(|outcome| matches!(
                 outcome,
-                dockspace::presentation_observation::HostPresentationObservationOutcome::Retired { .. }
+                dockspace::presentation::observation::HostPresentationObservationOutcome::Retired { .. }
             ))
     );
 }
@@ -2425,7 +2427,7 @@ fn cancelled_child_close_still_recovers_after_unexpected_destruction() {
             effect.effect(),
             PlatformEffect::ResolveNativeClose { edge, resolution, .. }
                 if edge.binding() == fixture.child_binding
-                    && *resolution == dockspace::effect::NativeCloseResolution::Cancel
+                    && *resolution == dockspace::platform::effect::NativeCloseResolution::Cancel
         )
     }));
 

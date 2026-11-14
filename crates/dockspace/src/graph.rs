@@ -1,14 +1,34 @@
 //! Durable, renderer-neutral docking topology.
+//!
+//! Commands, queries, validation and transactions operate on this graph without
+//! owning input, presentation or native-window lifecycle state.
+
+mod authority;
+pub(crate) mod canonical;
+pub(crate) mod command;
+#[cfg(test)]
+mod copy_tests;
+#[cfg(test)]
+mod docking_cost;
+pub(crate) mod error;
+pub(crate) mod operation;
+pub(crate) mod root_structure;
+mod shared_storage;
+pub(crate) mod transaction;
+pub(crate) mod validation;
+pub(crate) mod workspace;
+
+pub use authority::RootReference;
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use std::sync::Arc;
 use thiserror::Error;
 
-use crate::canonical::CanonicalizationError;
 use crate::geometry::LogicalRect;
+use crate::graph::canonical::CanonicalizationError;
+use crate::graph::validation::WorkspaceValidationErrors;
 use crate::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
-use crate::validation::WorkspaceValidationErrors;
 use shared_storage::NodeStore;
 
 pub(crate) const NORMALIZED_WEIGHT_TOLERANCE: f64 = 1.0e-5;
@@ -174,7 +194,7 @@ pub enum Node {
 impl Clone for Node {
     fn clone(&self) -> Self {
         #[cfg(test)]
-        crate::drop_resolver::structural_work::record_node_payload_clone(self);
+        crate::interaction::targeting::resolver::structural_work::record_node_payload_clone(self);
         match self {
             Self::Tabs {
                 items,
@@ -580,7 +600,9 @@ impl WorkspaceData {
             }
         }
         #[cfg(test)]
-        crate::drop_resolver::structural_work::record_item_multiset_scan(item_visits);
+        crate::interaction::targeting::resolver::structural_work::record_item_multiset_scan(
+            item_visits,
+        );
         items
     }
 
@@ -593,7 +615,7 @@ impl WorkspaceData {
     }
 
     pub(crate) fn validate_candidate(&self) -> Result<(), WorkspaceValidationErrors> {
-        crate::validation::validate_workspace_data(self)
+        crate::graph::validation::validate_workspace_data(self)
     }
 }
 
@@ -731,7 +753,7 @@ impl WorkspaceBuilder {
     ///
     /// # Errors
     ///
-    /// Returns every discovered [`crate::validation::WorkspaceValidationError`].
+    /// Returns every discovered [`crate::graph::validation::WorkspaceValidationError`].
     #[cfg(any(feature = "serde", test))]
     pub fn validate(&self) -> Result<(), WorkspaceValidationErrors> {
         self.workspace.validate_candidate()
@@ -809,12 +831,3 @@ mod tests {
         }
     }
 }
-
-mod authority;
-pub(crate) mod canonical;
-#[cfg(test)]
-mod copy_tests;
-pub(crate) mod operation;
-pub(crate) mod root_structure;
-mod shared_storage;
-pub use authority::RootReference;

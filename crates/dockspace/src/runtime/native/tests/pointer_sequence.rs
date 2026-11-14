@@ -32,7 +32,7 @@ fn pointer_batch_and_sequence_have_distinct_commit_boundaries() {
         let boundaries = batch
             .records()
             .iter()
-            .map(crate::backend_ingress::BackendIngressRecord::is_commit_boundary)
+            .map(crate::input::ingress::BackendIngressRecord::is_commit_boundary)
             .collect::<Vec<_>>();
         assert_eq!(boundaries, vec![!atomic_commit, true]);
     }

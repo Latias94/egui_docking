@@ -171,7 +171,7 @@ fn validate_surface_content_close(
                 .roster()
                 .contained()
                 .iter()
-                .map(crate::command::ContainedRootSource::source),
+                .map(crate::graph::command::ContainedRootSource::source),
         )
         .collect::<Vec<_>>();
     if roster_sources.len() != prepared.roots().len()

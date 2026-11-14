@@ -3,36 +3,60 @@ use super::support;
 use std::collections::BTreeMap;
 
 use crate::platform::{NativeCreateReadiness, WindowCreatePreparationObservation};
-use dockspace::RootPresentationOwner;
-use dockspace::close_plan::{NativeCloseEdge, SurfaceCloseRequest};
-use dockspace::command::{
-    CloseCommitOutcome, ContainedPosition, ContentCloseTarget, MovePayload, RootContent,
-    RootPresentationTarget, WorkspaceCommand,
+use dockspace::close::plan::{NativeCloseEdge, SurfaceCloseRequest};
+use dockspace::engine::surface_recovery::{
+    ConvertedMainRecovery, RootRecoveryAnchor, SurfaceRecoveryTarget,
 };
-use dockspace::effect::{
-    CleanupObservationToken, DispatchFailureReason, EffectDispatchResult, EffectId,
-    EffectIndeterminateReason, EffectPhase, EffectRequest, EffectResult, EffectTransition,
-    EffectUnsupportedReason, PlatformEffect, PlatformEffectEmission,
-};
+use dockspace::engine::transition::{EngineTransition, InputOutcome, SurfaceContributionOutcome};
 use dockspace::engine::{
     BackendIngressProgress, CoreHostFrame, CoreHostFrameError, DockEngine, EngineError, EngineInput,
-};
-use dockspace::error::CommandError;
-use dockspace::frame::{
-    BindingRetirementOrigin, BindingRetirementStatus, NativeCreatePhase, NativeCreateRequest,
-    RecoveryPendingStatus,
 };
 use dockspace::geometry::{
     LogicalPoint, LogicalRect, LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor,
 };
+use dockspace::graph::command::{
+    CloseCommitOutcome, ContainedPosition, ContentCloseTarget, MovePayload, RootContent,
+    RootPresentationTarget, WorkspaceCommand,
+};
+use dockspace::graph::error::CommandError;
+use dockspace::graph::workspace::RootPresentationOwner;
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{
     FloatingPresentationId, ItemId, NodeId, RootId, StableInputSourceId, SurfaceId, WorkspaceEpoch,
 };
-use dockspace::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
+use dockspace::input::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
+use dockspace::input::journal::{
+    DesktopDockRoute, DesktopRouteFact, DesktopWorkAreaRoute, NativeSurfacePointerRoute,
+    PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
+    PointerEdgeSequence, PointerEventDeliveryOwner, PointerInputLease, PointerProviderScope,
+};
+use dockspace::input::receiver::{
+    NativeWindowHitReceipt, PointerReceiverDelivery, PointerReceiverDeliveryDisposition,
+    PointerReceiverHoverHit, PointerReceiverHoverHitDisposition, PointerReceiverObservation,
+    PointerReceiverProbeReceipt, PointerReceiverReceiptBatch, PointerReceiverUnknownReason,
+    PresentedPointerReceiverObservation,
+};
 use dockspace::interaction::{
     DragSessionId, InteractionDelivery, InteractionOutcome, InteractionRejection,
     InteractionStatus, PreviewResolutionStatus, PreviewVisual,
+};
+use dockspace::platform::effect::{
+    CleanupObservationToken, DispatchFailureReason, EffectDispatchResult, EffectId,
+    EffectIndeterminateReason, EffectPhase, EffectRequest, EffectResult, EffectTransition,
+    EffectUnsupportedReason, PlatformEffect, PlatformEffectEmission,
+};
+use dockspace::platform::focus::{
+    FocusObservationEnvelope, FocusObservationGeneration, GlobalFocusedWindow,
+    unknown_focus_observation,
+};
+use dockspace::platform::frame::{
+    BindingRetirementOrigin, BindingRetirementStatus, NativeCreatePhase, NativeCreateRequest,
+    RecoveryPendingStatus,
+};
+use dockspace::platform::registry::{ViewportAdmission, ViewportLifecycle, ViewportOwnership};
+use dockspace::platform::viewport::{
+    CloseObservationGeneration, CoordinateObservationGeneration, InputObservationGeneration,
+    PresentationObservationGeneration, ViewportBinding, ViewportRole, WindowToken, WorkAreaToken,
 };
 use dockspace::platform::{
     CloseEffectAcknowledgement, InputEffectAcknowledgement, ObservedWindow, ObservedWorkArea,
@@ -40,37 +64,15 @@ use dockspace::platform::{
     WindowCloseState, WindowCoordinateObservation, WindowInputObservation, WindowInputState,
     WindowPresentationObservation, WindowPresentationState,
 };
-use dockspace::pointer_journal::{
-    DesktopDockRoute, DesktopRouteFact, DesktopWorkAreaRoute, NativeSurfacePointerRoute,
-    PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
-    PointerEdgeSequence, PointerEventDeliveryOwner, PointerInputLease, PointerProviderScope,
-};
-use dockspace::pointer_receiver::{
-    NativeWindowHitReceipt, PointerReceiverDelivery, PointerReceiverDeliveryDisposition,
-    PointerReceiverHoverHit, PointerReceiverHoverHitDisposition, PointerReceiverObservation,
-    PointerReceiverProbeReceipt, PointerReceiverReceiptBatch, PointerReceiverUnknownReason,
-    PresentedPointerReceiverObservation,
-};
 use dockspace::policy::DockPolicy;
-use dockspace::presentation_hit::PresentationHitRegionKind;
-use dockspace::presentation_observation::{
+use dockspace::presentation::hit::PresentationHitRegionKind;
+use dockspace::presentation::manifest::{
+    Measurement, SurfaceMeasurements, TabIntrinsic, TabStripMetrics,
+};
+use dockspace::presentation::observation::{
     HostPresentationObservationOutcome, HostPresentationOutputPayload,
 };
-use dockspace::scene::SurfaceScene;
-use dockspace::scene_manifest::{Measurement, SurfaceMeasurements, TabIntrinsic, TabStripMetrics};
-use dockspace::surface_recovery::{
-    ConvertedMainRecovery, RootRecoveryAnchor, SurfaceRecoveryTarget,
-};
-use dockspace::transition::{EngineTransition, InputOutcome, SurfaceContributionOutcome};
-use dockspace::viewport::{
-    CloseObservationGeneration, CoordinateObservationGeneration, InputObservationGeneration,
-    PresentationObservationGeneration, ViewportBinding, ViewportRole, WindowToken, WorkAreaToken,
-};
-use dockspace::viewport_focus::{
-    FocusObservationEnvelope, FocusObservationGeneration, GlobalFocusedWindow,
-    unknown_focus_observation,
-};
-use dockspace::viewport_registry::{ViewportAdmission, ViewportLifecycle, ViewportOwnership};
+use dockspace::presentation::scene::SurfaceScene;
 
 const ROOT_SOURCE: RootId = RootId::new(1);
 const ROOT_HOST: RootId = RootId::new(2);
@@ -152,7 +154,7 @@ fn submit_test_input_expect_error(fixture: &mut Fixture, input: EngineInput) -> 
 
 fn retained_native_staging_resource_is_visible(
     fixture: &mut Fixture,
-    resource: dockspace::presentation_observation::NativeStagingResourceId,
+    resource: dockspace::presentation::observation::NativeStagingResourceId,
 ) -> bool {
     let mut frame = fixture.presentation_host.begin(&fixture.engine);
     let retained = frame
@@ -413,7 +415,7 @@ fn known_source_binding(fixture: &Fixture) -> ViewportBinding {
         .engine
         .viewport()
         .viewport(SURFACE_SOURCE)
-        .map(dockspace::viewport_registry::ViewportRecord::binding)
+        .map(dockspace::platform::registry::ViewportRecord::binding)
         .or(fixture.source_binding)
         .expect("source binding must have been registered before observation")
 }
@@ -423,7 +425,7 @@ fn known_host_binding(fixture: &Fixture) -> ViewportBinding {
         .engine
         .viewport()
         .viewport(SURFACE_HOST)
-        .map(dockspace::viewport_registry::ViewportRecord::binding)
+        .map(dockspace::platform::registry::ViewportRecord::binding)
         .or(fixture.host_binding)
         .expect("host binding must have been registered before observation")
 }
@@ -508,7 +510,7 @@ fn platform_snapshot_at_generation(
 ) -> PlatformSnapshot {
     let inventory_observation = support::known_inventory_observation(platform_generation, &windows);
     PlatformSnapshot::new(
-        dockspace::viewport::PlatformSnapshotGeneration::new(platform_generation),
+        dockspace::platform::viewport::PlatformSnapshotGeneration::new(platform_generation),
         support::known_capability_observation(platform_generation, platform_capabilities()),
         focus,
         inventory_observation,
@@ -580,7 +582,7 @@ fn viewport_binding(fixture: &Fixture, surface: SurfaceId) -> ViewportBinding {
 fn binding_cleanup(
     fixture: &Fixture,
     binding: ViewportBinding,
-) -> &dockspace::frame::BindingRetirement {
+) -> &dockspace::platform::frame::BindingRetirement {
     fixture
         .engine
         .viewport()
@@ -620,7 +622,7 @@ fn assert_unobserved_external_binding_quarantines_token_until_exact_destruction(
     assert!(matches!(
         error,
         EngineError::Viewport {
-            source: dockspace::frame::ViewportCoordinatorError::RetiredTokenReserved {
+            source: dockspace::platform::frame::ViewportCoordinatorError::RetiredTokenReserved {
                 token,
             },
             ..
@@ -672,7 +674,7 @@ fn publish_windows_with_global_focus_impl(
     fixture: &mut Fixture,
     windows: Vec<ObservedWindow>,
     focused: GlobalFocusedWindow,
-    acknowledged_effect: Option<dockspace::effect::EffectId>,
+    acknowledged_effect: Option<dockspace::platform::effect::EffectId>,
 ) -> EngineTransition {
     fixture.input_generation += 1;
     let focus = FocusObservationEnvelope::new(
@@ -751,7 +753,7 @@ fn close_content_item(fixture: &mut Fixture, item: ItemId) -> EngineTransition {
     );
     assert!(committed.events().iter().any(|event| matches!(
         event.kind(),
-        dockspace::event::WorkspaceEventKind::CloseCommitted(
+        dockspace::engine::event::WorkspaceEventKind::CloseCommitted(
             CloseCommitOutcome::ItemClosed {
                 item: actual,
                 root: ROOT_SOURCE,
@@ -771,7 +773,7 @@ fn current_platform_snapshot(
         .engine
         .viewport()
         .viewport(SURFACE_SOURCE)
-        .map(dockspace::viewport_registry::ViewportRecord::binding)
+        .map(dockspace::platform::registry::ViewportRecord::binding)
     {
         for window in &mut windows {
             let state = match window.input_state() {
@@ -1245,7 +1247,7 @@ fn arm_journal_drag(fixture: &mut Fixture, source: NativeDragSource) -> ActiveJo
                 NativeDragSource::Group(tabs),
                 PresentationHitRegionKind::TabGroupDrag {
                     bar: group,
-                    region: dockspace::scene::TabGroupDragRegionKind::LeadingGrip,
+                    region: dockspace::presentation::scene::TabGroupDragRegionKind::LeadingGrip,
                 },
             ) => group.tabs == tabs,
             _ => false,
@@ -1868,7 +1870,7 @@ fn native_close_effect(
     fixture: &Fixture,
     transition: &EngineTransition,
     binding: ViewportBinding,
-    resolution: dockspace::effect::NativeCloseResolution,
+    resolution: dockspace::platform::effect::NativeCloseResolution,
 ) -> EffectId {
     platform_effects(fixture, transition)
         .iter()
@@ -1988,7 +1990,7 @@ fn advance_native_create_to_admitted(
 fn child_source_awaiting_first_live() -> (
     Fixture,
     NativeCreateRequest,
-    dockspace::presentation_observation::NativeStagingResourceId,
+    dockspace::presentation::observation::NativeStagingResourceId,
 ) {
     let mut fixture = fixture();
     prepare_child_source_platform(&mut fixture);
@@ -2024,7 +2026,7 @@ fn child_source_awaiting_first_live() -> (
 fn admitted_child_source() -> (
     Fixture,
     NativeCreateRequest,
-    dockspace::presentation_observation::NativeStagingResourceId,
+    dockspace::presentation::observation::NativeStagingResourceId,
 ) {
     let (mut fixture, request, resource) = child_source_awaiting_first_live();
     publish_surface_for_fixture(
@@ -2185,7 +2187,7 @@ fn assert_old_platform_inputs_are_stale(
                     request.effect(),
                     old_epoch,
                     EffectDispatchResult::Indeterminate(
-                        dockspace::effect::EffectIndeterminateReason::AcknowledgementLost,
+                        dockspace::platform::effect::EffectIndeterminateReason::AcknowledgementLost,
                     ),
                 ),
             },
@@ -2347,7 +2349,7 @@ fn native_ownership_transfer_waits_for_the_exact_first_live_target_output() {
             .viewport()
             .viewport(SURFACE_NATIVE)
             .map(|record| record.admission()),
-        Some(dockspace::viewport_registry::ViewportAdmission::Pending)
+        Some(dockspace::platform::registry::ViewportAdmission::Pending)
     );
     assert!(platform_effects(&fixture, &ready).iter().all(|effect| {
         !matches!(
@@ -2405,7 +2407,7 @@ fn native_ownership_transfer_waits_for_the_exact_first_live_target_output() {
             .viewport()
             .viewport(SURFACE_NATIVE)
             .map(|record| record.admission()),
-        Some(dockspace::viewport_registry::ViewportAdmission::Admitted)
+        Some(dockspace::platform::registry::ViewportAdmission::Admitted)
     );
     assert!(fixture.engine.workspace().surface(SURFACE_NATIVE).is_some());
     assert_eq!(
@@ -2487,7 +2489,7 @@ fn native_source_surface_retirement_waits_for_first_live_output() {
             .viewport()
             .viewport(SURFACE_NATIVE)
             .map(|record| record.admission()),
-        Some(dockspace::viewport_registry::ViewportAdmission::Admitted)
+        Some(dockspace::platform::registry::ViewportAdmission::Admitted)
     );
 }
 
@@ -2767,7 +2769,7 @@ fn admitted_native_close_uses_surface_protocol_and_requires_acknowledged_clear()
         &fixture,
         &cancelled,
         request.binding(),
-        dockspace::effect::NativeCloseResolution::Cancel,
+        dockspace::platform::effect::NativeCloseResolution::Cancel,
     );
 
     publish_surface_for_fixture(
@@ -4565,7 +4567,7 @@ fn retain_layout_native_close_waits_for_the_matching_destroyed_proof() {
         &fixture,
         &accepted,
         binding,
-        dockspace::effect::NativeCloseResolution::Accept,
+        dockspace::platform::effect::NativeCloseResolution::Accept,
     );
     assert_eq!(fixture.engine.workspace(), &before);
     assert!(fixture.engine.viewport().viewport(SURFACE_HOST).is_some());
@@ -4612,7 +4614,7 @@ fn cancelled_native_close_requires_an_acknowledged_live_clear() {
         &fixture,
         &cancellation,
         binding,
-        dockspace::effect::NativeCloseResolution::Cancel,
+        dockspace::platform::effect::NativeCloseResolution::Cancel,
     );
     assert_eq!(fixture.engine.workspace(), &before);
 
@@ -4945,7 +4947,7 @@ fn retired_tombstone_reserves_its_token_until_exact_destroyed_observation() {
     assert!(matches!(
         error,
         EngineError::Viewport {
-            source: dockspace::frame::ViewportCoordinatorError::RetiredTokenReserved {
+            source: dockspace::platform::frame::ViewportCoordinatorError::RetiredTokenReserved {
                 token,
             },
             ..

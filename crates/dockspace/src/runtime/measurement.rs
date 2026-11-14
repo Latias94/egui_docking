@@ -1,6 +1,6 @@
 //! Product-level surface measurement seam.
 
-pub use crate::scene_manifest::{
+pub use crate::presentation::manifest::{
     MeasurementValueError, TabListMenuMetrics, TabStripControlMetric, TabStripControlMetrics,
     TabStripControlPlacement, TabStripMetrics,
 };
@@ -8,8 +8,8 @@ pub use crate::scene_manifest::{
 use crate::geometry::{LogicalRect, LogicalSize};
 use crate::ids::{ItemId, SurfaceId};
 use crate::policy::TabBarVisibility;
-use crate::scene::{PaneSceneId, SurfaceScene};
-use crate::scene_manifest::{Measurement, SurfaceMeasurements, TabIntrinsic};
+use crate::presentation::manifest::{Measurement, SurfaceMeasurements, TabIntrinsic};
+use crate::presentation::scene::{PaneSceneId, SurfaceScene};
 
 use super::{
     DockspaceHostFrame, DockspaceInteractionError, DockspaceRuntimeError, DockspaceVisualId,
@@ -263,10 +263,12 @@ impl DockspaceHostFrame<'_> {
                     key,
                     resolve(SurfaceMeasurementRequest::TabIntrinsic {
                         visual: DockspaceVisualId::from_tab_scene(tab),
-                        bar: DockspaceVisualId::from_tab_bar_scene(crate::scene::TabBarSceneId {
-                            root: tab.root,
-                            tabs: tab.tabs,
-                        }),
+                        bar: DockspaceVisualId::from_tab_bar_scene(
+                            crate::presentation::scene::TabBarSceneId {
+                                root: tab.root,
+                                tabs: tab.tabs,
+                            },
+                        ),
                         item: tab.item,
                     })
                     .into_tab_intrinsic()?,

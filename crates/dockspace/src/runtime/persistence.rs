@@ -5,21 +5,22 @@ use std::{collections::BTreeSet, fmt};
 use thiserror::Error;
 
 use super::DockspaceSession;
-use crate::document::{
+use crate::engine::DockEngine;
+use crate::geometry::{PhysicalRect, PhysicalSize, ScaleFactor};
+use crate::model::{DockspaceLayout, DockspaceView, ItemId, SurfaceId};
+use crate::persistence::document;
+use crate::persistence::document::{
     BoundDocumentState, DockspaceDocumentCaptureError, DockspaceDocumentDecodeError,
     DockspaceDocumentEnvelope, DockspaceDocumentRestoreError, PreparedRuntimeDocumentRestore,
     RuntimeDocumentRestoreError,
 };
-use crate::external_item_key::ExternalItemKeyMapError;
-use crate::geometry::{PhysicalRect, PhysicalSize, ScaleFactor};
-use crate::model::{DockspaceLayout, DockspaceView, ItemId, SurfaceId};
+use crate::persistence::item_key::ExternalItemKeyMapError;
+use crate::persistence::placement::{NativeSurfaceHostPreference, ViewportPlacementPreferences};
 use crate::policy::DockPolicy;
-use crate::presentation_config::DockPresentationConfig;
-use crate::viewport_persistence::{NativeSurfaceHostPreference, ViewportPlacementPreferences};
-use crate::{document, engine::DockEngine};
+use crate::presentation::config::DockPresentationConfig;
 
-pub use crate::document::DockspaceDocumentId;
-pub use crate::viewport_persistence::{
+pub use crate::persistence::document::DockspaceDocumentId;
+pub use crate::persistence::placement::{
     NativeSurfaceHostPreference as DockspaceNativeSurfaceHosting,
     WindowPresentationPreference as DockspaceWindowPresentationPreference,
 };
@@ -272,7 +273,7 @@ fn native_surface_restore_plan(
     view: DockspaceView<'_>,
     preferences: impl Iterator<Item = DockspaceSurfacePresentationPreference>,
     roots: impl IntoIterator<Item = SurfaceId>,
-) -> Result<crate::frame::NativeSurfaceRestorePlan, DockspaceNativeDocumentHostingError> {
+) -> Result<crate::platform::frame::NativeSurfaceRestorePlan, DockspaceNativeDocumentHostingError> {
     let mut root_set = BTreeSet::new();
     for root in roots {
         if !root_set.insert(root) {
@@ -324,13 +325,13 @@ fn native_surface_restore_plan(
         else {
             return Err(DockspaceNativeDocumentHostingError::ChildPlacementRequired { surface });
         };
-        children.push(crate::frame::NativeSurfaceInitialRequest {
+        children.push(crate::platform::frame::NativeSurfaceInitialRequest {
             surface,
             recovery_host,
             placement,
         });
     }
-    Ok(crate::frame::NativeSurfaceRestorePlan {
+    Ok(crate::platform::frame::NativeSurfaceRestorePlan {
         roots: root_set,
         children,
     })
@@ -823,18 +824,18 @@ impl super::DockspaceHostFrame<'_> {
             for &root in &plan.roots {
                 if mappings.is_empty()
                     && !viewport.viewport(root).is_some_and(|record| {
-                        record.role() == crate::viewport::ViewportRole::Root
+                        record.role() == crate::platform::viewport::ViewportRole::Root
                             && record.ownership()
-                                == crate::viewport_registry::ViewportOwnership::External
+                                == crate::platform::registry::ViewportOwnership::External
                             && record.admission()
-                                == crate::viewport_registry::ViewportAdmission::Admitted
+                                == crate::platform::registry::ViewportAdmission::Admitted
                             && !matches!(
-                                record.lifecycle(),
-                                crate::viewport_registry::ViewportLifecycle::CloseRequested
-                                    | crate::viewport_registry::ViewportLifecycle::AwaitingDestroyed
-                                    | crate::viewport_registry::ViewportLifecycle::Missing
-                                    | crate::viewport_registry::ViewportLifecycle::Destroyed
-                            )
+                            record.lifecycle(),
+                            crate::platform::registry::ViewportLifecycle::CloseRequested
+                                | crate::platform::registry::ViewportLifecycle::AwaitingDestroyed
+                                | crate::platform::registry::ViewportLifecycle::Missing
+                                | crate::platform::registry::ViewportLifecycle::Destroyed
+                        )
                     })
                 {
                     return Err(DockspaceNativeDocumentHostingError::RootWindowUnavailable {
@@ -845,7 +846,7 @@ impl super::DockspaceHostFrame<'_> {
             }
             for child in &plan.children {
                 if viewport.viewport(child.surface).is_some_and(|record| {
-                    record.role() == crate::viewport::ViewportRole::Root
+                    record.role() == crate::platform::viewport::ViewportRole::Root
                         && !mappings.iter().any(|(existing, _)| {
                             existing.matches_viewport_binding(record.binding())
                         })
@@ -877,7 +878,7 @@ impl super::DockspaceHostFrame<'_> {
 
 fn decode_document(
     bytes: &[u8],
-) -> Result<crate::document::DockspaceDocument, DockspacePersistenceError> {
+) -> Result<crate::persistence::document::DockspaceDocument, DockspacePersistenceError> {
     let envelope: DockspaceDocumentEnvelope =
         serde_json::from_slice(bytes).map_err(DockspacePersistenceError::decode_json)?;
     envelope

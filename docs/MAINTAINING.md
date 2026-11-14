@@ -33,12 +33,30 @@ does not justify another layer: inspect production code separately from tests.
 Use Rust's ordinary `module.rs` and `module/` layout so source navigation follows
 module ownership without `#[path]` aliases.
 
+The public entry points are `geometry`, `model`, `policy`, `close`, `runtime`,
+and the optional `motion` module. Keep raw protocols inside their owning module;
+do not preserve obsolete root paths with compatibility re-exports. Private
+protocol tests use the same internal paths as production code and do not require
+test-only public module declarations.
+
 | Area | Owner | Responsibilities |
 | --- | --- | --- |
-| Frozen mutations | `dockspace/src/engine/pending_mutation/` | Release obligations, cancellation and presentation progress for commands waiting to commit |
-| Renderer observations | `dockspace/src/presentation_observation.rs` | Exact output identities, stream ordering and renderer terminal facts |
+| Durable topology | `dockspace/src/graph/` | Graph storage, commands, checked transactions, canonicalization, validation and read-only queries |
+| Ordered input | `dockspace/src/input/` | Provider ingress, pointer journals, receiver receipts and frozen output evidence for one journal reduction |
+| Gestures and targeting | `dockspace/src/interaction/` | Gesture state, deadlines, target acquisition and immutable drop geometry/resolution |
+| Presentation | `dockspace/src/presentation/` | Layout projection, measurement manifests, compiled scenes, tab strips, exact hit geometry and output observation |
+| Platform lifecycle | `dockspace/src/platform/` | Provider authority, effects, observed coordinates, window bindings, focus and viewport coordination |
+| Atomic publication | `dockspace/src/engine/` | Reducer transactions, pending mutation progress, logical surface recovery, commit events and resource retention |
+| Persistence | `dockspace/src/persistence/` | Workspace snapshots, item-key mapping, documents and window placement preferences |
 | Native pointer normalization | `egui_dockspace_native/src/pointer_event/` | Device enrollment, mouse button tails and scroll phases before core ingress |
 | Framework hit translation | `egui_dockspace_native/src/receiver.rs` | Match exact presented egui artifacts and independently resolve delivery/hover lanes |
+
+Directory grouping does not create another state owner. `DockEngine` remains
+the single writer; its presentation authority, pending mutations and platform
+coordinator keep their existing publication and cancellation responsibilities.
+Shared geometry and stable identities remain small root modules. Public policy
+and close modules explicitly export application-facing types while their rule
+and plan implementations remain private to the crate.
 
 Keep private tests in the matching `module/tests.rs` or narrowly named child
 modules. Test helpers stay private to their module unless multiple production

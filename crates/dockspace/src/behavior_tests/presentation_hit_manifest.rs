@@ -2,17 +2,17 @@ use super::support;
 
 use std::collections::BTreeSet;
 
-use dockspace::drop_guide::DropGuideScope;
 use dockspace::engine::DockEngine;
 use dockspace::geometry::LogicalRect;
 use dockspace::graph::{Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
+use dockspace::interaction::targeting::guide::DropGuideScope;
 use dockspace::model::DockspaceAxis;
 use dockspace::policy::DockPolicy;
-use dockspace::presentation_hit::{
+use dockspace::presentation::hit::{
     PresentationHitManifest, PresentationHitRegionKind, PresentationPointerLane,
 };
-use dockspace::scene::PresentationPlan;
+use dockspace::presentation::scene::PresentationPlan;
 use support::{TestPresentationHost, install_surface_projection, publish_surface};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -344,7 +344,9 @@ fn rootless_background_is_one_output_bound_hover_drop_receiver() {
             matches!(
                 region.id().kind(),
                 PresentationHitRegionKind::DropTarget(
-                    dockspace::drop_target::DropTargetId::SurfaceBackground { surface: SURFACE }
+                    dockspace::interaction::targeting::targets::DropTargetId::SurfaceBackground {
+                        surface: SURFACE
+                    }
                 )
             )
         })

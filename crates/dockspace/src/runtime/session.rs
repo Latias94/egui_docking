@@ -2,15 +2,15 @@
 
 use std::sync::{Arc, Weak};
 
-use crate::command::ContentCloseTarget;
 use crate::engine::{DockEngine, EngineError};
 #[cfg(test)]
 use crate::graph::Workspace;
+use crate::graph::command::ContentCloseTarget;
 use crate::model::{
     DockAnchor, DockPlacement, DockspaceActionRejection, DockspaceLayout, DockspaceView,
     NativeTearOffSource, PreparedTabsGroup, WorkspaceVersion,
 };
-use crate::presentation_observation::PresentationHostLease;
+use crate::presentation::observation::PresentationHostLease;
 
 use super::close::PreparedCloseRequest;
 use super::host_frame::{DockspaceHostFrame, EncodingState};
@@ -34,7 +34,7 @@ pub struct DockspaceSession {
     pub(super) pointer: Option<interaction::RuntimePointerState>,
     pub(super) native: Option<native::RuntimeNativeState>,
     #[cfg(feature = "serde")]
-    pub(super) document: Option<crate::document::BoundDocumentState>,
+    pub(super) document: Option<crate::persistence::document::BoundDocumentState>,
     pub(super) abandoned_native_effects: native_effect::NativeEffectDropQueue,
     pub(super) native_report_storage_limit: Option<native::NativeReportStorageLimit>,
     pub(super) committed_source_sequence: u64,

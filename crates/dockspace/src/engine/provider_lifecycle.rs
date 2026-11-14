@@ -224,7 +224,7 @@ impl DockEngine {
     #[cfg(test)]
     pub fn begin_backend_ingress_provider_replacement(
         &mut self,
-        drained: &mut crate::backend_ingress::BackendIngressDrainReceipt,
+        drained: &mut crate::input::ingress::BackendIngressDrainReceipt,
     ) -> Result<BackendIngressProviderReplacementStart, EngineError> {
         let (mut candidate, platform_ticket, transition) =
             self.prepare_joined_backend_provider_replacement(drained)?;
@@ -384,7 +384,7 @@ impl DockEngine {
     #[cfg(test)]
     fn prepare_joined_backend_provider_replacement(
         &self,
-        drained_backend: &crate::backend_ingress::BackendIngressDrainReceipt,
+        drained_backend: &crate::input::ingress::BackendIngressDrainReceipt,
     ) -> Result<(DockEngine, PlatformProviderReservation, EngineTransition), EngineError> {
         drained_backend
             .validate_active()
@@ -631,7 +631,7 @@ impl DockEngine {
     pub fn create_pointer_provider(
         &mut self,
         scope: PointerProviderScope,
-        committed_through: crate::pointer_journal::PointerEdgeSequence,
+        committed_through: crate::input::journal::PointerEdgeSequence,
     ) -> Result<PointerInputLease, EngineError> {
         if scope.is_local() {
             return Err(EngineError::SurfaceLocalPointerProducerRequired);
@@ -718,7 +718,7 @@ impl DockEngine {
             .viewport
             .viewport(binding.surface())
             .filter(|record| record.binding() == binding)
-            .map(crate::viewport_registry::ViewportRecord::coordinate_generation)
+            .map(crate::platform::registry::ViewportRecord::coordinate_generation)
             .ok_or(EngineError::PointerProviderScope {
                 detail: format!("native endpoint {binding:?} has no current coordinate authority"),
             })?;
@@ -769,7 +769,7 @@ impl DockEngine {
     /// checkpoint can establish that all buttons are released.
     #[must_use]
     #[cfg(test)]
-    pub fn pointer_button_authority(&self) -> crate::pointer_journal::AnyButtonDownAuthority {
+    pub fn pointer_button_authority(&self) -> crate::input::journal::AnyButtonDownAuthority {
         self.pointer_journal.button_authority()
     }
 
@@ -1388,7 +1388,7 @@ mod host_local_tests {
             .expect("compact revoked provider");
         assert_eq!(
             outcome.disposition(),
-            crate::pointer_journal::SurfaceLocalPointerRetirementDisposition::CompactedPreviouslyRetired,
+            crate::input::journal::SurfaceLocalPointerRetirementDisposition::CompactedPreviouslyRetired,
         );
         assert!(receipt.is_consumed());
         assert!(

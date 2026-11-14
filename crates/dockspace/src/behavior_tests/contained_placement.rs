@@ -1,24 +1,24 @@
 use super::support;
 
-use dockspace::command::WorkspaceCommand;
+use dockspace::engine::surface_recovery::{
+    ConvertedMainRecovery, RootRecoveryAnchor, SurfaceRecoveryTarget,
+};
+use dockspace::engine::transition::{InputOutcome, SurfaceContributionOutcome};
 use dockspace::engine::{DockEngine, EngineInput};
-use dockspace::error::CommandError;
 use dockspace::geometry::{LogicalRect, LogicalSize};
+use dockspace::graph::command::WorkspaceCommand;
+use dockspace::graph::error::CommandError;
 use dockspace::graph::{ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{
     FloatingPresentationId, ItemId, NodeId, RootId, StableInputSourceId, SurfaceId,
 };
-use dockspace::intent::ContainedPlacementUnavailable;
+use dockspace::input::intent::ContainedPlacementUnavailable;
 use dockspace::interaction::{InteractionOutcome, InteractionRejection};
 use dockspace::model::{DockspaceActionOutcome, DockspaceActionRejection};
+use dockspace::platform::viewport::{ViewportRole, WindowToken};
 use dockspace::policy::DockPolicy;
-use dockspace::presentation_config::DockPresentationConfig;
-use dockspace::scene::SurfaceScene;
-use dockspace::surface_recovery::{
-    ConvertedMainRecovery, RootRecoveryAnchor, SurfaceRecoveryTarget,
-};
-use dockspace::transition::{InputOutcome, SurfaceContributionOutcome};
-use dockspace::viewport::{ViewportRole, WindowToken};
+use dockspace::presentation::config::DockPresentationConfig;
+use dockspace::presentation::scene::SurfaceScene;
 use support::{
     MeasurementProfile, TestPresentationHost, install_surface_projection, measurements,
     publish_surface, publish_surfaces, submit_input,
@@ -126,7 +126,7 @@ fn contained_placement_outcome(
     root: RootId,
     floating: FloatingPresentationId,
     expected_rect: LogicalRect,
-    placement: dockspace::intent::ContainedPlacementProof,
+    placement: dockspace::input::intent::ContainedPlacementProof,
 ) -> InteractionOutcome {
     let expected = engine.version();
     let transition = submit_input(

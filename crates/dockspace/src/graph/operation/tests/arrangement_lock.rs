@@ -1,9 +1,9 @@
 use super::*;
-use crate::policy::{DockItemRule, DockSourceRule};
-use crate::surface_recovery::{
+use crate::engine::surface_recovery::{
     ContainedRootPlacement, SurfaceRehomePlacement, SurfaceRosterDisposition,
 };
-use crate::transaction::WorkspaceTransaction;
+use crate::graph::transaction::WorkspaceTransaction;
+use crate::policy::{DockItemRule, DockSourceRule};
 
 fn assert_locked(error: TransactionError, index: usize) {
     assert!(

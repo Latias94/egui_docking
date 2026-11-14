@@ -676,16 +676,20 @@ fn native_create_cleanup_commits_under_report_backpressure_and_compensates_once(
         .expect("the exact child retains its cleanup owner");
     assert_eq!(
         retirement.origin(),
-        crate::frame::BindingRetirementOrigin::NativeCreateAborted {
+        crate::platform::frame::BindingRetirementOrigin::NativeCreateAborted {
             create: before.create()
         }
     );
-    let crate::frame::BindingRetirementStatus::CleanupRequested { effect } = retirement.status()
+    let crate::platform::frame::BindingRetirementStatus::CleanupRequested { effect } =
+        retirement.status()
     else {
         panic!("the cancelled child must retain one exact compensation");
     };
     let queued = session.engine.viewport().effects().record(effect).unwrap();
-    assert_eq!(queued.phase(), crate::effect::EffectPhase::Requested);
+    assert_eq!(
+        queued.phase(),
+        crate::platform::effect::EffectPhase::Requested
+    );
     assert!(!queued.was_emitted());
     assert!(queued.delivery().is_none());
     assert_eq!(
@@ -822,7 +826,7 @@ fn assert_first_live_preparation_is_cancellable_without_transferring_source(
             .native_create_saga(saga)
             .unwrap()
             .phase(),
-        crate::frame::NativeCreatePhase::AwaitingPrepared { .. }
+        crate::platform::frame::NativeCreatePhase::AwaitingPrepared { .. }
     ));
     let source_sequence = session.committed_source_sequence;
     let version = session.version();
@@ -838,7 +842,7 @@ fn assert_first_live_preparation_is_cancellable_without_transferring_source(
             .native_create_saga(saga)
             .unwrap()
             .phase(),
-        crate::frame::NativeCreatePhase::AwaitingFirstLivePresentation { .. }
+        crate::platform::frame::NativeCreatePhase::AwaitingFirstLivePresentation { .. }
     ));
     assert_eq!(candidate.version(), version);
     assert!(candidate.cancel_next_native_create().unwrap());
@@ -1434,7 +1438,7 @@ fn tracked_application_action_correlation_ignores_an_earlier_pointer_close_reque
                         ..
                     }
                 ),
-            ] if plan.target() == (crate::close_plan::ClosePlanTarget::Root { root: ROOT })
+            ] if plan.target() == (crate::close::plan::ClosePlanTarget::Root { root: ROOT })
                 && *target_root == RootId::new(2)
         ),
         "actual joined outcomes: {:?}",

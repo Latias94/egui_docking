@@ -7,9 +7,9 @@ use slotmap::SparseSecondaryMap;
 
 use super::authority::NodePlacement;
 use super::{Axis, Node, SplitWeight, WorkspaceData};
-use crate::error::{CommandError, ReferenceRole};
+use crate::graph::error::{CommandError, ReferenceRole};
+use crate::graph::workspace::ParentLink;
 use crate::ids::{NodeId, RootId};
-use crate::workspace::ParentLink;
 
 /// One exact immutable split value, shared with its current arena handle.
 #[derive(Debug)]
@@ -200,7 +200,7 @@ impl RootStructure {
         }
         structure.finish_directory();
         #[cfg(test)]
-        crate::drop_resolver::structural_work::record_root_structure_completed(
+        crate::interaction::targeting::resolver::structural_work::record_root_structure_completed(
             structure.nodes.len(),
             structure.split_rows.len(),
         );

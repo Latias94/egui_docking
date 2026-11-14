@@ -6,6 +6,7 @@ mod contained_geometry;
 mod contained_projection;
 mod deferred_action;
 mod error;
+pub(crate) mod event;
 mod gesture_cancel;
 mod host_frame;
 mod input;
@@ -38,14 +39,17 @@ mod product_action;
 mod provider_lifecycle;
 mod reducer;
 mod replacement_focus;
+pub(crate) mod resources;
 mod retention;
 mod scroll_interaction;
 mod semantic_candidate;
 mod splitter_geometry;
 mod surface_contribution;
+pub(crate) mod surface_recovery;
 mod surface_runtime;
 mod surface_vacancy;
 mod tab_strip_input;
+pub(crate) mod transition;
 mod workspace_publication;
 
 pub use error::EngineError;
@@ -65,13 +69,9 @@ use self::pointer_proof::{
 #[cfg(test)]
 pub use self::input::{TabListMenuNavigation, TabScrollAdjustmentError};
 #[cfg(test)]
-pub use self::presentation_roster::HostPresentationSchedule;
+pub use self::surface_contribution::PreparedSurfacePaintCandidate;
 #[cfg(test)]
-pub use self::surface_contribution::{
-    PreparedReadySurfacePaintCandidate, PreparedSurfacePaintCandidate,
-};
-#[cfg(test)]
-use crate::scene::PresentationPlanValidator;
+use crate::presentation::scene::PresentationPlanValidator;
 
 use self::tab_strip_input::TabListMenuActivation;
 #[cfg(test)]
@@ -87,7 +87,7 @@ use self::contained_geometry::{
     contained_resize_edges, contained_transform_requested_rect, translated_contained_rect,
 };
 use self::input::TabScrollAdjustmentKind;
-#[cfg(any(feature = "serde", test))]
+#[cfg(feature = "serde")]
 pub use self::input::ValidatedWorkspaceRestore;
 pub use self::input::{
     EngineInput, PreparedTabListMenuDismiss, PreparedTabListMenuNavigation,
@@ -123,55 +123,80 @@ pub use self::surface_contribution::{
 };
 use self::surface_vacancy::TickVacancyLedger;
 
-#[cfg(test)]
-use crate::backend_ingress::BackendIngressProviderReplacementTicket;
-use crate::backend_ingress::{
-    BackendIngressAuthority, BackendIngressBatch, BackendIngressCommitGuard,
-    BackendIngressCommitWatermark, BackendIngressError, BackendIngressLease, BackendIngressOrdinal,
-    BackendIngressPayload, BackendIngressPrefixRetirementReceipt, BackendIngressRecorder,
-};
-use crate::close_plan::prepare_scoped_content_close as prepare_content_close;
-use crate::close_plan::{
+use crate::close::plan::prepare_scoped_content_close as prepare_content_close;
+use crate::close::plan::{
     CloseAdvanceOutcome, CloseAuthority, CloseCancellationProof, CloseCoordinator, CloseDecision,
     CloseDecisionToken, CloseDestroyedProof, CloseItemRequirement, CloseNativeSettlement,
     ClosePlan, ClosePlanLookup, ClosePlanPhase, ClosePlanTarget, CloseRequestId,
     CloseResolutionOutcome, DeferredCloseDecision, DeferredCloseToken, NativeCloseEdge,
     SurfaceCloseRequest, SurfaceMainRehomeTarget, SurfaceRehomeTarget,
 };
-use crate::command::{
+use crate::engine::event::{ReductionCause, WorkspaceEvent, WorkspaceEventKind};
+use crate::engine::resources::PresentationRetentionManifest;
+#[cfg(test)]
+use crate::engine::resources::{InputSourceRetentionManifest, RuntimeRetentionManifest};
+use crate::engine::surface_recovery::{
+    ContainedRootPlacement, ConvertedMainRecovery, RootRecoveryAnchor, RootRecoveryAnchorId,
+    SurfaceMainRehome, SurfaceRecoveryBlockedReason, SurfaceRecoveryBootstrap,
+    SurfaceRecoveryError, SurfaceRecoveryHostFacts, SurfaceRecoveryObligation,
+    SurfaceRecoveryObligationId, SurfaceRecoveryState, SurfaceRecoveryTarget,
+    SurfaceRecoveryTransaction, SurfaceRehomePlacement, SurfaceRosterCaptureError,
+    SurfaceRosterDisposition,
+};
+use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize};
+use crate::graph::command::{
     CloseCommitOutcome, CommandOutcome, ContainedPosition, ContentCloseTarget, ItemSource,
     MovePayload, NodeFingerprint, NodeSource, RootContent, RootPresentationTarget, SplitResize,
     WorkspaceCommand,
 };
-use crate::coordinates::{
-    CoordinateSnapshot, RecoveryCoordinateSnapshot, TearOffPlacementRequest,
-    solve_tear_off_placement,
+use crate::graph::error::{CommandError, ReferenceRole, TransactionError};
+use crate::graph::operation::{
+    PreparedSurfaceContentClose, authorize_captured_drag_source, prepare_surface_content_close,
 };
-use crate::drop_resolver::{
-    DropAffordance, DropResolution, DropResolutionError, DropTargeting, PreparedDropMutation,
-    resolve_presented_drop_with_targeting,
-};
-use crate::effect::{
-    EffectDispatchResult, EffectId, EffectResult, EffectTransition, NativeCloseResolution,
-    PlatformEffect, PlatformEffectEmission,
-};
-use crate::error::{CommandError, ReferenceRole, TransactionError};
-use crate::event::{ReductionCause, WorkspaceEvent, WorkspaceEventKind};
-use crate::frame::{
-    PanelFocus, SurfaceVacancyAuthority, ViewportCoordinator, ViewportCoordinatorError,
-};
-use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize};
+#[cfg(test)]
+use crate::graph::transaction::WorkspaceTransaction;
 use crate::graph::{Axis, Node, Workspace};
 use crate::ids::{
     EngineAuthorityDomainId, FloatingPresentationId, HostPresentationAttemptId, InputSequence,
     ItemId, NativeCreateSagaId, PresentationIdentityFrontier, ReducerCausalOrdinal, ReducerTickId,
     RootId, SourceSequence, StableInputSourceId, SurfaceId, WorkspaceRevision,
 };
-use crate::intent::{
+#[cfg(test)]
+use crate::input::ingress::BackendIngressProviderReplacementTicket;
+use crate::input::ingress::{
+    BackendIngressAuthority, BackendIngressBatch, BackendIngressCommitGuard,
+    BackendIngressCommitWatermark, BackendIngressError, BackendIngressLease, BackendIngressOrdinal,
+    BackendIngressPayload, BackendIngressPrefixRetirementReceipt, BackendIngressRecorder,
+};
+use crate::input::intent::{
     Authority, CloseActivation, CloseSceneTarget, ContainedGestureKind, ContainedPlacementProof,
     ContainedPlacementUnavailable, ContainedTransformKind, NativePlacementProof,
     NativePresentationOffer, NativeTearOffProposal, PointerButton, SurfacePointer,
     TabGestureSource,
+};
+use crate::input::journal::{
+    DesktopRouteFact, DesktopRoutePresentationError, DesktopRouteValidation, PointerCaptureOwner,
+    PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation, PointerEdgeSequence,
+    PointerEventDeliveryOwner, PointerInputLease, PointerJournalLedger, PointerJournalLedgerError,
+    PointerProviderScope, PointerStreamId, ScrollDeliveryEndpoint, ScrollDelta, ScrollDeviceId,
+    ScrollEdge, ScrollPhase, ScrollSequenceToken, SurfaceLocalPointerDrainReceipt,
+    SurfaceLocalPointerEndpoint, SurfaceLocalPointerFrameCommit, SurfaceLocalPointerProvider,
+    SurfaceLocalPointerProviderError, SurfaceLocalPointerQuiescenceDisposition,
+    SurfaceLocalPointerRetirementOutcome, SurfaceLocalPointerScope, ValidatedDesktopRoute,
+};
+use crate::input::presentation::{JournalPresentationSnapshot, JournalSurfacePresentation};
+use crate::input::receiver::{
+    PointerReceiverAttemptError, PointerReceiverAttemptIssuer, PointerReceiverCandidateRoster,
+    PointerReceiverCandidateRosterError, PointerReceiverCandidateSpec,
+    PointerReceiverDeliveryDisposition, PointerReceiverHoverHit,
+    PointerReceiverHoverHitDisposition, PointerReceiverObservation,
+    PointerReceiverObservationError, PointerReceiverPresentedOutput, PointerReceiverProbeReceipt,
+    PointerReceiverReceiptBatch, PointerReceiverReceiptValidationError, ScrollReceiverChallenge,
+    ValidatedPointerReceiverReceipt, ValidatedPointerReceiverReceiptBatch,
+};
+use crate::interaction::targeting::resolver::{
+    DropAffordance, DropResolution, DropResolutionError, DropTargeting, PreparedDropMutation,
+    resolve_presented_drop_with_targeting,
 };
 use crate::interaction::{
     ActiveContainedTransform, ActiveResize, ClickSessionId, ClickStart, ContainedDragIntent,
@@ -190,51 +215,50 @@ use crate::interaction::{
     ScrollSuppressionReason, ScrollTerminationReason, TabStripEdgeDirection,
     TabStripEdgeScrollState, TouchPressState, WorkspaceDeliveryKind,
 };
-use crate::journal_presentation::{JournalPresentationSnapshot, JournalSurfacePresentation};
 #[cfg(test)]
 use crate::model::DockspaceLayout;
 use crate::model::{DockspaceView, ProductAction};
-use crate::operation::{
-    PreparedSurfaceContentClose, authorize_captured_drag_source, prepare_surface_content_close,
+use crate::platform::coordinates::{
+    CoordinateSnapshot, RecoveryCoordinateSnapshot, TearOffPlacementRequest,
+    solve_tear_off_placement,
+};
+use crate::platform::effect::{
+    EffectDispatchResult, EffectId, EffectResult, EffectTransition, NativeCloseResolution,
+    PlatformEffect, PlatformEffectEmission,
+};
+use crate::platform::frame::{
+    PanelFocus, SurfaceVacancyAuthority, ViewportCoordinator, ViewportCoordinatorError,
+};
+#[cfg(test)]
+use crate::platform::provider::PlatformProviderReservation;
+use crate::platform::provider::{
+    PlatformObservationAuthorityError, PlatformObservationLease, PlatformProviderAuthorityFrontier,
 };
 use crate::platform::{
     CloseEffectAcknowledgement, PlatformCapability, PlatformSnapshot, WindowCloseObservation,
-};
-#[cfg(test)]
-use crate::platform_provider::PlatformProviderReservation;
-use crate::platform_provider::{
-    PlatformObservationAuthorityError, PlatformObservationLease, PlatformProviderAuthorityFrontier,
-};
-use crate::pointer_journal::{
-    DesktopRouteFact, DesktopRoutePresentationError, DesktopRouteValidation, PointerCaptureOwner,
-    PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation, PointerEdgeSequence,
-    PointerEventDeliveryOwner, PointerInputLease, PointerJournalLedger, PointerJournalLedgerError,
-    PointerProviderScope, PointerStreamId, ScrollDeliveryEndpoint, ScrollDelta, ScrollDeviceId,
-    ScrollEdge, ScrollPhase, ScrollSequenceToken, SurfaceLocalPointerDrainReceipt,
-    SurfaceLocalPointerEndpoint, SurfaceLocalPointerFrameCommit, SurfaceLocalPointerProvider,
-    SurfaceLocalPointerProviderError, SurfaceLocalPointerQuiescenceDisposition,
-    SurfaceLocalPointerRetirementOutcome, SurfaceLocalPointerScope, ValidatedDesktopRoute,
-};
-use crate::pointer_receiver::{
-    PointerReceiverAttemptError, PointerReceiverAttemptIssuer, PointerReceiverCandidateRoster,
-    PointerReceiverCandidateRosterError, PointerReceiverCandidateSpec,
-    PointerReceiverDeliveryDisposition, PointerReceiverHoverHit,
-    PointerReceiverHoverHitDisposition, PointerReceiverObservation,
-    PointerReceiverObservationError, PointerReceiverPresentedOutput, PointerReceiverProbeReceipt,
-    PointerReceiverReceiptBatch, PointerReceiverReceiptValidationError, ScrollReceiverChallenge,
-    ValidatedPointerReceiverReceipt, ValidatedPointerReceiverReceiptBatch,
 };
 use crate::policy::{
     DockPolicy, DockPolicyRequest, DockPolicySnapshot, DockPresentationMode,
     DockResizePolicyRequest, PolicyDecision, PolicyRevision, TabBarInteraction,
     TearOffPresentation,
 };
-use crate::presentation_config::{DockPresentationConfig, PresentationConfigRevision};
-use crate::presentation_hit::{
+#[cfg(test)]
+use crate::presentation::compiler::compile_surface_measurements;
+use crate::presentation::compiler::{
+    PresentationCompilationError, compile_surface_plan, derive_scene_requirement_draft,
+    derive_scene_requirement_draft_with_index,
+};
+use crate::presentation::config::{DockPresentationConfig, PresentationConfigRevision};
+use crate::presentation::hit::{
     PresentationHitRegionId, PresentationHitRegionKind, PresentationHitResolutionError,
     PresentationPointerLane,
 };
-use crate::presentation_observation::{
+use crate::presentation::manifest::{
+    MeasurementUnavailableReason, RequirementRevision, SceneRequirementDraft,
+    SceneRequirementManifest, SurfaceMeasurementTicket, SurfaceMeasurements,
+    SurfaceRequirementRevision,
+};
+use crate::presentation::observation::{
     HostFrameKey, HostInteractionPresentation, HostPresentationEmission,
     HostPresentationEmissionRequest, HostPresentationEndpoint, HostPresentationObservation,
     HostPresentationObservationEntry, HostPresentationObservationOutcome,
@@ -245,64 +269,40 @@ use crate::presentation_observation::{
     SurfacePresentationOutputTicket,
 };
 #[cfg(test)]
-use crate::presentation_observation::{
+use crate::presentation::observation::{
     NativeStagingResourceDescriptor, PresentationLedgerDiagnostics,
 };
-use crate::retention::PresentationRetentionManifest;
-#[cfg(test)]
-use crate::retention::{InputSourceRetentionManifest, RuntimeRetentionManifest};
-use crate::scene::{
+use crate::presentation::scene::{
     BootstrapSurfaceSceneReason, PopupGeometryUnavailableReason, PresentationPlan, SceneBuildError,
     SplitterResizeTarget, SplitterSceneId, StaleSurfaceSceneReason, SurfaceCoordinateCapture,
     SurfaceInteractionProjection, SurfaceScene, SurfaceSceneSet, SurfaceSceneStamp, TabBarRecord,
     TabListMenuBackdropRecord, TabListMenuRecord, TabStripMemberRecord,
 };
-#[cfg(test)]
-use crate::scene_compiler::compile_surface_measurements;
-use crate::scene_compiler::{
-    PresentationCompilationError, compile_surface_plan, derive_scene_requirement_draft,
-    derive_scene_requirement_draft_with_index,
-};
-use crate::scene_manifest::{
-    MeasurementUnavailableReason, RequirementRevision, SceneRequirementDraft,
-    SceneRequirementManifest, SurfaceMeasurementTicket, SurfaceMeasurements,
-    SurfaceRequirementRevision,
-};
-use crate::surface_recovery::{
-    ContainedRootPlacement, ConvertedMainRecovery, RootRecoveryAnchor, RootRecoveryAnchorId,
-    SurfaceMainRehome, SurfaceRecoveryBlockedReason, SurfaceRecoveryBootstrap,
-    SurfaceRecoveryError, SurfaceRecoveryHostFacts, SurfaceRecoveryObligation,
-    SurfaceRecoveryObligationId, SurfaceRecoveryState, SurfaceRecoveryTarget,
-    SurfaceRecoveryTransaction, SurfaceRehomePlacement, SurfaceRosterCaptureError,
-    SurfaceRosterDisposition,
-};
-use crate::tab_strip::{
+use crate::presentation::tab_strip::{
     PopupRoutingRevision, TabListMenuSessionId, TabStripControlId, TabStripInfluenceDomain,
     TabStripStateDelta, TabStripStateError, TabStripStateKey, TabStripStateStore,
 };
-#[cfg(test)]
-use crate::transaction::WorkspaceTransaction;
 
 #[cfg(test)]
-use crate::transition::{
+use crate::engine::transition::{
     BackendIngressProviderReplacementStart, PresentationHostRetirementOutcome,
 };
-use crate::transition::{
+use crate::engine::transition::{
     ContentCloseRequestRejection, EngineTransition, EngineTransitionParts, InputOutcome,
     InputPriority, ReducedInput, SurfaceCloseRequestRejection, SurfaceContributionOutcome,
     SurfaceContributionRejection, SurfaceContributionUnavailableReason, SurfaceSceneDelta,
     SurfaceSceneStateKind, WorkspaceVersion,
 };
-use crate::validation::WorkspaceValidationErrors;
-use crate::viewport::{ViewportBinding, ViewportRole, WindowToken};
-use crate::viewport_focus::{
+use crate::graph::validation::WorkspaceValidationErrors;
+use crate::platform::focus::{
     ActivationStart, ActivationStartOutcome, FocusCausalStamp, FocusDelta,
     FocusObservationTransition, ObservedPlatformFocusEffect, PaneFocusDisposition, PaneFocusIntent,
     PaneFocusIntentGeneration, PaneFocusObservation, PaneFocusRequestObservation,
     PaneFocusRevealRejection, PanelFocusRecord, PendingPlatformFocus, PlatformFocusEvidence,
     ViewportActivationRequest, ViewportFocusCoordinator, ViewportFocusError,
 };
-use crate::viewport_registry::{NativeCloseEdgeDisposition, ViewportAdmission, ViewportOwnership};
+use crate::platform::registry::{NativeCloseEdgeDisposition, ViewportAdmission, ViewportOwnership};
+use crate::platform::viewport::{ViewportBinding, ViewportRole, WindowToken};
 pub(crate) use host_frame::CoreEncodingCheckpoint;
 use pointer_handoff::NativePointerHandoffProjection;
 
@@ -683,7 +683,7 @@ struct StagedPresentationOutput {
     surface: SurfaceId,
     endpoint: HostPresentationEndpoint,
     payload: HostPresentationOutputPayload,
-    scene: Option<Arc<crate::scene::SurfacePlanScene>>,
+    scene: Option<Arc<crate::presentation::scene::SurfacePlanScene>>,
 }
 
 /// Observation-only admission stage of one core-owned host frame.
@@ -861,7 +861,7 @@ pub struct CoreHostFrame {
     application_base: WorkspaceVersion,
     presentation_observation_outcomes: Vec<HostPresentationObservationOutcome>,
     reduced_inputs: Vec<ReducedInput>,
-    reduced_pointer_edges: Vec<crate::transition::ReducedPointerEdge>,
+    reduced_pointer_edges: Vec<crate::engine::transition::ReducedPointerEdge>,
     events: Vec<WorkspaceEvent>,
     interaction_events: Vec<InteractionEvent>,
     last_reduced_input: Option<InputSequence>,
@@ -936,7 +936,7 @@ pub struct DockEngine {
     authority_domain: EngineAuthorityDomainId,
     /// Canonical immutable snapshot shared by rollback candidates. Checked
     /// commands own the existing staging copy and publish a new snapshot.
-    workspace: crate::operation::WorkspaceSnapshot,
+    workspace: crate::graph::operation::WorkspaceSnapshot,
     presentation_identity: PresentationIdentityAuthority,
     policy: DockPolicySnapshot,
     version: WorkspaceVersion,
@@ -974,20 +974,20 @@ pub struct DockEngine {
 
 #[derive(Debug)]
 struct StagedWorkspacePublication {
-    workspace: crate::operation::WorkspaceSnapshot,
+    workspace: crate::graph::operation::WorkspaceSnapshot,
     root_recovery_anchors: BTreeMap<crate::ids::SurfaceId, RootRecoveryAnchor>,
     bound_surface_recoveries: BTreeMap<crate::ids::SurfaceId, BoundSurfaceRecovery>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 struct BoundSurfaceRecovery {
-    binding: crate::viewport::ViewportBinding,
+    binding: crate::platform::viewport::ViewportBinding,
     obligation: SurfaceRecoveryObligation,
 }
 
 impl BoundSurfaceRecovery {
     const fn new(
-        binding: crate::viewport::ViewportBinding,
+        binding: crate::platform::viewport::ViewportBinding,
         obligation: SurfaceRecoveryObligation,
     ) -> Self {
         Self {
@@ -1013,7 +1013,7 @@ enum WorkspacePublicationAuthority {
         obligation: SurfaceRecoveryObligationId,
     },
     WindowRecoveryCommit {
-        window: crate::viewport::WindowBinding,
+        window: crate::platform::viewport::WindowBinding,
     },
     PresentationRehome {
         source_surface: crate::ids::SurfaceId,
@@ -1046,7 +1046,7 @@ enum ContainedPlacementAuthority {
 
 #[derive(Debug, Clone, PartialEq)]
 enum PreparedCloseOperation {
-    Content(crate::close_plan::ContentCloseScope),
+    Content(crate::close::plan::ContentCloseScope),
     Window {
         bindings: Vec<ViewportBinding>,
         operations: Vec<PreparedCloseOperation>,
@@ -1145,7 +1145,7 @@ enum PreviewDecision {
         scene: SurfaceSceneStamp,
         visual: PreviewVisual,
         proof: Box<PreviewProof>,
-        tab_strip: Option<std::sync::Arc<crate::scene_compiler::FutureTabStrip>>,
+        tab_strip: Option<std::sync::Arc<crate::presentation::compiler::FutureTabStrip>>,
     },
     Clear(PreviewResolutionStatus),
     Cancel(InteractionCancelReason),
@@ -1211,7 +1211,7 @@ impl PreviewEvaluation {
 
 enum CoreContainedCandidate {
     None,
-    Proposal(crate::intent::ContainedTearOffProposal),
+    Proposal(crate::input::intent::ContainedTearOffProposal),
     Rejected,
     Cancel(InteractionCancelReason),
 }
@@ -1249,18 +1249,19 @@ struct PreparedContainedGesture {
     surface: crate::ids::SurfaceId,
     root: crate::ids::RootId,
     floating: crate::ids::FloatingPresentationId,
-    button: crate::intent::PointerButton,
+    button: crate::input::intent::PointerButton,
     initial_pointer: crate::geometry::LogicalPoint,
     minimum_size: crate::geometry::LogicalSize,
     source_rect: crate::geometry::LogicalRect,
     source: NodeSource,
-    expected_roster: crate::command::ContainedRosterSource,
+    expected_roster: crate::graph::command::ContainedRosterSource,
     kind: ContainedGestureKind,
     scene: SurfaceSceneStamp,
     surface_bounds: crate::geometry::LogicalRect,
     coordinate_capture: SurfaceCoordinateCapture,
     presentation: FrozenPresentationAuthority,
-    source_layout_facts: Option<std::sync::Arc<crate::scene::PresentationLayoutFacts>>,
+    source_layout_facts:
+        Option<std::sync::Arc<crate::presentation::scene::PresentationLayoutFacts>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1280,7 +1281,8 @@ struct PreparedTabGesture {
     contained: Option<PreparedContainedTabOrigin>,
     initial_pointer: crate::geometry::LogicalPoint,
     presentation: FrozenPresentationAuthority,
-    source_layout_facts: Option<std::sync::Arc<crate::scene::PresentationLayoutFacts>>,
+    source_layout_facts:
+        Option<std::sync::Arc<crate::presentation::scene::PresentationLayoutFacts>>,
 }
 
 #[derive(Clone)]
@@ -1290,13 +1292,13 @@ struct PreparedContainedTabOrigin {
     root_source: NodeSource,
     source_rect: crate::geometry::LogicalRect,
     minimum_size: crate::geometry::LogicalSize,
-    expected_roster: crate::command::ContainedRosterSource,
+    expected_roster: crate::graph::command::ContainedRosterSource,
 }
 
 #[derive(Default)]
 struct PlatformInteractionDependencies {
-    owner_bindings: BTreeSet<crate::viewport::ViewportBinding>,
-    target_bindings: BTreeSet<crate::viewport::ViewportBinding>,
+    owner_bindings: BTreeSet<crate::platform::viewport::ViewportBinding>,
+    target_bindings: BTreeSet<crate::platform::viewport::ViewportBinding>,
     route_input: Option<crate::platform::NativeDragSourceInput>,
     native: bool,
 }
@@ -1304,7 +1306,7 @@ struct PlatformInteractionDependencies {
 #[derive(Default)]
 struct InvalidatedSurfaceSceneAuthorities {
     surfaces: BTreeSet<crate::ids::SurfaceId>,
-    bindings: BTreeSet<crate::viewport::ViewportBinding>,
+    bindings: BTreeSet<crate::platform::viewport::ViewportBinding>,
 }
 
 enum PlatformInteractionReconciliation {
@@ -1329,7 +1331,7 @@ enum CommandApplication {
         outcome: CommandOutcome,
         changed: bool,
     },
-    Rejected(crate::error::CommandError),
+    Rejected(crate::graph::error::CommandError),
 }
 
 enum ObligatedSurfaceRecoveryApplication {
@@ -1425,7 +1427,7 @@ impl DockEngine {
         presentation_config: DockPresentationConfig,
         presentation_identity_frontier: PresentationIdentityFrontier,
     ) -> Result<Self, EngineError> {
-        let workspace = crate::operation::WorkspaceSnapshot::validated(workspace)
+        let workspace = crate::graph::operation::WorkspaceSnapshot::validated(workspace)
             .map_err(EngineError::InvalidWorkspace)?;
         let presentation_identity =
             PresentationIdentityAuthority::new(&workspace, presentation_identity_frontier);
@@ -1437,11 +1439,11 @@ impl DockEngine {
         let requirement_revision = RequirementRevision::default();
         let interaction = InteractionState::default();
         let workspace_index = Arc::new(
-            crate::workspace::WorkspaceIndex::build(&workspace, version).map_err(|source| {
+            crate::graph::workspace::WorkspaceIndex::build(&workspace, version).map_err(|source| {
                 EngineError::PresentationRequirementInvariant {
                     input: None,
                     detail:
-                        crate::scene_compiler::SceneRequirementDerivationError::WorkspaceIndex {
+                        crate::presentation::compiler::SceneRequirementDerivationError::WorkspaceIndex {
                             source,
                         }
                         .to_string(),
@@ -1716,13 +1718,13 @@ impl DockEngine {
     pub fn viewport_focus_binding(
         &self,
         surface: crate::ids::SurfaceId,
-    ) -> Option<crate::viewport::ViewportBinding> {
+    ) -> Option<crate::platform::viewport::ViewportBinding> {
         self.workspace.surface(surface)?;
         self.viewport
             .registry()
             .record(surface)
             .filter(|record| record.can_observe_focus())
-            .map(crate::viewport_registry::ViewportRecord::binding)
+            .map(crate::platform::registry::ViewportRecord::binding)
     }
 
     /// Returns the current engine-issued recovery anchor for one registered Root surface.
@@ -1762,7 +1764,7 @@ impl DockEngine {
     #[cfg(feature = "serde")]
     pub(crate) fn native_child_recovery_host(
         &self,
-        binding: crate::viewport::ViewportBinding,
+        binding: crate::platform::viewport::ViewportBinding,
     ) -> Option<crate::ids::SurfaceId> {
         let bound = self.bound_surface_recoveries.get(&binding.surface())?;
         if bound.obligation.authority_domain() != self.authority_domain {
@@ -1844,28 +1846,12 @@ impl DockEngine {
         &self,
         surface: crate::ids::SurfaceId,
         rect: crate::geometry::LogicalRect,
-        work_area: crate::viewport::WorkAreaToken,
-    ) -> Result<crate::coordinates::ViewportPlacementProof, crate::coordinates::CoordinateUnavailable>
-    {
+        work_area: crate::platform::viewport::WorkAreaToken,
+    ) -> Result<
+        crate::platform::coordinates::ViewportPlacementProof,
+        crate::platform::coordinates::CoordinateUnavailable,
+    > {
         self.viewport.placement(surface, rect, work_area)
-    }
-
-    #[must_use]
-    #[cfg(test)]
-    pub fn native_placement_is_current(&self, proof: &crate::intent::NativePlacementProof) -> bool {
-        match proof {
-            NativePlacementProof::TearOff(proof) => {
-                self.pointer_provider() == Some(proof.pointer_provider())
-                    && self.platform_provider() == Some(proof.platform_provider())
-                    && self.viewport.work_area_generation() == proof.work_area_generation()
-                    && self.viewport.work_area(proof.work_area()).is_some()
-                    && self
-                        .viewport
-                        .physical_native_drag_capability(proof.source_input())
-                        .is_supported()
-            }
-            NativePlacementProof::Surface(_) => self.viewport.native_placement_is_current(proof),
-        }
     }
 
     fn reduce_versioned_interaction(
@@ -2035,7 +2021,7 @@ impl DockEngine {
 
     fn clone_workspace_candidate(&self) -> Workspace {
         #[cfg(test)]
-        crate::drop_resolver::structural_work::record_engine_workspace_candidate_clone(
+        crate::interaction::targeting::resolver::structural_work::record_engine_workspace_candidate_clone(
             &self.workspace,
         );
         self.workspace.as_ref().clone()
@@ -2059,9 +2045,9 @@ impl DockEngine {
                 .filter_map(|(_, scene)| scene.paint_projection())
                 .map(|projection| projection.hit_manifest().regions().len())
                 .sum();
-            crate::drop_resolver::structural_work::record_engine_atomic_candidate_clone(
+            crate::interaction::targeting::resolver::structural_work::record_engine_atomic_candidate_clone(
                 &self.workspace,
-                crate::drop_resolver::structural_work::EngineCloneVolume {
+                crate::interaction::targeting::resolver::structural_work::EngineCloneVolume {
                     scene_surfaces,
                     scene_retained_plans,
                     scene_paint_hit_regions,

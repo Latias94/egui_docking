@@ -165,7 +165,7 @@ impl DockEngine {
         native_window_pointer_probe(self, &effective, true).map_or(spec.clone(), |probe| {
             spec.with_native_window(
                 probe,
-                crate::pointer_receiver::PointerReceiverDeliveryRequest::None,
+                crate::input::receiver::PointerReceiverDeliveryRequest::None,
             )
         })
     }

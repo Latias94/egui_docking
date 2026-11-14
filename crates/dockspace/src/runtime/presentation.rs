@@ -4,19 +4,19 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use thiserror::Error;
 
-use crate::backend_ingress::{BackendIngressError, BackendIngressLease, BackendIngressRecorder};
 use crate::engine::CoreHostFramePrelude;
+use crate::engine::transition::EngineTransition;
 use crate::engine::{DockEngine, EngineError};
 use crate::ids::SurfaceId;
-use crate::intent::Authority;
-use crate::presentation_observation::{
+use crate::input::ingress::{BackendIngressError, BackendIngressLease, BackendIngressRecorder};
+use crate::input::intent::Authority;
+use crate::presentation::observation::{
     HostFrameKey, HostPresentationCaptureGeneration, HostPresentationEndpoint,
     HostPresentationObservation, HostPresentationObservationEntry,
     HostPresentationObservationOutcome, HostPresentationOutput, HostPresentationOutputPayload,
     HostPresentationProgress, HostPresentationStreamId, HostPresentationStreamObservation,
     PresentationStreamAdmission, PresentationStreamQuiescence, PresentedSurfaceAuthority,
 };
-use crate::transition::EngineTransition;
 
 use super::native::{NativePlatformError, NativeSurfaceBinding};
 
@@ -702,7 +702,7 @@ impl RuntimePresentationState {
     pub(super) fn reclaim_quiescent_streams(
         &mut self,
         engine: &mut DockEngine,
-        host: crate::presentation_observation::PresentationHostLease,
+        host: crate::presentation::observation::PresentationHostLease,
     ) -> Result<(), super::DockspaceRuntimeError> {
         let pending_streams = self.pending.streams();
         let mut candidates = Vec::with_capacity(self.streams.len());

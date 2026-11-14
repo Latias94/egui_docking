@@ -58,12 +58,12 @@ use error_kind::{
 };
 use native::NativePlatformError;
 
+pub use crate::input::journal::{PointerDeviceKind, PointerEventMetadata};
 pub use crate::model::{
     LogicalSurfaceRejection, NativeTearOffSource, NativeWindowPlacement, PreparedDockAction,
     PreparedTabsGroup, WorkspaceVersion,
 };
-pub use crate::pointer_journal::{PointerDeviceKind, PointerEventMetadata};
-pub use crate::presentation_config::{
+pub use crate::presentation::config::{
     DockPresentationConfig, DockPresentationConfigBuilder, DockPresentationConfigError,
     PaneOverflowPolicy, PresentationConfigRevision,
 };
@@ -162,7 +162,8 @@ pub use presentation_commands::{DockspacePresentationCommand, DockspacePresentat
 
 use thiserror::Error;
 
-use crate::close_plan::SurfaceCloseDisposition;
+use crate::close::plan::SurfaceCloseDisposition;
+use crate::engine::transition::SurfaceContributionOutcome;
 use crate::engine::{
     CoreHostFrameError, EngineError, SurfaceContributionBeginError, SurfaceContributionPrepareError,
 };
@@ -170,8 +171,7 @@ use crate::ids::{HostPresentationAttemptId, RootId, SourceSequence, SurfaceId};
 use crate::model::{
     DockspaceActionOutcome, DockspaceActionRejection, PreparedDockActionAuthorityMismatch,
 };
-use crate::scene_manifest::MeasurementUnavailableReason;
-use crate::transition::SurfaceContributionOutcome;
+use crate::presentation::manifest::MeasurementUnavailableReason;
 
 /// Why a host could not provide one surface's measurements in the current frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -560,13 +560,13 @@ impl DockspacePresentationTransition {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct DockspacePresentationTransitionId {
     domain: crate::ids::EngineAuthorityDomainId,
-    cause: crate::event::ReductionCause,
+    cause: crate::engine::event::ReductionCause,
 }
 
 impl DockspacePresentationTransitionId {
     pub(crate) const fn from_cause(
         domain: crate::ids::EngineAuthorityDomainId,
-        cause: crate::event::ReductionCause,
+        cause: crate::engine::event::ReductionCause,
     ) -> Self {
         Self { domain, cause }
     }
@@ -1080,7 +1080,7 @@ impl DockspaceRuntimeError {
         }
     }
 
-    fn native_root_continuation(error: crate::frame::ViewportCoordinatorError) -> Self {
+    fn native_root_continuation(error: crate::platform::frame::ViewportCoordinatorError) -> Self {
         Self {
             source: DockspaceRuntimeErrorSource::NativeRootContinuation(Box::new(error)),
         }
@@ -1202,7 +1202,7 @@ enum DockspaceRuntimeErrorSource {
     #[error("native Root surface {surface} has no current external window to continue")]
     NativeRootUnavailable { surface: SurfaceId },
     #[error(transparent)]
-    NativeRootContinuation(Box<crate::frame::ViewportCoordinatorError>),
+    NativeRootContinuation(Box<crate::platform::frame::ViewportCoordinatorError>),
     #[cfg(feature = "serde")]
     #[error("prepared document restore belongs to an older or different session state")]
     PreparedDocumentRestoreMismatch,

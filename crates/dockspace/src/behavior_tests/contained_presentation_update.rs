@@ -1,10 +1,10 @@
-use dockspace::command::{CommandOutcome, ContainedPosition, WorkspaceCommand};
-use dockspace::error::{CommandError, TransactionError};
 use dockspace::geometry::LogicalRect;
+use dockspace::graph::command::{CommandOutcome, ContainedPosition, WorkspaceCommand};
+use dockspace::graph::error::{CommandError, TransactionError};
+use dockspace::graph::transaction::WorkspaceTransaction;
 use dockspace::graph::{ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
 use dockspace::policy::DockPolicySnapshot;
-use dockspace::transaction::WorkspaceTransaction;
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const MAIN_ROOT: RootId = RootId::new(1);
@@ -202,7 +202,7 @@ fn stale_node_source_rejects_without_touching_rect_or_roster() {
     assert!(matches!(
         command_error(error),
         CommandError::StaleNode {
-            role: dockspace::error::ReferenceRole::Source,
+            role: dockspace::graph::error::ReferenceRole::Source,
             node,
             ..
         } if node == node_a

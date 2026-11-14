@@ -1,6 +1,6 @@
 //! Application notifications from one successfully published core frame.
 
-use crate::transition::{EngineTransition, InputOutcome, WorkspaceVersion};
+use crate::engine::transition::{EngineTransition, InputOutcome, WorkspaceVersion};
 
 use super::DockspaceEvent;
 

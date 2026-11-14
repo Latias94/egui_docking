@@ -5,13 +5,13 @@ use crate::graph::{RootRecord, SurfacePresentation};
 use crate::ids::NodeId;
 use crate::model::{DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout};
 use crate::policy::DockPolicy;
+use crate::presentation::compiler::{reset_surface_compilation_count, surface_compilation_count};
+use crate::presentation::manifest::{
+    Measurement, PaneMinimumKey, TabIntrinsic, TabIntrinsicKey, TabStripMetrics,
+};
 use crate::runtime::{
     DockspaceSemanticOutput, DockspaceSession, PaintedSurfaceOutput, SurfacePresentationResult,
     SurfaceUnavailableReason, UniformSurfaceMetrics,
-};
-use crate::scene_compiler::{reset_surface_compilation_count, surface_compilation_count};
-use crate::scene_manifest::{
-    Measurement, PaneMinimumKey, TabIntrinsic, TabIntrinsicKey, TabStripMetrics,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -297,7 +297,7 @@ fn changed_selection_retains_sealed_facts_but_rebinds_current_semantics_and_outp
     candidate
         .plan()
         .visit_surface_program(|step| {
-            if let crate::scene::ResolvedSurfaceProgramStep::RootBegin(root) = step {
+            if let crate::presentation::scene::ResolvedSurfaceProgramStep::RootBegin(root) = step {
                 title = root.title_item();
             }
             Ok::<(), ()>(())
@@ -331,7 +331,7 @@ fn changed_selection_retains_sealed_facts_but_rebinds_current_semantics_and_outp
         bounds(800.0),
         MeasurementProfile::default(),
     );
-    let conservative = crate::scene_compiler::compile_surface_plan(
+    let conservative = crate::presentation::compiler::compile_surface_plan(
         engine.workspace(),
         engine.version(),
         engine.policy_snapshot(),
@@ -503,7 +503,7 @@ fn unchanged_answers_rebuild_when_selected_items_have_different_actual_minima() 
 
 #[test]
 fn selecting_an_offscreen_tab_rebuilds_reveal_geometry_and_hit_receivers() {
-    use crate::scene::{TabSceneId, TabStripMemberVisibility};
+    use crate::presentation::scene::{TabSceneId, TabStripMemberVisibility};
 
     let selected = ItemId::new(8);
     let (mut engine, tabs) = selection_engine((1..=8).map(ItemId::new));
@@ -606,7 +606,7 @@ fn selecting_an_offscreen_tab_rebuilds_reveal_geometry_and_hit_receivers() {
 
 #[test]
 fn local_selection_rebuilds_when_another_items_measurements_change() {
-    use crate::scene::TabSceneId;
+    use crate::presentation::scene::TabSceneId;
 
     #[derive(Clone, Copy, Debug)]
     enum ChangedAnswer {
@@ -724,14 +724,16 @@ fn local_selection_rebuilds_when_another_items_measurements_change() {
 
 #[test]
 fn retained_facts_use_current_drop_policy_without_reauthorizing_old_output() {
-    use crate::command::{DockTarget, MovePayload, WorkspaceCommand};
-    use crate::drop_guide::{DropGuideScope, DropGuideSlot};
-    use crate::drop_resolver::{DropRejectionReason, DropResolution, resolve_drop};
+    use crate::engine::transition::InputOutcome;
     use crate::graph::Axis;
+    use crate::graph::command::{DockTarget, MovePayload, WorkspaceCommand};
+    use crate::interaction::targeting::guide::{DropGuideScope, DropGuideSlot};
+    use crate::interaction::targeting::resolver::{
+        DropRejectionReason, DropResolution, resolve_drop,
+    };
     use crate::interaction::{DragGeneration, DragSessionId, InteractionRejection};
     use crate::policy::{DockTargetRule, DockTargetRuleKey, PolicyRejection};
-    use crate::scene::{TabBarSceneId, TabSceneId};
-    use crate::transition::InputOutcome;
+    use crate::presentation::scene::{TabBarSceneId, TabSceneId};
 
     const SOURCE: ItemId = ItemId::new(3);
     let mut builder = Workspace::builder();

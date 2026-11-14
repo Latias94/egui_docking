@@ -1,14 +1,14 @@
 use super::support;
 
-use dockspace::command::{
+use dockspace::engine::{DockEngine, EngineInput};
+use dockspace::graph::command::{
     ContentCloseTarget, DockTarget, MovePayload, RootPresentationTarget, WorkspaceCommand,
 };
-use dockspace::engine::{DockEngine, EngineInput};
+use dockspace::graph::transaction::WorkspaceTransaction;
+use dockspace::graph::validation::WorkspaceValidationError;
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace, WorkspaceBuilder};
 use dockspace::ids::{ItemId, NodeId, RootId, StableInputSourceId, SurfaceId};
 use dockspace::policy::{DockPolicy, DockPolicySnapshot, PolicyRevision};
-use dockspace::transaction::WorkspaceTransaction;
-use dockspace::validation::WorkspaceValidationError;
 
 const SOURCE_ROOT: RootId = RootId::new(1);
 const TARGET_ROOT: RootId = RootId::new(2);
@@ -41,7 +41,7 @@ fn close(workspace: &mut Workspace, item: ItemId) {
         },
     )
     .expect("MRU close request must reduce");
-    let dockspace::transition::InputOutcome::ContentCloseRequested { plan, .. } =
+    let dockspace::engine::transition::InputOutcome::ContentCloseRequested { plan, .. } =
         request.reduced_inputs()[0].outcome()
     else {
         panic!("MRU close request must open a plan");

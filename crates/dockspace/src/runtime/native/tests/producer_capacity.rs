@@ -641,7 +641,7 @@ fn accepted_pointer_release_rejects_tear_off_at_capacity_and_commits_once() {
     );
     assert_eq!(
         session.engine.pointer_button_authority(),
-        crate::pointer_journal::AnyButtonDownAuthority::KnownAllReleased
+        crate::input::journal::AnyButtonDownAuthority::KnownAllReleased
     );
     for request in report.take_native_effects() {
         assert!(!matches!(

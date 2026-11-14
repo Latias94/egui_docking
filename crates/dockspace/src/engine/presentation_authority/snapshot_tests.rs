@@ -1,8 +1,8 @@
 use super::*;
-use crate::drop_resolver::structural_work;
 use crate::geometry::LogicalRect;
 use crate::graph::{ContainedFloating, RootRecord, SurfacePresentation};
 use crate::ids::{FloatingPresentationId, ItemId, RootId};
+use crate::interaction::targeting::resolver::structural_work;
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const EXTRA: SurfaceId = SurfaceId::new(99);
@@ -139,8 +139,8 @@ fn snapshot_source_version_and_same_version_mutation_keep_live_fallback() {
         .capture_item_source_by_id(ItemId::new(2))
         .unwrap()
         .unwrap();
-    crate::transaction::WorkspaceTransaction::from_commands([
-        crate::command::WorkspaceCommand::Select { source },
+    crate::graph::transaction::WorkspaceTransaction::from_commands([
+        crate::graph::command::WorkspaceCommand::Select { source },
     ])
     .apply(&mut changed, &candidate.policy)
     .unwrap();

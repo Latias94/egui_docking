@@ -1,9 +1,11 @@
 use super::*;
 use crate::geometry::{PhysicalPoint, PhysicalRect, ScaleFactor};
 use crate::graph::{RootRecord, SurfacePresentation};
+use crate::platform::viewport::{
+    CloseObservationGeneration, InventoryGeneration, ViewportRole, WindowToken,
+};
 use crate::policy::CloseCapability;
 use crate::runtime::NativeSurfacePlacement;
-use crate::viewport::{CloseObservationGeneration, InventoryGeneration, ViewportRole, WindowToken};
 
 const A: SurfaceId = SurfaceId::new(1);
 const B: SurfaceId = SurfaceId::new(2);
@@ -144,7 +146,7 @@ fn window_content_close_waits_for_all_siblings_and_prepares_one_draft() {
         CloseResolutionOutcome::Approved { .. }
     ));
     let prepared = engine.close.prepared(plan.request()).unwrap();
-    crate::drop_resolver::structural_work::reset();
+    crate::interaction::targeting::resolver::structural_work::reset();
     let commit = engine
         .stage_prepared_surface_close(engine.last_input, prepared, &BTreeMap::new())
         .unwrap()
@@ -157,7 +159,7 @@ fn window_content_close_waits_for_all_siblings_and_prepares_one_draft() {
         "preparation leaves the published owner untouched"
     );
     assert_eq!(
-        crate::drop_resolver::structural_work::snapshot()
+        crate::interaction::targeting::resolver::structural_work::snapshot()
             .workspace_deep_clones
             .transaction_candidates
             .calls,

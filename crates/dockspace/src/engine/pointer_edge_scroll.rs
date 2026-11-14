@@ -1,7 +1,7 @@
 //! Bounded stationary tab-strip scrolling owned by the active drag.
 
 use super::*;
-use crate::scene_manifest::{TabStripControlPlacement, TabStripKey};
+use crate::presentation::manifest::{TabStripControlPlacement, TabStripKey};
 
 impl DockEngine {
     pub(crate) fn pointer_continuation_awaits_presentation(&self, surface: SurfaceId) -> bool {
@@ -48,7 +48,7 @@ impl DockEngine {
     fn tab_strip_edge_scroll_target_at<'plan>(
         &self,
         plan: &'plan PresentationPlan,
-        hit_manifest: &crate::presentation_hit::PresentationHitManifest,
+        hit_manifest: &crate::presentation::hit::PresentationHitManifest,
         point: LogicalPoint,
     ) -> Option<(&'plan TabBarRecord, TabStripEdgeDirection)> {
         let config = &self.presentation_authority.presentation_config;
@@ -184,7 +184,7 @@ impl DockEngine {
     fn rebound_edge_scroll_output(
         &self,
         pending: &TabStripEdgeScrollState,
-    ) -> Option<crate::presentation_observation::SurfacePresentationOutputTicket> {
+    ) -> Option<crate::presentation::observation::SurfacePresentationOutputTicket> {
         let surface = pending.key.surface();
         if pending.workspace != self.version || pending.request.surface != surface {
             return None;

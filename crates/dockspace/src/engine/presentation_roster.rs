@@ -298,7 +298,7 @@ pub(super) struct HostPresentationRoster {
 impl HostPresentationRoster {
     pub(super) fn capture(candidate: &DockEngine) -> Result<Self, EngineError> {
         #[cfg(test)]
-        crate::drop_resolver::structural_work::record_presentation_roster_full_capture();
+        crate::interaction::targeting::resolver::structural_work::record_presentation_roster_full_capture();
 
         let suspended_surfaces = candidate
             .viewport
@@ -399,7 +399,7 @@ impl HostPresentationRoster {
         surface: SurfaceId,
     ) -> FrozenSurfacePresentationOutput {
         #[cfg(test)]
-        crate::drop_resolver::structural_work::record_presentation_roster_surface_freeze();
+        crate::interaction::targeting::resolver::structural_work::record_presentation_roster_surface_freeze();
 
         let scene = candidate
             .presentation_authority
@@ -640,10 +640,10 @@ mod tests {
     use crate::geometry::{PhysicalRect, ScaleFactor};
     use crate::ids::{SurfaceId, WorkspaceEpoch};
     use crate::platform::WindowCoordinateObservation;
-    use crate::scene_manifest::SurfaceSceneRevision;
-    use crate::viewport::{
+    use crate::platform::viewport::{
         CoordinateGeneration, CoordinateObservationGeneration, WindowIncarnation, WindowToken,
     };
+    use crate::presentation::manifest::SurfaceSceneRevision;
 
     fn frozen_output(
         observation_generation: u64,

@@ -12,12 +12,12 @@ use super::{
     NativeSurfaceCloseRequest, PaintedSurfaceOutput, SurfacePointerId, SurfacePresentationCommit,
     WorkspaceVersion,
 };
-use crate::command::CloseCommitOutcome;
-use crate::error::CommandError;
-use crate::event::{PresentationRehomeResult, WorkspaceEventKind};
+use crate::engine::event::{PresentationRehomeResult, WorkspaceEventKind};
+use crate::engine::transition::InputOutcome;
+use crate::graph::command::CloseCommitOutcome;
+use crate::graph::error::CommandError;
 use crate::interaction::InteractionOutcome;
 use crate::model::SurfaceId;
-use crate::transition::InputOutcome;
 
 /// Native boundary results still settle their original host records after replacement.
 fn native_replacement_prefix_outcome(outcome: &HostInputOutcome) -> bool {
@@ -46,7 +46,7 @@ fn native_replacement_prefix_outcome(outcome: &HostInputOutcome) -> bool {
 impl HostFrameReport {
     pub(super) fn from_transition(
         frame_attempt: crate::ids::HostPresentationAttemptId,
-        transition: &crate::transition::EngineTransition,
+        transition: &crate::engine::transition::EngineTransition,
         painted_outputs: Vec<PaintedSurfaceOutput>,
         surface_presentation_commits: Vec<SurfacePresentationCommit>,
         native_commit: Option<super::native::NativeHostCommit>,
@@ -447,7 +447,7 @@ impl HostFrameReport {
 fn product_action_host_outcome(
     outcome: &crate::model::DockspaceActionOutcome,
     domain: crate::ids::EngineAuthorityDomainId,
-    cause: crate::event::ReductionCause,
+    cause: crate::engine::event::ReductionCause,
 ) -> HostInputOutcome {
     if matches!(
         outcome,
@@ -466,7 +466,7 @@ fn product_action_host_outcome(
 fn interaction_host_outcome(
     outcome: &InteractionOutcome,
     domain: crate::ids::EngineAuthorityDomainId,
-    cause: crate::event::ReductionCause,
+    cause: crate::engine::event::ReductionCause,
     version: WorkspaceVersion,
 ) -> Option<HostInputOutcome> {
     match outcome {

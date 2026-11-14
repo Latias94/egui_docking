@@ -1,12 +1,12 @@
 use super::*;
 
-use crate::frame::NativeCreatePhase;
-use crate::viewport_registry::ViewportAdmission;
+use crate::platform::frame::NativeCreatePhase;
+use crate::platform::registry::ViewportAdmission;
 
 fn retained_resource(
     fixture: &BackgroundFixture,
-    resource: crate::presentation_observation::NativeStagingResourceId,
-) -> crate::presentation_observation::NativeStagingResourceDescriptor {
+    resource: crate::presentation::observation::NativeStagingResourceId,
+) -> crate::presentation::observation::NativeStagingResourceDescriptor {
     let frame = begin_test_host_frame(&fixture.engine, fixture.presentation_host);
     frame
         .view()
@@ -18,8 +18,8 @@ fn retained_resource(
 
 fn assert_pending_first_live_resource(
     fixture: &BackgroundFixture,
-    request: crate::frame::NativeCreateRequest,
-    descriptor: &crate::presentation_observation::NativeStagingResourceDescriptor,
+    request: crate::platform::frame::NativeCreateRequest,
+    descriptor: &crate::presentation::observation::NativeStagingResourceDescriptor,
 ) {
     let surface = request.binding().surface();
     let saga = fixture
@@ -39,7 +39,7 @@ fn assert_pending_first_live_resource(
             .engine
             .viewport()
             .viewport(surface)
-            .map(crate::viewport_registry::ViewportRecord::admission),
+            .map(crate::platform::registry::ViewportRecord::admission),
         Some(ViewportAdmission::Pending)
     );
     assert!(fixture.engine.interaction_authority(surface).is_none());
@@ -103,13 +103,13 @@ fn retained_resource_spans_preparation_until_atomic_first_live_transfer() {
         .find(|event| {
             matches!(
                 event.kind(),
-                crate::event::WorkspaceEventKind::CommandCommitted(_)
+                crate::engine::event::WorkspaceEventKind::CommandCommitted(_)
             )
         })
         .expect("first-live ownership transfer publishes one command event");
     assert!(matches!(
         committed.cause(),
-        crate::event::ReductionCause::SurfacePresentationObservationBatch { .. }
+        crate::engine::event::ReductionCause::SurfacePresentationObservationBatch { .. }
     ));
 
     assert_eq!(fixture.engine.version().epoch(), version.epoch());
@@ -123,7 +123,7 @@ fn retained_resource_spans_preparation_until_atomic_first_live_transfer() {
             .engine
             .workspace()
             .presentation_for_root(RootId::new(194)),
-        Some(crate::RootPresentationOwner::Main { surface })
+        Some(crate::graph::workspace::RootPresentationOwner::Main { surface })
     );
     assert_eq!(
         fixture.engine.workspace().node(fixture.source_tabs),
@@ -135,7 +135,7 @@ fn retained_resource_spans_preparation_until_atomic_first_live_transfer() {
             .engine
             .viewport()
             .viewport(surface)
-            .map(crate::viewport_registry::ViewportRecord::admission),
+            .map(crate::platform::registry::ViewportRecord::admission),
         Some(ViewportAdmission::Admitted)
     );
     assert!(fixture.engine.interaction_authority(surface).is_some());
@@ -354,7 +354,7 @@ fn cancelling_first_live_retains_cleanup_resource_despite_late_output() {
         };
         assert_eq!(
             delayed_output.endpoint(),
-            crate::presentation_observation::HostPresentationEndpoint::Native(request.binding())
+            crate::presentation::observation::HostPresentationEndpoint::Native(request.binding())
         );
         assert_eq!(fixture.engine.workspace(), &workspace);
         assert_eq!(fixture.engine.version(), version);
@@ -396,7 +396,7 @@ fn cancelling_first_live_retains_cleanup_resource_despite_late_output() {
             .expect("cancelling an observed child must retain exact binding cleanup ownership");
         assert_eq!(
             retirement.origin(),
-            crate::frame::BindingRetirementOrigin::NativeCreateAborted {
+            crate::platform::frame::BindingRetirementOrigin::NativeCreateAborted {
                 create: request.effect(),
             }
         );
@@ -475,7 +475,7 @@ fn another_bindings_presented_output_cannot_admit_or_release_first_live_resource
     );
     assert_eq!(
         output.endpoint(),
-        crate::presentation_observation::HostPresentationEndpoint::Native(source_binding)
+        crate::presentation::observation::HostPresentationEndpoint::Native(source_binding)
     );
     assert!(matches!(
         output.payload(),

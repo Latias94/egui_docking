@@ -33,6 +33,8 @@ owns construction, application actions, persistence and host-frame coordination;
 `render/` owns widgets and painting, while `focus/` and `pointer/` bridge input.
 Split modules at these responsibilities rather than introducing wrapper state
 or an additional trait only to reduce file length.
+The core's [module ownership map](docs/MAINTAINING.md#source-modules) identifies
+where input, presentation, topology and platform changes belong.
 
 ## Local checks
 

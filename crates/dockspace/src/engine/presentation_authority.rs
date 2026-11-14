@@ -42,7 +42,7 @@ pub(super) struct PresentationAuthorityState {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct SelectionRebind {
     pub(super) surface: SurfaceId,
-    pub(super) bar: crate::scene::TabBarSceneId,
+    pub(super) bar: crate::presentation::scene::TabBarSceneId,
     pub(super) version: WorkspaceVersion,
     pub(super) coordinates: SurfaceCoordinateCapture,
     pub(super) plan: Arc<PresentationPlan>,
@@ -143,7 +143,7 @@ impl PresentationAuthorityState {
         &self,
         workspace: &Arc<Workspace>,
         version: WorkspaceVersion,
-    ) -> Option<&crate::workspace::WorkspaceIndex> {
+    ) -> Option<&crate::graph::workspace::WorkspaceIndex> {
         let index = self.presentation_requirements.workspace_index();
         // A new publication or Arc::make_mut dissociates this allocation even
         // before its revision advances. A miss must retain live validation.
@@ -225,7 +225,7 @@ impl DockEngine {
     pub(super) fn advance_selection_revision(
         &mut self,
         input: InputSequence,
-        source: &crate::command::ItemSource,
+        source: &crate::graph::command::ItemSource,
     ) -> Result<(), EngineError> {
         self.presentation_authority.selection_rebind = None;
         let revision = self
@@ -292,7 +292,7 @@ impl DockEngine {
                         })
                         .map(|previous| SelectionRebind {
                             surface,
-                            bar: crate::scene::TabBarSceneId {
+                            bar: crate::presentation::scene::TabBarSceneId {
                                 root: source.root(),
                                 tabs: source.tabs(),
                             },
@@ -346,7 +346,7 @@ impl DockEngine {
     pub(super) fn advance_selection_revision_caused(
         &mut self,
         cause: ReductionCause,
-        source: &crate::command::ItemSource,
+        source: &crate::graph::command::ItemSource,
     ) -> Result<(), EngineError> {
         self.advance_selection_revision(self.last_input, source)
             .map_err(|source| EngineError::PointerInteractionInvariant {
@@ -426,10 +426,10 @@ impl DockEngine {
             self.presentation_requirements().shared_workspace_index()
         } else {
             Arc::new(
-                crate::workspace::WorkspaceIndex::build(&self.workspace, self.version).map_err(
+                crate::graph::workspace::WorkspaceIndex::build(&self.workspace, self.version).map_err(
                     |source| {
                         let error =
-                            crate::scene_compiler::SceneRequirementDerivationError::WorkspaceIndex {
+                            crate::presentation::compiler::SceneRequirementDerivationError::WorkspaceIndex {
                                 source,
                             };
                         PresentationRequirementFailure::Invariant(error.to_string())
@@ -452,7 +452,7 @@ impl DockEngine {
             .filter_map(|(saga, create)| {
                 (matches!(
                     create.phase(),
-                    crate::frame::NativeCreatePhase::AwaitingFirstLivePresentation { .. }
+                    crate::platform::frame::NativeCreatePhase::AwaitingFirstLivePresentation { .. }
                 ) && self.workspace.surface(create.binding().surface()).is_none())
                 .then_some(saga)
             })
@@ -814,22 +814,29 @@ impl DockEngine {
 
     pub(super) fn capture_surface_semantic_snapshots(
         workspace: &Workspace,
-        workspace_index: &crate::workspace::WorkspaceIndex,
-    ) -> Result<BTreeMap<crate::ids::SurfaceId, SurfaceSemanticSnapshot>, crate::error::CommandError>
-    {
+        workspace_index: &crate::graph::workspace::WorkspaceIndex,
+    ) -> Result<
+        BTreeMap<crate::ids::SurfaceId, SurfaceSemanticSnapshot>,
+        crate::graph::error::CommandError,
+    > {
         Self::capture_surface_semantic_snapshots_with(workspace, |root| {
             workspace_index
                 .root_fingerprint(root)
                 .cloned()
-                .ok_or(crate::error::CommandError::MissingRoot { root })
+                .ok_or(crate::graph::error::CommandError::MissingRoot { root })
         })
     }
 
     fn capture_surface_semantic_snapshots_with(
         workspace: &Workspace,
-        mut root_fingerprint: impl FnMut(RootId) -> Result<NodeFingerprint, crate::error::CommandError>,
-    ) -> Result<BTreeMap<crate::ids::SurfaceId, SurfaceSemanticSnapshot>, crate::error::CommandError>
-    {
+        mut root_fingerprint: impl FnMut(
+            RootId,
+        )
+            -> Result<NodeFingerprint, crate::graph::error::CommandError>,
+    ) -> Result<
+        BTreeMap<crate::ids::SurfaceId, SurfaceSemanticSnapshot>,
+        crate::graph::error::CommandError,
+    > {
         let mut snapshots = BTreeMap::new();
         for (surface, presentation) in workspace.surfaces() {
             let main = presentation
@@ -839,7 +846,7 @@ impl DockEngine {
             let mut contained = Vec::with_capacity(presentation.contained.len());
             for floating in presentation.contained.iter().copied() {
                 let record = workspace.contained_floating(floating).ok_or(
-                    crate::error::CommandError::Invariant {
+                    crate::graph::error::CommandError::Invariant {
                         stage: "capture contained surface semantics",
                     },
                 )?;
@@ -1171,13 +1178,13 @@ impl DockEngine {
 
     fn insert_current_viewport_binding(
         &self,
-        bindings: &mut BTreeSet<crate::viewport::ViewportBinding>,
+        bindings: &mut BTreeSet<crate::platform::viewport::ViewportBinding>,
         surface: crate::ids::SurfaceId,
     ) {
         if let Some(binding) = self
             .viewport
             .viewport(surface)
-            .map(crate::viewport_registry::ViewportRecord::binding)
+            .map(crate::platform::registry::ViewportRecord::binding)
         {
             bindings.insert(binding);
         }
@@ -1188,26 +1195,26 @@ impl DockEngine {
         &self,
         dependencies: &PlatformInteractionDependencies,
         version_before_actions: WorkspaceVersion,
-        transition: &crate::frame::ViewportFrameTransition,
+        transition: &crate::platform::frame::ViewportFrameTransition,
         previous_physical_native_drag: PlatformCapability,
         previous_physical_cross_surface_drag: PlatformCapability,
-        invalidated_scene_bindings: &BTreeSet<crate::viewport::ViewportBinding>,
+        invalidated_scene_bindings: &BTreeSet<crate::platform::viewport::ViewportBinding>,
     ) -> PlatformInteractionReconciliation {
         let mut target_authority_lost = false;
         let mut end_routing = false;
         for event in transition.registry_events() {
             let (binding, destroyed) = match event {
-                crate::viewport_registry::RegistryEvent::Destroyed { observation } => {
+                crate::platform::registry::RegistryEvent::Destroyed { observation } => {
                     (observation.binding(), true)
                 }
-                crate::viewport_registry::RegistryEvent::FactsUnavailable { binding } => {
+                crate::platform::registry::RegistryEvent::FactsUnavailable { binding } => {
                     (*binding, false)
                 }
-                crate::viewport_registry::RegistryEvent::Ready { .. }
-                | crate::viewport_registry::RegistryEvent::PresentationChanged { .. }
-                | crate::viewport_registry::RegistryEvent::CloseRequested { .. }
-                | crate::viewport_registry::RegistryEvent::CloseRequestCleared { .. }
-                | crate::viewport_registry::RegistryEvent::BindingMissing { .. } => continue,
+                crate::platform::registry::RegistryEvent::Ready { .. }
+                | crate::platform::registry::RegistryEvent::PresentationChanged { .. }
+                | crate::platform::registry::RegistryEvent::CloseRequested { .. }
+                | crate::platform::registry::RegistryEvent::CloseRequestCleared { .. }
+                | crate::platform::registry::RegistryEvent::BindingMissing { .. } => continue,
             };
             if dependencies.owner_bindings.contains(&binding) {
                 if destroyed {
@@ -1395,12 +1402,13 @@ impl DockEngine {
 
         match contribution.state {
             PreparedSurfaceContributionState::Ready { plan } => {
-                let geometry = |projection: Option<crate::scene::ContainedLayoutProjection>| {
-                    projection.map(|mut projection| {
-                        projection.target_basis = None;
-                        projection
-                    })
-                };
+                let geometry =
+                    |projection: Option<crate::presentation::scene::ContainedLayoutProjection>| {
+                        projection.map(|mut projection| {
+                            projection.target_basis = None;
+                            projection
+                        })
+                    };
                 if geometry(plan.contained_projection())
                     != geometry(self.contained_layout_projection(surface))
                 {
@@ -1416,7 +1424,7 @@ impl DockEngine {
                     .iter()
                     .map(|record| {
                         #[cfg(test)]
-                        crate::drop_resolver::structural_work::record_selection_lookup();
+                        crate::interaction::targeting::resolver::structural_work::record_selection_lookup();
                         let id = *record.id();
                         let selected = plan.selected_in_tabs(id.tabs);
                         (
@@ -1877,7 +1885,7 @@ impl DockEngine {
         (
             Vec<HostPresentationObservationOutcome>,
             BTreeSet<crate::ids::SurfaceId>,
-            Vec<crate::event::WorkspaceEvent>,
+            Vec<crate::engine::event::WorkspaceEvent>,
         ),
         EngineError,
     > {
@@ -1898,7 +1906,7 @@ impl DockEngine {
         (
             Vec<HostPresentationObservationOutcome>,
             BTreeSet<crate::ids::SurfaceId>,
-            Vec<crate::event::WorkspaceEvent>,
+            Vec<crate::engine::event::WorkspaceEvent>,
         ),
         EngineError,
     > {
@@ -1918,7 +1926,7 @@ impl DockEngine {
         (
             Vec<HostPresentationObservationOutcome>,
             BTreeSet<crate::ids::SurfaceId>,
-            Vec<crate::event::WorkspaceEvent>,
+            Vec<crate::engine::event::WorkspaceEvent>,
         ),
         EngineError,
     > {
@@ -2059,7 +2067,7 @@ impl DockEngine {
                 self.viewport
                     .viewport(binding.surface())
                     .is_some_and(|record| {
-                        record.admission() == crate::viewport_registry::ViewportAdmission::Pending
+                        record.admission() == crate::platform::registry::ViewportAdmission::Pending
                     })
             } else {
                 false

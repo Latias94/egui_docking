@@ -4,6 +4,7 @@ use crate::model::{
     DockspaceSurfaceLayout, FloatingPresentationId, ItemId, RootId, SurfaceId,
 };
 use crate::policy::DockPolicy;
+use crate::presentation::compiler::{reset_surface_compilation_count, surface_compilation_count};
 use crate::runtime::{
     ContainedResizeDirection, DockspaceHostFrame, DockspaceReceiverDescriptor, DockspaceSession,
     DockspaceVisualId, HostPointerInput, HostPointerRoute, PaintedSurfaceOutput,
@@ -13,7 +14,6 @@ use crate::runtime::{
     SurfacePointerReceiverFacts, SurfacePresentationResult, SurfaceUnavailableReason,
     UniformSurfaceMetrics,
 };
-use crate::scene_compiler::{reset_surface_compilation_count, surface_compilation_count};
 
 mod authority_tests;
 

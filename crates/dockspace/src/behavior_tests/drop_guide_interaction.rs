@@ -1,33 +1,33 @@
 use super::support;
 
-use dockspace::command::Edge;
-use dockspace::drop_guide::{DropGuideScope, DropGuideSlot};
-use dockspace::drop_resolver::DropGuideEligibility;
-use dockspace::drop_target::DropTargetId;
+use dockspace::engine::transition::EngineTransition;
 use dockspace::engine::{CoreHostFrame, DockEngine};
 use dockspace::geometry::{LogicalPoint, LogicalRect};
+use dockspace::graph::command::Edge;
 use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, NodeId, RootId, SurfaceId};
-use dockspace::intent::{Authority, PointerButton, PointerId};
-use dockspace::interaction::{
-    InteractionCancelReason, InteractionOutcome, InteractionStatus, PreviewResolutionStatus,
-    PreviewVisual,
-};
-use dockspace::pointer_journal::{
+use dockspace::input::intent::{Authority, PointerButton, PointerId};
+use dockspace::input::journal::{
     PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
     PointerEdgeSequence, SurfaceLocalPointerEndpoint, SurfaceLocalPointerProvider,
     SurfaceLocalPointerScope,
 };
-use dockspace::pointer_receiver::{
+use dockspace::input::receiver::{
     PointerReceiverCandidate, PointerReceiverDelivery, PointerReceiverDeliveryDisposition,
     PointerReceiverHoverHit, PointerReceiverObservation, PointerReceiverProbe,
     PointerReceiverProbeReceipt, PointerReceiverProbeRequest, PointerReceiverReceipt,
     PointerReceiverReceiptBatch, PresentedPointerReceiverObservation,
 };
+use dockspace::interaction::targeting::guide::{DropGuideScope, DropGuideSlot};
+use dockspace::interaction::targeting::resolver::DropGuideEligibility;
+use dockspace::interaction::targeting::targets::DropTargetId;
+use dockspace::interaction::{
+    InteractionCancelReason, InteractionOutcome, InteractionStatus, PreviewResolutionStatus,
+    PreviewVisual,
+};
 use dockspace::policy::DockPolicy;
-use dockspace::presentation_hit::{PresentationHitRegionId, PresentationHitRegionKind};
-use dockspace::scene::PresentationPlan;
-use dockspace::transition::EngineTransition;
+use dockspace::presentation::hit::{PresentationHitRegionId, PresentationHitRegionKind};
+use dockspace::presentation::scene::PresentationPlan;
 
 const ROOT: RootId = RootId::new(1);
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -470,7 +470,7 @@ fn activation_without_button_hit_acquires_magnetic_target_and_keeps_complete_aff
         inner
             .targets()
             .iter()
-            .map(dockspace::drop_resolver::DropAffordanceTarget::slot)
+            .map(dockspace::interaction::targeting::resolver::DropAffordanceTarget::slot)
             .collect::<Vec<_>>(),
         vec![DropGuideSlot::Center]
     );
@@ -483,7 +483,7 @@ fn activation_without_button_hit_acquires_magnetic_target_and_keeps_complete_aff
         outer
             .targets()
             .iter()
-            .map(dockspace::drop_resolver::DropAffordanceTarget::slot)
+            .map(dockspace::interaction::targeting::resolver::DropAffordanceTarget::slot)
             .collect::<Vec<_>>(),
         vec![
             DropGuideSlot::Edge(Edge::Left),
@@ -730,8 +730,8 @@ fn adjacent_pane_jitter_keeps_preview_guide_and_release_on_one_latched_target() 
             .engine
             .interaction()
             .drop_affordance()
-            .and_then(dockspace::drop_resolver::DropAffordance::active_target)
-            .map(dockspace::drop_resolver::DropAffordanceTarget::target_id),
+            .and_then(dockspace::interaction::targeting::resolver::DropAffordance::active_target)
+            .map(dockspace::interaction::targeting::resolver::DropAffordanceTarget::target_id),
         Some(latched_target),
         "the visible active guide must describe the command retained by the latch"
     );
@@ -770,7 +770,7 @@ fn top_and_bottom_buttons_publish_source_aware_future_layout_previews() {
             .engine
             .interaction()
             .drop_affordance()
-            .and_then(dockspace::drop_resolver::DropAffordance::active_target)
+            .and_then(dockspace::interaction::targeting::resolver::DropAffordance::active_target)
             .expect("edge button must be active");
         assert_eq!(active.slot(), DropGuideSlot::Edge(edge));
         assert!(active.eligibility().is_eligible());
@@ -818,7 +818,7 @@ fn rejected_active_guide_remains_visible_without_a_preview() {
         .engine
         .interaction()
         .drop_affordance()
-        .and_then(dockspace::drop_resolver::DropAffordance::active_target)
+        .and_then(dockspace::interaction::targeting::resolver::DropAffordance::active_target)
         .expect("rejected guide must remain active");
     assert_eq!(active.slot(), DropGuideSlot::Edge(Edge::Top));
     assert!(matches!(
@@ -848,7 +848,7 @@ fn leaving_the_activation_and_stream_cancellation_clear_the_affordance() {
     let cancelled = submit_edge(
         &mut fixture,
         PointerEdgeKind::StreamCancelled(
-            dockspace::pointer_journal::PointerStreamCancelReason::ExplicitPlatformCancellation,
+            dockspace::input::journal::PointerStreamCancelReason::ExplicitPlatformCancellation,
         ),
         passive,
         PointerCaptureOwner::None,

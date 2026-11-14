@@ -1,15 +1,15 @@
 use super::support;
 
-use dockspace::command::{CommandOutcome, WorkspaceCommand};
+use dockspace::engine::transition::{InputOutcome, InputPriority, WorkspaceVersion};
 use dockspace::engine::{DockEngine, EngineInput};
-use dockspace::error::CommandError;
+use dockspace::graph::command::{CommandOutcome, WorkspaceCommand};
+use dockspace::graph::error::CommandError;
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{
     ItemId, RootId, SourceSequence, StableInputSourceId, SurfaceId, WorkspaceEpoch,
     WorkspaceRevision,
 };
 use dockspace::policy::DockPolicy;
-use dockspace::transition::{InputOutcome, InputPriority, WorkspaceVersion};
 use support::{TestInputStream, TestPresentationHost};
 
 const TEST_SOURCE: StableInputSourceId = StableInputSourceId::new(0xA701);
@@ -246,7 +246,7 @@ fn expected_command_rejection_is_consumed_without_mutation() {
             expected: before_version,
             command: WorkspaceCommand::Open {
                 item: ItemId::new(1),
-                target: dockspace::command::DockTarget::Center(target),
+                target: dockspace::graph::command::DockTarget::Center(target),
             },
         },
     )
@@ -283,7 +283,7 @@ fn expected_rejection_does_not_block_a_later_valid_command() {
                 expected,
                 command: WorkspaceCommand::Open {
                     item: ItemId::new(1),
-                    target: dockspace::command::DockTarget::Center(target),
+                    target: dockspace::graph::command::DockTarget::Center(target),
                 },
             },
         )
@@ -343,7 +343,7 @@ fn later_command_rejection_preserves_an_earlier_policy_change() {
                 expected,
                 command: WorkspaceCommand::Open {
                     item: ItemId::new(1),
-                    target: dockspace::command::DockTarget::Center(target),
+                    target: dockspace::graph::command::DockTarget::Center(target),
                 },
             },
         )
@@ -400,7 +400,7 @@ fn later_command_rejection_preserves_an_earlier_workspace_replacement() {
                 ),
                 command: WorkspaceCommand::Open {
                     item: ItemId::new(2),
-                    target: dockspace::command::DockTarget::Center(target),
+                    target: dockspace::graph::command::DockTarget::Center(target),
                 },
             },
         )
@@ -516,7 +516,7 @@ fn inputs_submit(
     engine: &mut DockEngine,
     host: &mut TestPresentationHost,
     input: EngineInput,
-) -> Result<dockspace::transition::EngineTransition, dockspace::engine::EngineError> {
+) -> Result<dockspace::engine::transition::EngineTransition, dockspace::engine::EngineError> {
     let mut inputs = TestInputStream::resume(engine, TEST_SOURCE);
     inputs.submit(engine, host, input)
 }

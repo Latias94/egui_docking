@@ -6,7 +6,16 @@ use super::{
     NativeInputFact, NativePlatformError, NativeWindowFacts, NativeWindowLifecycleFact,
     NativeWorkAreaRoster,
 };
-use crate::intent::{Authority, AuthorityUnavailableReason};
+use crate::input::intent::{Authority, AuthorityUnavailableReason};
+use crate::platform::focus::{
+    FocusObservationEnvelope, FocusObservationGeneration, GlobalFocusedWindow,
+};
+use crate::platform::provider::PlatformObservationLease;
+use crate::platform::viewport::{
+    CapabilityObservationGeneration, CloseObservationGeneration, CoordinateObservationGeneration,
+    InputObservationGeneration, InventoryObservationGeneration, PlatformSnapshotGeneration,
+    PresentationObservationGeneration, ViewportBinding, WorkAreaObservationGeneration,
+};
 use crate::platform::{
     CapabilityRosterObservation, CloseEffectAcknowledgement, InputEffectAcknowledgement,
     ObservedWindow, ObservedWorkArea, PlatformCapabilities, PlatformCapability,
@@ -14,15 +23,6 @@ use crate::platform::{
     WindowCloseState, WindowCoordinateObservation, WindowCreatePreparationObservation,
     WindowInputObservation, WindowInventoryObservation, WindowPresentationObservation,
     WorkAreaRosterObservation,
-};
-use crate::platform_provider::PlatformObservationLease;
-use crate::viewport::{
-    CapabilityObservationGeneration, CloseObservationGeneration, CoordinateObservationGeneration,
-    InputObservationGeneration, InventoryObservationGeneration, PlatformSnapshotGeneration,
-    PresentationObservationGeneration, ViewportBinding, WorkAreaObservationGeneration,
-};
-use crate::viewport_focus::{
-    FocusObservationEnvelope, FocusObservationGeneration, GlobalFocusedWindow,
 };
 
 pub(super) fn compile_focus_observation(
@@ -416,7 +416,7 @@ fn create_acknowledgement(
     provider: PlatformObservationLease,
     binding: ViewportBinding,
     facts: NativeWindowFacts,
-) -> Result<Option<crate::effect::EffectId>, NativePlatformError> {
+) -> Result<Option<crate::platform::effect::EffectId>, NativePlatformError> {
     match facts.create_readiness.and_then(|fact| fact.acknowledgement) {
         Some(acknowledgement) if acknowledgement.provider != provider => {
             Err(NativePlatformError::EffectAcknowledgementProviderMismatch {

@@ -1,11 +1,19 @@
 //! Core-owned target acquisition and release hysteresis.
+//!
+//! Target geometry and resolution are immutable inputs to acquisition. They do
+//! not own gesture state or publish docking commands.
 
-use crate::drop_guide::{DropGuideClusterId, DropGuideSlot};
-use crate::drop_target::{DropTargetId, SceneLayerKey};
+pub(crate) mod field;
+pub(crate) mod guide;
+pub(crate) mod resolver;
+pub(crate) mod targets;
+
 use crate::geometry::LogicalPoint;
-use crate::hit_region::HitRegion;
-use crate::scene::SurfaceSceneStamp;
-use crate::target_field::MagneticTargetCandidate;
+use crate::interaction::targeting::field::MagneticTargetCandidate;
+use crate::interaction::targeting::guide::{DropGuideClusterId, DropGuideSlot};
+use crate::interaction::targeting::targets::{DropTargetId, SceneLayerKey};
+use crate::presentation::hit::region::HitRegion;
+use crate::presentation::scene::SurfaceSceneStamp;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DirectTargetProvenance {
@@ -219,8 +227,8 @@ mod tests {
     use crate::geometry::LogicalRect;
     use crate::ids::{EngineAuthorityDomainId, NodeId, RootId, SurfaceId, WorkspaceEpoch};
     use crate::policy::PolicyRevision;
-    use crate::presentation_config::PresentationConfigRevision;
-    use crate::scene_manifest::{
+    use crate::presentation::config::PresentationConfigRevision;
+    use crate::presentation::manifest::{
         SurfaceMeasurementTicket, SurfaceRequirementRevision, SurfaceSceneRevision,
     };
 

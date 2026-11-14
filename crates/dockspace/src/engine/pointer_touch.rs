@@ -1,8 +1,8 @@
 //! Local-touch waiting and activation owned by the existing click gesture.
 
 use super::*;
+use crate::input::journal::PointerEventMetadata;
 use crate::interaction::ActiveClick;
-use crate::pointer_journal::PointerEventMetadata;
 
 impl DockEngine {
     pub(super) fn touch_drag_payload(
@@ -351,7 +351,7 @@ impl DockEngine {
                 &presentation,
                 click.region,
                 touch.initial_pointer,
-                crate::pointer_journal::PointerDeviceKind::Touch,
+                crate::input::journal::PointerDeviceKind::Touch,
                 policy,
                 events,
             )?
@@ -441,7 +441,7 @@ impl DockEngine {
             presentation,
             region,
             touch.initial_pointer,
-            crate::pointer_journal::PointerDeviceKind::Touch,
+            crate::input::journal::PointerDeviceKind::Touch,
             policy,
             events,
         )?;
@@ -506,10 +506,10 @@ fn touch_menu_target(
             .map(|record| (record.root(), None)),
         PresentationHitRegionKind::SplitterHandle(split) => Some((split.root, None)),
         PresentationHitRegionKind::SplitterJunction(junction) => [
-            crate::scene::SplitterJunctionDirection::North,
-            crate::scene::SplitterJunctionDirection::East,
-            crate::scene::SplitterJunctionDirection::South,
-            crate::scene::SplitterJunctionDirection::West,
+            crate::presentation::scene::SplitterJunctionDirection::North,
+            crate::presentation::scene::SplitterJunctionDirection::East,
+            crate::presentation::scene::SplitterJunctionDirection::South,
+            crate::presentation::scene::SplitterJunctionDirection::West,
         ]
         .into_iter()
         .find_map(|direction| junction.arm(direction).map(|split| (split.root, None))),

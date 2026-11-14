@@ -2,12 +2,19 @@ use super::support;
 
 use std::collections::BTreeMap;
 
-use dockspace::command::{ContainedPosition, RootPresentationTarget, WorkspaceCommand};
+use dockspace::engine::surface_recovery::{ConvertedMainRecovery, SurfaceRecoveryTarget};
+use dockspace::engine::transition::{EngineTransition, InputOutcome};
 use dockspace::engine::{DockEngine, EngineError, EngineInput};
 use dockspace::geometry::{LogicalRect, LogicalSize, PhysicalRect, ScaleFactor};
+use dockspace::graph::command::{ContainedPosition, RootPresentationTarget, WorkspaceCommand};
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{FloatingPresentationId, ItemId, RootId, StableInputSourceId, SurfaceId};
-use dockspace::intent::{Authority, AuthorityUnavailableReason};
+use dockspace::input::intent::{Authority, AuthorityUnavailableReason};
+use dockspace::platform::focus::{FocusObservationGeneration, unknown_focus_observation};
+use dockspace::platform::viewport::{
+    CloseObservationGeneration, CoordinateObservationGeneration, PresentationObservationGeneration,
+    ViewportBinding, ViewportRole, WindowToken, WorkAreaToken,
+};
 use dockspace::platform::{
     CloseEffectAcknowledgement, ObservedWindow, ObservedWorkArea, PlatformCapabilities,
     PlatformCapability, PlatformSnapshot, WindowCloseObservation, WindowCloseState,
@@ -20,13 +27,6 @@ use dockspace::policy::{
     DockSurfaceRecoveryRootFacts, DockSurfaceRule, PolicyDecision, PolicyRejection, PolicyRevision,
     PolicyRuleScope,
 };
-use dockspace::surface_recovery::{ConvertedMainRecovery, SurfaceRecoveryTarget};
-use dockspace::transition::{EngineTransition, InputOutcome};
-use dockspace::viewport::{
-    CloseObservationGeneration, CoordinateObservationGeneration, PresentationObservationGeneration,
-    ViewportBinding, ViewportRole, WindowToken, WorkAreaToken,
-};
-use dockspace::viewport_focus::{FocusObservationGeneration, unknown_focus_observation};
 
 const HOST_ROOT: RootId = RootId::new(1);
 const CHILD_ROOT: RootId = RootId::new(2);
@@ -323,7 +323,7 @@ fn publish_platform(
     });
     let inventory_observation = support::known_inventory_observation(generation, &windows);
     let snapshot = PlatformSnapshot::new(
-        dockspace::viewport::PlatformSnapshotGeneration::new(generation),
+        dockspace::platform::viewport::PlatformSnapshotGeneration::new(generation),
         support::known_capability_observation(generation, platform_capabilities()),
         unknown_focus_observation(
             FocusObservationGeneration::new(generation),

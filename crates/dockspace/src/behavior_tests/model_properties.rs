@@ -1,7 +1,7 @@
 use dockspace::geometry::{Constraints, LogicalRect, LogicalSize};
 use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, RootId, SurfaceId};
-use dockspace::layout::{AxisConstraint, LayoutMetrics, project_root, solve_axis};
+use dockspace::presentation::layout::{AxisConstraint, LayoutMetrics, project_root, solve_axis};
 use proptest::prelude::*;
 use proptest::test_runner::FileFailurePersistence;
 

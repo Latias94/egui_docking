@@ -1,14 +1,14 @@
 //! Action-oriented classification for private runtime failure sources.
 
-use crate::backend_ingress::BackendIngressError;
 use crate::engine::{
     CoreHostFrameError, EngineError, PointerReceiverGeometryError, SurfaceContributionPrepareError,
 };
-use crate::layout::LayoutError;
-use crate::platform_provider::PlatformObservationAuthorityError;
-use crate::pointer_journal::{PointerJournalLedgerError, SurfaceLocalPointerProviderError};
-use crate::pointer_receiver::PointerReceiverAttemptError;
-use crate::scene_compiler::{PresentationCompilationError, SceneCompilationError};
+use crate::input::ingress::BackendIngressError;
+use crate::input::journal::{PointerJournalLedgerError, SurfaceLocalPointerProviderError};
+use crate::input::receiver::PointerReceiverAttemptError;
+use crate::platform::provider::PlatformObservationAuthorityError;
+use crate::presentation::compiler::{PresentationCompilationError, SceneCompilationError};
+use crate::presentation::layout::LayoutError;
 
 use super::{DockspaceInteractionError, DockspaceRuntimeErrorKind, PresentationObservationError};
 
@@ -527,12 +527,12 @@ pub(super) const fn interaction_error_kind(
 #[cfg(test)]
 mod tests {
     use super::super::{DockspaceRuntimeError, DockspaceRuntimeErrorKind};
-    use crate::backend_ingress::BackendIngressError;
     use crate::engine::{CoreHostFrameError, SurfaceContributionPrepareError};
     use crate::ids::SurfaceId;
+    use crate::input::ingress::BackendIngressError;
+    use crate::presentation::compiler::{PresentationCompilationError, SceneCompilationError};
+    use crate::presentation::scene::SceneBuildError;
     use crate::runtime::PresentationObservationError;
-    use crate::scene::SceneBuildError;
-    use crate::scene_compiler::{PresentationCompilationError, SceneCompilationError};
 
     #[test]
     fn host_frame_error_kinds_are_actionable() {

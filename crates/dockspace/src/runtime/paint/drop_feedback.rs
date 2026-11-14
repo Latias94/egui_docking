@@ -1,11 +1,11 @@
 //! Read-only destination facts from an already resolved docking preview.
 
-use crate::command::{Edge, MovePayload};
-use crate::drop_target::DropTargetId;
 use crate::geometry::LogicalRect;
+use crate::graph::command::{Edge, MovePayload};
 use crate::ids::{ItemId, RootId, SurfaceId};
+use crate::interaction::targeting::targets::DropTargetId;
 use crate::model::DockEdge;
-use crate::scene::{PaneSceneId, PresentationPlan, TabBarSceneId};
+use crate::presentation::scene::{PaneSceneId, PresentationPlan, TabBarSceneId};
 
 use super::{DockspaceVisualId, VisualIdentity};
 

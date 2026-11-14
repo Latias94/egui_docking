@@ -1,7 +1,7 @@
 //! Stable semantic focus successors for shared workspace replacement.
 
 use super::*;
-use crate::viewport_focus::WorkspaceReplacementFocus;
+use crate::platform::focus::WorkspaceReplacementFocus;
 
 impl DockEngine {
     pub(super) fn request_workspace_replacement_focus(

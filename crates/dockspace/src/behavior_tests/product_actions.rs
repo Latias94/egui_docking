@@ -1,4 +1,4 @@
-use crate::close_plan::ClosePlanTarget;
+use crate::close::plan::ClosePlanTarget;
 use crate::geometry::{LogicalRect, LogicalSize, PhysicalRect, ScaleFactor};
 use crate::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
 use crate::model::{

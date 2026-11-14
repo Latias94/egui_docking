@@ -1,5 +1,5 @@
 use super::*;
-use crate::drop_resolver::structural_work;
+use crate::interaction::targeting::resolver::structural_work;
 
 fn fixture() -> (DockEngine, PresentationHostLease, crate::ids::NodeId) {
     let mut builder = Workspace::builder();

@@ -1,8 +1,8 @@
 //! Session orchestration for native facts and effects.
 
 use super::*;
-use crate::intent::Authority;
-use crate::pointer_journal::PointerEdgeSequence;
+use crate::input::intent::Authority;
+use crate::input::journal::PointerEdgeSequence;
 
 impl DockspaceSession {
     /// Returns each committed real native window exactly once.
@@ -78,7 +78,7 @@ impl DockspaceSession {
                 .any(|(_, pending)| {
                     matches!(
                         pending.origin(),
-                        crate::viewport::NativeSurfaceEstablishmentOrigin::Initial { .. }
+                        crate::platform::viewport::NativeSurfaceEstablishmentOrigin::Initial { .. }
                     ) && pending.replacement_binding().is_some()
                 })
     }
@@ -269,13 +269,15 @@ impl DockspaceSession {
                     return None;
                 }
                 match pending.origin() {
-                    crate::viewport::NativeSurfaceEstablishmentOrigin::Destroyed { binding } => {
-                        Some(NativeSurfaceBinding::from_binding(
-                            native.provider(),
-                            binding,
-                        ))
-                    }
-                    crate::viewport::NativeSurfaceEstablishmentOrigin::Initial { .. } => None,
+                    crate::platform::viewport::NativeSurfaceEstablishmentOrigin::Destroyed {
+                        binding,
+                    } => Some(NativeSurfaceBinding::from_binding(
+                        native.provider(),
+                        binding,
+                    )),
+                    crate::platform::viewport::NativeSurfaceEstablishmentOrigin::Initial {
+                        ..
+                    } => None,
                 }
             })
     }
@@ -347,7 +349,7 @@ impl DockspaceSession {
         if let Some(producer) = limit.producer_storage_limit() {
             producer.validate()?;
         }
-        crate::backend_ingress::BackendIngressRecorder::preflight_native_transport_configuration(
+        crate::input::ingress::BackendIngressRecorder::preflight_native_transport_configuration(
             limit.record_slots(),
             limit.byte_limit(),
             1,
@@ -427,7 +429,7 @@ impl DockspaceSession {
         &mut self,
         profile: NativeHostProfile,
 
-        pointer_checkpoint: Option<crate::pointer_journal::PointerAuthorityCheckpoint>,
+        pointer_checkpoint: Option<crate::input::journal::PointerAuthorityCheckpoint>,
         storage_limit: Option<NativeInputStorageLimit>,
     ) -> Result<Vec<NativeSurfaceBinding>, DockspaceRuntimeError> {
         if self.pointer.is_some() {
@@ -470,7 +472,7 @@ impl DockspaceSession {
         let watermark = PointerEdgeSequence::new(0);
         let checkpoint_journal = pointer_checkpoint
             .map(|checkpoint| {
-                crate::pointer_journal::PointerEdgeJournal::new(watermark, watermark, Vec::new())
+                crate::input::journal::PointerEdgeJournal::new(watermark, watermark, Vec::new())
                     .and_then(|journal| journal.with_authority_checkpoint(checkpoint))
                     .map_err(|_| NativePlatformError::InvalidPointerFacts)
             })
@@ -989,7 +991,7 @@ impl DockspaceSession {
             committed,
             surface,
             token.into_core()?,
-            crate::surface_recovery::SurfaceRecoveryBootstrap::new(recovery_host),
+            crate::engine::surface_recovery::SurfaceRecoveryBootstrap::new(recovery_host),
         )?;
         Ok(())
     }

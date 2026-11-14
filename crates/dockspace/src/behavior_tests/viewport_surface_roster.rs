@@ -2,14 +2,21 @@ use super::support;
 
 use std::collections::BTreeMap;
 
-use dockspace::RootPresentationOwner;
-use dockspace::command::{ContainedPosition, RootPresentationTarget, WorkspaceCommand};
+use dockspace::engine::surface_recovery::{ConvertedMainRecovery, SurfaceRecoveryTarget};
+use dockspace::engine::transition::{InputOutcome, SurfaceContributionOutcome};
 use dockspace::engine::{DockEngine, EngineInput};
-use dockspace::error::CommandError;
 use dockspace::geometry::{LogicalRect, LogicalSize, PhysicalRect, ScaleFactor};
+use dockspace::graph::command::{ContainedPosition, RootPresentationTarget, WorkspaceCommand};
+use dockspace::graph::error::CommandError;
+use dockspace::graph::workspace::RootPresentationOwner;
 use dockspace::graph::{ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{FloatingPresentationId, ItemId, RootId, StableInputSourceId, SurfaceId};
-use dockspace::intent::{Authority, AuthorityUnavailableReason};
+use dockspace::input::intent::{Authority, AuthorityUnavailableReason};
+use dockspace::platform::focus::{FocusObservationGeneration, unknown_focus_observation};
+use dockspace::platform::viewport::{
+    CloseObservationGeneration, CoordinateObservationGeneration, InputObservationGeneration,
+    PresentationObservationGeneration, ViewportBinding, ViewportRole, WindowToken, WorkAreaToken,
+};
 use dockspace::platform::{
     CloseEffectAcknowledgement, InputEffectAcknowledgement, ObservedWindow, ObservedWorkArea,
     PlatformCapabilities, PlatformCapability, PlatformSnapshot, WindowCloseObservation,
@@ -17,13 +24,6 @@ use dockspace::platform::{
     WindowPresentationObservation, WindowPresentationState,
 };
 use dockspace::policy::DockPolicy;
-use dockspace::surface_recovery::{ConvertedMainRecovery, SurfaceRecoveryTarget};
-use dockspace::transition::{InputOutcome, SurfaceContributionOutcome};
-use dockspace::viewport::{
-    CloseObservationGeneration, CoordinateObservationGeneration, InputObservationGeneration,
-    PresentationObservationGeneration, ViewportBinding, ViewportRole, WindowToken, WorkAreaToken,
-};
-use dockspace::viewport_focus::{FocusObservationGeneration, unknown_focus_observation};
 use support::{TestPresentationHost, submit_input};
 
 const ROOT_HOST: RootId = RootId::new(1);
@@ -283,7 +283,7 @@ fn platform_snapshot(
 ) -> PlatformSnapshot {
     let inventory_observation = support::known_inventory_observation(generation, &windows);
     PlatformSnapshot::new(
-        dockspace::viewport::PlatformSnapshotGeneration::new(generation),
+        dockspace::platform::viewport::PlatformSnapshotGeneration::new(generation),
         support::known_capability_observation(generation, platform_capabilities()),
         unknown_focus_observation(
             FocusObservationGeneration::new(generation),
@@ -1087,7 +1087,7 @@ fn unplanned_rootless_destruction_rehomes_all_contained_roots_without_a_main_roo
 #[test]
 fn size_only_child_destruction_recovers_the_complete_cached_forest() {
     use dockspace::geometry::PhysicalPoint;
-    use dockspace::pointer_journal::{
+    use dockspace::input::journal::{
         DesktopRouteFact, DesktopRouteUnavailable, DesktopRouteValidation,
     };
 

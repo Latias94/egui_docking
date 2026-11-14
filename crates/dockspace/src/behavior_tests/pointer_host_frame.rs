@@ -2,65 +2,65 @@ use super::support;
 
 use std::collections::BTreeSet;
 
-use dockspace::close::{CloseDecision, ClosePlanPhase};
-use dockspace::close_plan::ClosePlanLookup;
-use dockspace::drop_target::DropTargetId;
+use dockspace::close::CloseDecision;
+use dockspace::close::plan::{ClosePlanLookup, ClosePlanPhase};
+use dockspace::engine::event::ReductionCause;
+use dockspace::engine::transition::{InputOutcome, PresentationHostRetirementOutcome};
 use dockspace::engine::{
     CoreHostFrame, CoreHostFrameError, DockEngine, EngineError, EngineInput,
     PointerReceiverGeometryError,
 };
-use dockspace::event::ReductionCause;
 use dockspace::geometry::{LogicalPoint, LogicalRect, PhysicalRect, ScaleFactor};
 use dockspace::graph::{Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{
     FloatingPresentationId, ItemId, NodeId, RootId, SourceSequence, StableInputSourceId, SurfaceId,
 };
-use dockspace::intent::{
+use dockspace::input::intent::{
     Authority, AuthorityUnavailableReason, CloseSceneTarget, PointerButton, PointerId,
 };
-use dockspace::interaction::{
-    ClickSessionId, DragPhase, GestureCancelDelivery, InteractionCancelReason,
-    InteractionEventKind, InteractionOutcome, InteractionRejection, InteractionStatus,
-    PreviewResolutionStatus, PreviewVisual, ScrollReductionOutcome, ScrollTerminationReason,
-};
-use dockspace::platform::{
-    ObservedWindow, PlatformCapabilities, PlatformCapability, PlatformSnapshot,
-    WindowCoordinateObservation, WindowInputState, WindowPresentationObservation,
-    WindowPresentationState,
-};
-use dockspace::pointer_journal::{
+use dockspace::input::journal::{
     FiniteScrollVector, PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind,
     PointerEdgeLocation, PointerEdgeSequence, ScrollDeliveryEndpoint, ScrollDelta, ScrollDeviceId,
     ScrollEdge, ScrollModifiers, ScrollMomentum, ScrollPhase, ScrollSequenceToken,
     SurfaceLocalPointerEndpoint, SurfaceLocalPointerProvider, SurfaceLocalPointerScope,
 };
-use dockspace::pointer_receiver::{
+use dockspace::input::receiver::{
     PointerReceiverCandidate, PointerReceiverDelivery, PointerReceiverDeliveryDisposition,
     PointerReceiverHoverHit, PointerReceiverHoverHitDisposition, PointerReceiverObservation,
     PointerReceiverProbe, PointerReceiverProbeReceipt, PointerReceiverProbeRequest,
     PointerReceiverReceipt, PointerReceiverReceiptBatch, PointerReceiverReceiptValidationError,
     PointerReceiverUnknownReason, PresentedPointerReceiverObservation,
 };
-use dockspace::policy::{
-    CloseCapability, DockPolicy, TabBarInteraction, TabBarPolicy, TabBarVisibility,
+use dockspace::interaction::targeting::targets::DropTargetId;
+use dockspace::interaction::{
+    ClickSessionId, DragPhase, GestureCancelDelivery, InteractionCancelReason,
+    InteractionEventKind, InteractionOutcome, InteractionRejection, InteractionStatus,
+    PreviewResolutionStatus, PreviewVisual, ScrollReductionOutcome, ScrollTerminationReason,
 };
-use dockspace::presentation_config::DockPresentationConfig;
-use dockspace::presentation_hit::{PresentationHitRegionKind, PresentationPointerLane};
-use dockspace::presentation_observation::{
-    HostInteractionPresentation, HostPresentationObservation, PresentationHostRetirementReason,
-};
-use dockspace::scene::{ContainedResizeDirection, TabSceneId};
-use dockspace::scene_manifest::{
-    MeasurementUnavailableReason, TabListMenuMetrics, TabStripControlMetric,
-    TabStripControlMetrics, TabStripControlPlacement,
-};
-use dockspace::tab_strip::TabStripControlId;
-use dockspace::transition::{InputOutcome, PresentationHostRetirementOutcome};
-use dockspace::viewport::{
+use dockspace::platform::focus::{FocusObservationGeneration, unknown_focus_observation};
+use dockspace::platform::viewport::{
     CoordinateObservationGeneration, PresentationObservationGeneration, ViewportBinding,
     ViewportRole, WindowToken,
 };
-use dockspace::viewport_focus::{FocusObservationGeneration, unknown_focus_observation};
+use dockspace::platform::{
+    ObservedWindow, PlatformCapabilities, PlatformCapability, PlatformSnapshot,
+    WindowCoordinateObservation, WindowInputState, WindowPresentationObservation,
+    WindowPresentationState,
+};
+use dockspace::policy::{
+    CloseCapability, DockPolicy, TabBarInteraction, TabBarPolicy, TabBarVisibility,
+};
+use dockspace::presentation::config::DockPresentationConfig;
+use dockspace::presentation::hit::{PresentationHitRegionKind, PresentationPointerLane};
+use dockspace::presentation::manifest::{
+    MeasurementUnavailableReason, TabListMenuMetrics, TabStripControlMetric,
+    TabStripControlMetrics, TabStripControlPlacement,
+};
+use dockspace::presentation::observation::{
+    HostInteractionPresentation, HostPresentationObservation, PresentationHostRetirementReason,
+};
+use dockspace::presentation::scene::{ContainedResizeDirection, TabSceneId};
+use dockspace::presentation::tab_strip::TabStripControlId;
 use support::{
     MeasurementProfile, TestPresentationHost, append_host_input,
     complete_host_frame_with_current_outputs, measurements, publish_surface, publish_surface_with,
@@ -228,7 +228,7 @@ fn native_snapshot(generation: u64, binding: ViewportBinding) -> PlatformSnapsho
     let windows = vec![observed];
     let inventory_observation = support::known_inventory_observation(generation, &windows);
     PlatformSnapshot::new(
-        dockspace::viewport::PlatformSnapshotGeneration::new(generation),
+        dockspace::platform::viewport::PlatformSnapshotGeneration::new(generation),
         support::known_capability_observation(generation, native_capabilities()),
         unknown_focus_observation(
             FocusObservationGeneration::new(generation),
@@ -445,8 +445,8 @@ fn submit_exact_scroll_edge(
     provider: &SurfaceLocalPointerProvider,
     previous: u64,
     edge: PointerEdge,
-    region: dockspace::presentation_hit::PresentationHitRegionId,
-) -> dockspace::transition::EngineTransition {
+    region: dockspace::presentation::hit::PresentationHitRegionId,
+) -> dockspace::engine::transition::EngineTransition {
     let through = edge.sequence();
     let journal = PointerEdgeJournal::new(PointerEdgeSequence::new(previous), through, vec![edge])
         .expect("single scroll-edge journal is contiguous");
@@ -550,7 +550,7 @@ fn submit_input_with_empty_journal(
     provider: &SurfaceLocalPointerProvider,
     source: StableInputSourceId,
     input: EngineInput,
-) -> dockspace::transition::EngineTransition {
+) -> dockspace::engine::transition::EngineTransition {
     let mut frame = host.begin(engine);
     frame
         .submit_surface_pointer_journal(provider, empty_journal(1))
@@ -602,7 +602,9 @@ fn primary_press_receipts(
     .expect("one receipt answers the candidate exactly once")
 }
 
-fn interaction(engine: &DockEngine) -> dockspace::scene::SurfaceInteractionProjection<'_> {
+fn interaction(
+    engine: &DockEngine,
+) -> dockspace::presentation::scene::SurfaceInteractionProjection<'_> {
     engine
         .interaction_projection(SURFACE)
         .expect("published test surface is interactive")
@@ -612,7 +614,7 @@ fn arm_journal_close(
     engine: &mut DockEngine,
     host: &mut TestPresentationHost,
     provider: &SurfaceLocalPointerProvider,
-    region: dockspace::presentation_hit::PresentationHitRegionId,
+    region: dockspace::presentation::hit::PresentationHitRegionId,
     point: LogicalPoint,
 ) -> ClickSessionId {
     arm_journal_close_after(engine, host, provider, region, point, 0)
@@ -622,7 +624,7 @@ fn arm_journal_close_after(
     engine: &mut DockEngine,
     host: &mut TestPresentationHost,
     provider: &SurfaceLocalPointerProvider,
-    region: dockspace::presentation_hit::PresentationHitRegionId,
+    region: dockspace::presentation::hit::PresentationHitRegionId,
     point: LogicalPoint,
     previous: u64,
 ) -> ClickSessionId {
@@ -672,10 +674,10 @@ fn submit_dock_press_after(
     engine: &mut DockEngine,
     host: &mut TestPresentationHost,
     provider: &SurfaceLocalPointerProvider,
-    region: dockspace::presentation_hit::PresentationHitRegionId,
+    region: dockspace::presentation::hit::PresentationHitRegionId,
     point: LogicalPoint,
     previous: u64,
-) -> dockspace::transition::EngineTransition {
+) -> dockspace::engine::transition::EngineTransition {
     let mut frame = host.begin(engine);
     frame
         .submit_surface_pointer_journal(provider, press_at_journal(previous, point))
@@ -715,7 +717,7 @@ fn submit_unknown_capture_release_after(
     provider: &SurfaceLocalPointerProvider,
     point: LogicalPoint,
     previous: u64,
-) -> dockspace::transition::EngineTransition {
+) -> dockspace::engine::transition::EngineTransition {
     let mut frame = host.begin(engine);
     frame
         .submit_surface_pointer_journal(
@@ -753,7 +755,7 @@ fn submit_unknown_capture_release_after(
 }
 
 fn assert_unknown_capture_release_cancelled_once(
-    transition: &dockspace::transition::EngineTransition,
+    transition: &dockspace::engine::transition::EngineTransition,
     expected_status: InteractionStatus,
 ) {
     let [edge] = transition.reduced_pointer_edges() else {
@@ -789,7 +791,7 @@ fn release_journal_click(
     previous: u64,
     point: LogicalPoint,
     disposition: PointerReceiverDeliveryDisposition,
-) -> dockspace::transition::EngineTransition {
+) -> dockspace::engine::transition::EngineTransition {
     let mut frame = host.begin(engine);
     frame
         .submit_surface_pointer_journal(
@@ -829,7 +831,7 @@ fn release_journal_click(
 }
 
 fn known_hover(
-    interaction: dockspace::scene::SurfaceInteractionProjection<'_>,
+    interaction: dockspace::presentation::scene::SurfaceInteractionProjection<'_>,
     point: LogicalPoint,
 ) -> PointerReceiverHoverHit {
     PointerReceiverHoverHit::new(
@@ -873,7 +875,7 @@ fn point_inside_click_region(
     engine: &DockEngine,
     matches_kind: impl Fn(PresentationHitRegionKind) -> bool,
 ) -> (
-    dockspace::presentation_hit::PresentationHitRegionId,
+    dockspace::presentation::hit::PresentationHitRegionId,
     LogicalPoint,
 ) {
     let region = interaction(engine)
@@ -897,9 +899,9 @@ fn submit_exact_click_edge(
     provider: &SurfaceLocalPointerProvider,
     previous: u64,
     pressed: bool,
-    region: dockspace::presentation_hit::PresentationHitRegionId,
+    region: dockspace::presentation::hit::PresentationHitRegionId,
     point: LogicalPoint,
-) -> dockspace::transition::EngineTransition {
+) -> dockspace::engine::transition::EngineTransition {
     let frame = stage_exact_click_edge(engine, host, provider, previous, pressed, region, point);
     host.finish(frame, engine)
 }
@@ -910,7 +912,7 @@ fn stage_exact_click_edge(
     provider: &SurfaceLocalPointerProvider,
     previous: u64,
     pressed: bool,
-    region: dockspace::presentation_hit::PresentationHitRegionId,
+    region: dockspace::presentation::hit::PresentationHitRegionId,
     point: LogicalPoint,
 ) -> CoreHostFrame {
     stage_exact_click_edge_with_completion(
@@ -925,7 +927,7 @@ fn stage_exact_click_edge_with_completion(
     provider: &SurfaceLocalPointerProvider,
     previous: u64,
     pressed: bool,
-    region: dockspace::presentation_hit::PresentationHitRegionId,
+    region: dockspace::presentation::hit::PresentationHitRegionId,
     point: LogicalPoint,
     complete_frame: fn(&DockEngine, &mut CoreHostFrame),
 ) -> CoreHostFrame {
@@ -1372,9 +1374,9 @@ fn smooth_scroll_rejects_token_replacement_until_the_active_sequence_terminates(
 }
 
 fn point_inside_inactive_tab(
-    projection: dockspace::scene::SurfaceInteractionProjection<'_>,
+    projection: dockspace::presentation::scene::SurfaceInteractionProjection<'_>,
 ) -> (
-    dockspace::presentation_hit::PresentationHitRegionId,
+    dockspace::presentation::hit::PresentationHitRegionId,
     LogicalPoint,
 ) {
     let region = projection
@@ -1398,10 +1400,10 @@ fn point_inside_inactive_tab(
 }
 
 fn point_inside_tab(
-    projection: dockspace::scene::SurfaceInteractionProjection<'_>,
+    projection: dockspace::presentation::scene::SurfaceInteractionProjection<'_>,
     item: ItemId,
 ) -> (
-    dockspace::presentation_hit::PresentationHitRegionId,
+    dockspace::presentation::hit::PresentationHitRegionId,
     LogicalPoint,
 ) {
     let region = projection
@@ -1425,10 +1427,10 @@ fn point_inside_tab(
 }
 
 fn point_inside_tab_group(
-    projection: dockspace::scene::SurfaceInteractionProjection<'_>,
+    projection: dockspace::presentation::scene::SurfaceInteractionProjection<'_>,
     item: ItemId,
 ) -> (
-    dockspace::presentation_hit::PresentationHitRegionId,
+    dockspace::presentation::hit::PresentationHitRegionId,
     LogicalPoint,
 ) {
     let tab = projection
@@ -1446,7 +1448,7 @@ fn point_inside_tab_group(
                 region.id().kind(),
                 PresentationHitRegionKind::TabGroupDrag {
                     bar: group,
-                    region: dockspace::scene::TabGroupDragRegionKind::LeadingGrip,
+                    region: dockspace::presentation::scene::TabGroupDragRegionKind::LeadingGrip,
                 } if group.root == tab.id().root && group.tabs == tab.id().tabs
             )
         })
@@ -1461,7 +1463,7 @@ fn point_inside_tab_group(
 }
 
 fn point_without_hover_receiver(
-    projection: dockspace::scene::SurfaceInteractionProjection<'_>,
+    projection: dockspace::presentation::scene::SurfaceInteractionProjection<'_>,
     away_from: LogicalPoint,
 ) -> LogicalPoint {
     let bounds = projection.plan().bounds();
@@ -1515,10 +1517,10 @@ fn point_without_hover_receiver(
 }
 
 fn point_inside_tab_close(
-    projection: dockspace::scene::SurfaceInteractionProjection<'_>,
+    projection: dockspace::presentation::scene::SurfaceInteractionProjection<'_>,
     item: ItemId,
 ) -> (
-    dockspace::presentation_hit::PresentationHitRegionId,
+    dockspace::presentation::hit::PresentationHitRegionId,
     LogicalPoint,
 ) {
     let region = projection
@@ -1542,10 +1544,10 @@ fn point_inside_tab_close(
 }
 
 fn point_inside_center_target(
-    projection: dockspace::scene::SurfaceInteractionProjection<'_>,
+    projection: dockspace::presentation::scene::SurfaceInteractionProjection<'_>,
     target_tabs: NodeId,
 ) -> (
-    dockspace::presentation_hit::PresentationHitRegionId,
+    dockspace::presentation::hit::PresentationHitRegionId,
     LogicalPoint,
 ) {
     let region = projection
@@ -1570,9 +1572,9 @@ fn point_inside_center_target(
 }
 
 fn point_inside_surface_background(
-    projection: dockspace::scene::SurfaceInteractionProjection<'_>,
+    projection: dockspace::presentation::scene::SurfaceInteractionProjection<'_>,
 ) -> (
-    dockspace::presentation_hit::PresentationHitRegionId,
+    dockspace::presentation::hit::PresentationHitRegionId,
     LogicalPoint,
 ) {
     let region = projection
@@ -1598,10 +1600,10 @@ fn point_inside_surface_background(
 }
 
 fn point_inside_splitter(
-    projection: dockspace::scene::SurfaceInteractionProjection<'_>,
+    projection: dockspace::presentation::scene::SurfaceInteractionProjection<'_>,
     split: NodeId,
 ) -> (
-    dockspace::presentation_hit::PresentationHitRegionId,
+    dockspace::presentation::hit::PresentationHitRegionId,
     LogicalPoint,
 ) {
     let region = projection
@@ -1664,11 +1666,11 @@ fn sealed_view_resolves_output_bound_hover_drop_receipts_without_adapter_ranking
 }
 
 fn point_inside_contained_resize(
-    projection: dockspace::scene::SurfaceInteractionProjection<'_>,
+    projection: dockspace::presentation::scene::SurfaceInteractionProjection<'_>,
     floating: FloatingPresentationId,
     direction: ContainedResizeDirection,
 ) -> (
-    dockspace::presentation_hit::PresentationHitRegionId,
+    dockspace::presentation::hit::PresentationHitRegionId,
     LogicalPoint,
 ) {
     let region = projection
@@ -1695,10 +1697,10 @@ fn point_inside_contained_resize(
 }
 
 fn point_inside_contained_title(
-    projection: dockspace::scene::SurfaceInteractionProjection<'_>,
+    projection: dockspace::presentation::scene::SurfaceInteractionProjection<'_>,
     floating: FloatingPresentationId,
 ) -> (
-    dockspace::presentation_hit::PresentationHitRegionId,
+    dockspace::presentation::hit::PresentationHitRegionId,
     LogicalPoint,
 ) {
     let region = projection
@@ -1722,10 +1724,10 @@ fn point_inside_contained_title(
 }
 
 fn point_inside_contained_close(
-    projection: dockspace::scene::SurfaceInteractionProjection<'_>,
+    projection: dockspace::presentation::scene::SurfaceInteractionProjection<'_>,
     floating: FloatingPresentationId,
 ) -> (
-    dockspace::presentation_hit::PresentationHitRegionId,
+    dockspace::presentation::hit::PresentationHitRegionId,
     LogicalPoint,
 ) {
     let region = projection
@@ -1752,11 +1754,11 @@ fn begin_journal_drag(
     engine: &mut DockEngine,
     host: &mut TestPresentationHost,
     provider: &SurfaceLocalPointerProvider,
-    source_region: dockspace::presentation_hit::PresentationHitRegionId,
+    source_region: dockspace::presentation::hit::PresentationHitRegionId,
     press: LogicalPoint,
     target: LogicalPoint,
     target_disposition: PointerReceiverHoverHitDisposition,
-) -> dockspace::transition::EngineTransition {
+) -> dockspace::engine::transition::EngineTransition {
     let mut frame = host.begin(engine);
     frame
         .submit_surface_pointer_journal(provider, press_at_journal(0, press))
@@ -1841,7 +1843,7 @@ fn update_journal_drag_after(
     previous: u64,
     target: LogicalPoint,
     target_disposition: PointerReceiverHoverHitDisposition,
-) -> dockspace::transition::EngineTransition {
+) -> dockspace::engine::transition::EngineTransition {
     let mut frame = host.begin(engine);
     frame
         .submit_surface_pointer_journal(provider, moved_journal(previous, Authority::Known(target)))
@@ -1879,7 +1881,7 @@ fn release_journal_drag(
     provider: &SurfaceLocalPointerProvider,
     target: LogicalPoint,
     target_disposition: PointerReceiverHoverHitDisposition,
-) -> dockspace::transition::EngineTransition {
+) -> dockspace::engine::transition::EngineTransition {
     release_journal_drag_after(engine, host, provider, 2, target, target_disposition)
 }
 
@@ -1890,7 +1892,7 @@ fn release_journal_drag_after(
     previous: u64,
     target: LogicalPoint,
     target_disposition: PointerReceiverHoverHitDisposition,
-) -> dockspace::transition::EngineTransition {
+) -> dockspace::engine::transition::EngineTransition {
     let mut frame = host.begin(engine);
     frame
         .submit_surface_pointer_journal(
@@ -2820,7 +2822,7 @@ fn journal_close_release_outside_consumes_without_opening_a_plan() {
 
 #[test]
 fn journal_close_release_preserves_blocked_and_unknown_terminal_reasons() {
-    use dockspace::pointer_receiver::PointerReceiverUnknownReason;
+    use dockspace::input::receiver::PointerReceiverUnknownReason;
 
     for (disposition, expected_reason) in [
         (
@@ -3341,7 +3343,7 @@ fn journal_close_cancellation_is_a_formal_engine_input() {
     );
     assert!(matches!(
         transition.reduced_inputs()[0].outcome(),
-        dockspace::transition::InputOutcome::InteractionProcessed {
+        dockspace::engine::transition::InputOutcome::InteractionProcessed {
             outcome: InteractionOutcome::Cancelled {
                 status: InteractionStatus::Pressed { .. },
                 reason: InteractionCancelReason::ExplicitCancellation,
@@ -3379,7 +3381,7 @@ fn surface_cancellation_cannot_cancel_a_gesture_owned_by_another_surface() {
 
     assert!(matches!(
         transition.reduced_inputs()[0].outcome(),
-        dockspace::transition::InputOutcome::InteractionProcessed {
+        dockspace::engine::transition::InputOutcome::InteractionProcessed {
             outcome: InteractionOutcome::Rejected(
                 InteractionRejection::GestureCancelDeliveryUnavailable {
                     delivery: GestureCancelDelivery::Surface(surface),
@@ -3558,7 +3560,7 @@ fn journal_close_stream_cancel_prevents_a_successor_release_from_settling_it() {
         pointer_edge_journal(
             1,
             PointerEdgeKind::StreamCancelled(
-                dockspace::pointer_journal::PointerStreamCancelReason::ExplicitPlatformCancellation,
+                dockspace::input::journal::PointerStreamCancelReason::ExplicitPlatformCancellation,
             ),
             PointerEdgeLocation::SurfaceLocal {
                 position: Authority::Known(point),
@@ -3769,7 +3771,7 @@ fn presented_journal_preview_preserves_the_active_drag_until_release() {
             .expect("press answers delivery"),
         ),
     );
-    let work_before_move = crate::drop_resolver::structural_work::snapshot();
+    let work_before_move = crate::interaction::targeting::resolver::structural_work::snapshot();
     submit_pointer_edge_with_observation(
         &mut gesture_frame,
         provider,
@@ -3788,7 +3790,7 @@ fn presented_journal_preview_preserves_the_active_drag_until_release() {
             .expect("move answers hover"),
         ),
     );
-    let work_after_move = crate::drop_resolver::structural_work::snapshot();
+    let work_after_move = crate::interaction::targeting::resolver::structural_work::snapshot();
     assert_eq!(
         work_after_move.presentation_roster_full_captures,
         work_before_move.presentation_roster_full_captures,
@@ -4052,10 +4054,12 @@ fn journal_partial_subtree_known_none_uses_core_reserved_contained_identity() {
             *root != ROOT
                 && matches!(
                     engine.workspace().presentation_for_root(*root),
-                    Some(dockspace::RootPresentationOwner::Contained {
-                        surface: SURFACE,
-                        ..
-                    })
+                    Some(
+                        dockspace::graph::workspace::RootPresentationOwner::Contained {
+                            surface: SURFACE,
+                            ..
+                        }
+                    )
                 )
         })
         .expect("core created one fresh contained root for the partial subtree");
@@ -4181,10 +4185,12 @@ fn journal_complete_root_known_none_reuses_root_and_mints_only_floating_identity
     ));
     assert!(matches!(
         engine.workspace().presentation_for_root(ROOT),
-        Some(dockspace::RootPresentationOwner::Contained {
-            surface: SURFACE,
-            ..
-        })
+        Some(
+            dockspace::graph::workspace::RootPresentationOwner::Contained {
+                surface: SURFACE,
+                ..
+            }
+        )
     ));
     assert_eq!(
         engine
@@ -4259,7 +4265,7 @@ fn journal_partial_payload_installs_core_reserved_root_on_rootless_background() 
     assert_ne!(main_root, CONTAINED_ROOT);
     assert!(matches!(
         engine.workspace().presentation_for_root(main_root),
-        Some(dockspace::RootPresentationOwner::Main { surface: SURFACE })
+        Some(dockspace::graph::workspace::RootPresentationOwner::Main { surface: SURFACE })
     ));
     let main = engine
         .workspace()
@@ -4281,7 +4287,7 @@ fn journal_partial_payload_installs_core_reserved_root_on_rootless_background() 
 
 #[test]
 fn journal_contained_release_commits_the_release_edge_preview_immediately() {
-    use crate::drop_resolver::structural_work::{self, WorkspaceCloneVolume};
+    use crate::interaction::targeting::resolver::structural_work::{self, WorkspaceCloneVolume};
 
     let (workspace, _) = split_workspace();
     let mut engine = DockEngine::new(workspace, DockPolicy::default()).expect("valid engine");
@@ -4635,7 +4641,7 @@ fn journal_contained_title_drag_is_owned_by_the_pointer_stream() {
     );
     assert!(matches!(
         drag.payload(),
-        dockspace::command::MovePayload::Subtree(_)
+        dockspace::graph::command::MovePayload::Subtree(_)
     ));
 }
 
@@ -4891,8 +4897,8 @@ fn surface_local_tab_press_subthreshold_move_release_is_ticket_causal() {
         .find(|event| {
             matches!(
                 event.kind(),
-                dockspace::event::WorkspaceEventKind::CommandCommitted(
-                    dockspace::command::CommandOutcome::Selected {
+                dockspace::engine::event::WorkspaceEventKind::CommandCommitted(
+                    dockspace::graph::command::CommandOutcome::Selected {
                         item,
                         changed: true,
                         ..
@@ -4956,7 +4962,7 @@ fn authoritative_tab_list_control_then_row_click_selects_and_closes() {
     assert_eq!(released.events().len(), 1);
     assert_eq!(
         engine.version(),
-        dockspace::transition::WorkspaceVersion::new(
+        dockspace::engine::transition::WorkspaceVersion::new(
             before.epoch(),
             before
                 .revision()
@@ -5196,7 +5202,7 @@ fn authoritative_menu_backdrop_dismisses_the_active_menu_atomically() {
     assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
     assert!(matches!(
         engine.presentation_requirements().popup(),
-        dockspace::tab_strip::PopupPlaneRequirement::Inactive { .. }
+        dockspace::presentation::tab_strip::PopupPlaneRequirement::Inactive { .. }
     ));
     commit_empty_pointer_journal(&mut engine, &mut host, provider, 2);
 }
@@ -5850,7 +5856,7 @@ fn semantic_input_is_rejected_while_pointer_receipt_is_pending() {
     assert_eq!(engine.semantic_input_watermark(), None);
     assert_eq!(
         engine.pointer_button_authority(),
-        dockspace::pointer_journal::AnyButtonDownAuthority::Unknown(
+        dockspace::input::journal::AnyButtonDownAuthority::Unknown(
             AuthorityUnavailableReason::ProviderUnavailable
         )
     );
@@ -6004,7 +6010,7 @@ fn scene_semantics_coexist_with_pointer_provider() {
     let transition = host.finish(frame, &mut engine);
     assert!(matches!(
         transition.reduced_inputs()[0].outcome(),
-        dockspace::transition::InputOutcome::InteractionProcessed {
+        dockspace::engine::transition::InputOutcome::InteractionProcessed {
             outcome: InteractionOutcome::CloseRequested { .. },
             ..
         }
@@ -6494,8 +6500,7 @@ fn transition_preserves_stream_incarnation_for_cancel_then_same_pointer_reuse() 
     let provider = create_local_provider(&mut engine, &host);
     let provider = &provider;
     let point = LogicalPoint::new(96.0, 24.0).expect("test point is valid");
-    let reason =
-        dockspace::pointer_journal::PointerStreamCancelReason::ExplicitPlatformCancellation;
+    let reason = dockspace::input::journal::PointerStreamCancelReason::ExplicitPlatformCancellation;
 
     let mut frame = host.begin(&engine);
     for previous in [0, 1] {
@@ -6546,7 +6551,7 @@ fn stream_cancellation_terminates_an_active_drag_exactly_once() {
     let (source_tab, press) = point_inside_inactive_tab(projection);
     let (target_region, target) = point_inside_center_target(projection, target_tabs);
     let cancel_reason =
-        dockspace::pointer_journal::PointerStreamCancelReason::ExplicitPlatformCancellation;
+        dockspace::input::journal::PointerStreamCancelReason::ExplicitPlatformCancellation;
 
     let mut frame = host.begin(&engine);
     let press_delivery = PointerReceiverDelivery::new(
@@ -6736,7 +6741,7 @@ fn assert_authoritative_capture_loss_terminates_active_drag(capture_owner: Point
     let active_stream = gesture_transition.reduced_pointer_edges()[1].stream();
 
     let cancel_reason =
-        dockspace::pointer_journal::PointerStreamCancelReason::ExplicitPlatformCancellation;
+        dockspace::input::journal::PointerStreamCancelReason::ExplicitPlatformCancellation;
     let mut terminal_frame = host.begin(&engine);
     submit_pointer_edge_with_observation(
         &mut terminal_frame,

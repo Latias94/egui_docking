@@ -3,7 +3,7 @@
 use super::select_native_work_area;
 use crate::geometry::{PhysicalRect, ScaleFactor};
 use crate::platform::ObservedWorkArea;
-use crate::viewport::WorkAreaToken;
+use crate::platform::viewport::WorkAreaToken;
 
 fn rect(x: f64, y: f64, width: f64, height: f64) -> PhysicalRect {
     PhysicalRect::new(x, y, width, height).unwrap()

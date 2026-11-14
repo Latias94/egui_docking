@@ -1,7 +1,7 @@
 //! Renderer-neutral touch arbitration events and context-menu requests.
 
 use super::{SurfacePointerId, WorkspaceVersion};
-use crate::event::ReductionCause;
+use crate::engine::event::ReductionCause;
 use crate::geometry::LogicalPoint;
 use crate::ids::{ItemId, RootId, SurfaceId};
 

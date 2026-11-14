@@ -6,15 +6,15 @@ use super::{
 };
 use crate::geometry::{LogicalPoint, PhysicalPoint};
 use crate::ids::SurfaceId;
-use crate::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
-use crate::pointer_journal::{
+use crate::input::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
+use crate::input::journal::{
     DesktopRouteFact, DesktopWorkAreaRoute, FiniteScrollVector, NativeLocalPointerRoute,
     PointerAuthorityCheckpoint, PointerCaptureOwner, PointerEdge, PointerEdgeJournal,
     PointerEdgeKind, PointerEdgeLocation, PointerEventDeliveryOwner, PointerStateObservation,
     PointerStreamCancelReason, ScrollCancelReason, ScrollDelta, ScrollDeviceId, ScrollEdge,
     ScrollModifiers, ScrollMomentum, ScrollPhase, ScrollSequenceToken,
 };
-use crate::presentation_hit::PresentationPointerLane;
+use crate::presentation::hit::PresentationPointerLane;
 
 /// Stable pointer identity supplied by a native host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -823,7 +823,7 @@ impl RuntimeNativeState {
     pub(super) fn prepare_pointer_journals(
         &self,
         inputs: &mut impl Iterator<Item = NativePointerInput>,
-        reclaimable: Option<crate::backend_ingress::BackendIngressCommitWatermark>,
+        reclaimable: Option<crate::input::ingress::BackendIngressCommitWatermark>,
     ) -> Result<Vec<PointerEdgeJournal>, NativePlatformError> {
         if self.profile != NativeHostProfile::ManagedDesktop {
             return Err(NativePlatformError::HostProfileMismatch);
@@ -909,7 +909,7 @@ impl RuntimeNativeState {
     fn compile_pointer_journal(
         &self,
         input: NativePointerInput,
-        previous: crate::pointer_journal::PointerEdgeSequence,
+        previous: crate::input::journal::PointerEdgeSequence,
     ) -> Result<PointerEdgeJournal, NativePlatformError> {
         if self.profile != NativeHostProfile::ManagedDesktop {
             return Err(NativePlatformError::HostProfileMismatch);
@@ -1186,7 +1186,7 @@ const fn native_pointer_cancel_reason(
 pub(super) fn compile_initial_pointer_authority(
     roster: NativePointerRoster,
 ) -> Result<PointerAuthorityCheckpoint, NativePlatformError> {
-    let watermark = crate::pointer_journal::PointerEdgeSequence::new(0);
+    let watermark = crate::input::journal::PointerEdgeSequence::new(0);
     compile_pointer_authority(roster, watermark, |owner| match owner {
         NativePointerOwner::Foreign => Ok(Authority::Known(PointerCaptureOwner::Foreign)),
         NativePointerOwner::None => Ok(Authority::Known(PointerCaptureOwner::None)),
@@ -1222,7 +1222,7 @@ pub(super) fn pointer_authority_descendant_bytes(
 
 fn compile_pointer_authority(
     roster: NativePointerRoster,
-    watermark: crate::pointer_journal::PointerEdgeSequence,
+    watermark: crate::input::journal::PointerEdgeSequence,
     resolve_capture: impl Fn(
         NativePointerOwner,
     ) -> Result<Authority<PointerCaptureOwner>, NativePlatformError>,
@@ -1287,18 +1287,18 @@ fn native_scroll_delta(delta: NativeScrollDelta) -> Result<ScrollDelta, NativePl
 #[cfg(test)]
 mod handoff_tests {
     use super::*;
-    use crate::coordinates::CoordinateSnapshot;
     use crate::geometry::{PhysicalSize, ScaleFactor};
     use crate::graph::{Node, RootRecord, SurfacePresentation, Workspace};
     use crate::ids::{ItemId, RootId};
     use crate::platform::WindowCoordinateObservation;
+    use crate::platform::coordinates::CoordinateSnapshot;
+    use crate::platform::viewport::{CoordinateGeneration, CoordinateObservationGeneration};
     use crate::policy::DockPolicy;
     use crate::runtime::{
         DockspaceSession, HostInputOutcome, HostWindowToken, NativeHostErrorKind,
         NativeLocalCoordinates, NativeLocalPointerFact, NativeSurfaceBinding, PointerDeviceKind,
         PointerEventMetadata, SurfaceUnavailableReason,
     };
-    use crate::viewport::{CoordinateGeneration, CoordinateObservationGeneration};
     use std::time::Duration;
 
     fn fixture() -> (
@@ -1419,7 +1419,7 @@ mod handoff_tests {
         );
         assert_eq!(
             desktop.hovered(),
-            Authority::Known(crate::pointer_journal::DesktopHoveredWindow::Dock(
+            Authority::Known(crate::input::journal::DesktopHoveredWindow::Dock(
                 binding.binding.window()
             ))
         );
@@ -1521,7 +1521,7 @@ mod capacity_tests {
             );
             let expected = pointer_authority_descendant_bytes(&roster).unwrap();
             let checkpoint = compile_initial_pointer_authority(roster).unwrap();
-            let watermark = crate::pointer_journal::PointerEdgeSequence::new(0);
+            let watermark = crate::input::journal::PointerEdgeSequence::new(0);
             let journal = PointerEdgeJournal::new(watermark, watermark, Vec::new())
                 .unwrap()
                 .with_authority_checkpoint(checkpoint)
@@ -1531,7 +1531,7 @@ mod capacity_tests {
         let roster = NativePointerRoster::Unknown;
         let expected = pointer_authority_descendant_bytes(&roster).unwrap();
         let checkpoint = compile_initial_pointer_authority(roster).unwrap();
-        let watermark = crate::pointer_journal::PointerEdgeSequence::new(0);
+        let watermark = crate::input::journal::PointerEdgeSequence::new(0);
         let journal = PointerEdgeJournal::new(watermark, watermark, Vec::new())
             .unwrap()
             .with_authority_checkpoint(checkpoint)

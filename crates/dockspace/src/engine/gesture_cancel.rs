@@ -1,11 +1,11 @@
 //! Device-independent explicit gesture cancellation.
 
+use crate::engine::transition::{InputOutcome, WorkspaceVersion};
 use crate::ids::{InputSequence, SurfaceId};
 use crate::interaction::{
     GestureCancelDelivery, InteractionCancelReason, InteractionEvent, InteractionOutcome,
     InteractionRejection, InteractionStatus,
 };
-use crate::transition::{InputOutcome, WorkspaceVersion};
 
 use super::{DockEngine, EngineError};
 

@@ -1,17 +1,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::frame::{SurfaceVacancyAuthority, ViewportCoordinator};
+use crate::engine::surface_recovery::SurfaceRecoveryObligationId;
 use crate::graph::Workspace;
 use crate::ids::{InputSequence, NativeCreateSagaId, SurfaceId};
-use crate::presentation_observation::{
+use crate::platform::focus::{FocusCausalStamp, PaneFocusDisposition};
+use crate::platform::frame::{SurfaceVacancyAuthority, ViewportCoordinator};
+use crate::platform::registry::ViewportAdmission;
+use crate::platform::viewport::{NativeSurfaceEstablishmentOrigin, ViewportBinding, WindowBinding};
+use crate::presentation::observation::{
     HostPresentationEndpoint, NativeStagingResourceId, PresentationOutputSerial,
     PresentedSurfaceAuthority, SurfacePresentationOutputTicket,
 };
-use crate::scene::SurfaceCoordinateCapture;
-use crate::surface_recovery::SurfaceRecoveryObligationId;
-use crate::viewport::{NativeSurfaceEstablishmentOrigin, ViewportBinding, WindowBinding};
-use crate::viewport_focus::{FocusCausalStamp, PaneFocusDisposition};
-use crate::viewport_registry::ViewportAdmission;
+use crate::presentation::scene::SurfaceCoordinateCapture;
 
 use super::{DockEngine, EngineError};
 
@@ -35,7 +35,7 @@ struct NativeCreateVacancies {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FirstLiveBarrier {
-    ready_basis: crate::frame::NativeReadyBasis,
+    ready_basis: crate::platform::frame::NativeReadyBasis,
     owner: FirstLiveOwner,
     resource: Option<NativeStagingResourceId>,
     recovery_activation: Option<(FocusCausalStamp, PaneFocusDisposition)>,
@@ -93,7 +93,7 @@ impl NativeAdmissionState {
         self.barriers
             .retain(|window, roster| roster.members.iter().map(|member| member.binding).eq(viewport.registry().bindings_for_window(*window)) && roster.members.iter().all(|member| match member.owner {
                 Some(barrier) => viewport.native_ready_basis(member.binding) == Some(barrier.ready_basis) && match barrier.owner {
-                    FirstLiveOwner::NativeCreate(saga) => viewport.native_create_saga(saga).is_some_and(|create| create.binding() == member.binding && matches!(create.phase(), crate::frame::NativeCreatePhase::AwaitingFirstLivePresentation { .. })),
+                    FirstLiveOwner::NativeCreate(saga) => viewport.native_create_saga(saga).is_some_and(|create| create.binding() == member.binding && matches!(create.phase(), crate::platform::frame::NativeCreatePhase::AwaitingFirstLivePresentation { .. })),
                     FirstLiveOwner::NativeSurface { .. } => true,
                 },
                 None => true,
@@ -198,7 +198,7 @@ impl NativeAdmissionState {
 
     pub(super) fn revoke_observed_streams(
         &mut self,
-        streams: &BTreeSet<crate::presentation_observation::HostPresentationStreamId>,
+        streams: &BTreeSet<crate::presentation::observation::HostPresentationStreamId>,
     ) {
         for member in self
             .barriers
@@ -272,7 +272,7 @@ impl NativeAdmissionState {
     fn register_barrier(
         &mut self,
         target: ViewportBinding,
-        ready_basis: crate::frame::NativeReadyBasis,
+        ready_basis: crate::platform::frame::NativeReadyBasis,
         owner: FirstLiveOwner,
         resource: Option<NativeStagingResourceId>,
         output_floor: PresentationOutputSerial,
@@ -319,7 +319,7 @@ impl NativeAdmissionState {
         target: ViewportBinding,
         resource: NativeStagingResourceId,
         output_floor: PresentationOutputSerial,
-        ready_basis: crate::frame::NativeReadyBasis,
+        ready_basis: crate::platform::frame::NativeReadyBasis,
     ) -> Result<(), NativeAdmissionError> {
         self.register_barrier(
             target,
@@ -338,7 +338,7 @@ impl NativeAdmissionState {
         recovery_obligation: SurfaceRecoveryObligationId,
         output_floor: PresentationOutputSerial,
         recovery_activation: Option<(FocusCausalStamp, PaneFocusDisposition)>,
-        ready_basis: crate::frame::NativeReadyBasis,
+        ready_basis: crate::platform::frame::NativeReadyBasis,
     ) -> Result<(), NativeAdmissionError> {
         self.register_barrier(
             target,
@@ -606,7 +606,7 @@ impl DockEngine {
         &mut self,
         ticket: SurfacePresentationOutputTicket,
         capture: SurfaceCoordinateCapture,
-        events: &mut Vec<crate::event::WorkspaceEvent>,
+        events: &mut Vec<crate::engine::event::WorkspaceEvent>,
     ) -> Result<(), EngineError> {
         let surface = ticket.surface();
         let Some(binding) = Self::coordinate_capture_binding(capture) else {
@@ -664,7 +664,7 @@ impl DockEngine {
                 self.reconcile_viewport_focus_authority();
                 if let Some((focus_causal, pane)) = barrier.recovery_activation {
                     let _ = self.start_viewport_activation(
-                        crate::viewport_focus::ViewportActivationRequest::recovery_replacement(
+                        crate::platform::focus::ViewportActivationRequest::recovery_replacement(
                             binding, pane,
                         ),
                         focus_causal,
@@ -697,7 +697,7 @@ impl DockEngine {
 mod tests {
     use super::*;
     use crate::ids::{EngineAuthorityDomainId, WorkspaceEpoch};
-    use crate::viewport::{WindowIncarnation, WindowToken};
+    use crate::platform::viewport::{WindowIncarnation, WindowToken};
 
     fn binding(surface: u64, incarnation: u64) -> ViewportBinding {
         ViewportBinding::new(
@@ -714,25 +714,25 @@ mod tests {
     }
 
     fn authority(binding: ViewportBinding, serial: u64) -> PresentedSurfaceAuthority {
-        let requirement = crate::scene_manifest::SurfaceMeasurementTicket::new(
+        let requirement = crate::presentation::manifest::SurfaceMeasurementTicket::new(
             binding.authority_domain(),
             binding.epoch(),
-            crate::presentation_config::PresentationConfigRevision::new(1),
+            crate::presentation::config::PresentationConfigRevision::new(1),
             crate::policy::PolicyRevision::new(1),
-            crate::scene_manifest::SurfaceRequirementRevision::new(1),
+            crate::presentation::manifest::SurfaceRequirementRevision::new(1),
             binding.surface(),
         );
         let ticket = SurfacePresentationOutputTicket::mint(
             binding.authority_domain(),
             PresentationOutputSerial::new_for_test(serial),
-            crate::scene::SurfaceSceneStamp::new(
+            crate::presentation::scene::SurfaceSceneStamp::new(
                 requirement,
-                crate::scene_manifest::SurfaceSceneRevision::new(1),
+                crate::presentation::manifest::SurfaceSceneRevision::new(1),
             ),
         );
         let observed = PresentedSurfaceAuthority::mint_observed_for_test(
             ticket,
-            crate::viewport::CoordinateGeneration::new(1),
+            crate::platform::viewport::CoordinateGeneration::new(1),
         );
         PresentedSurfaceAuthority::mint_observed(
             ticket,
@@ -767,7 +767,7 @@ mod tests {
         let different_placement = ViewportBinding::with_placement_generation(
             second.window(),
             second.surface(),
-            crate::viewport::PlacementGeneration::new(1),
+            crate::platform::viewport::PlacementGeneration::new(1),
         );
         assert!(
             !state.observe(authority(different_placement, 6)),
@@ -837,7 +837,7 @@ mod tests {
                 target,
                 resource(saga),
                 PresentationOutputSerial::default(),
-                crate::frame::NativeReadyBasis::for_test(),
+                crate::platform::frame::NativeReadyBasis::for_test(),
             )
             .expect("the first native create barrier registers");
         assert_eq!(
@@ -846,7 +846,7 @@ mod tests {
                 target,
                 resource(saga),
                 PresentationOutputSerial::default(),
-                crate::frame::NativeReadyBasis::for_test(),
+                crate::platform::frame::NativeReadyBasis::for_test(),
             ),
             Err(NativeAdmissionError::DuplicateBarrier)
         );
@@ -873,7 +873,7 @@ mod tests {
                 target,
                 resource(saga),
                 PresentationOutputSerial::default(),
-                crate::frame::NativeReadyBasis::for_test(),
+                crate::platform::frame::NativeReadyBasis::for_test(),
             )
             .expect("the native create barrier registers");
 
@@ -911,7 +911,7 @@ mod tests {
                 target,
                 expected_resource,
                 PresentationOutputSerial::default(),
-                crate::frame::NativeReadyBasis::for_test(),
+                crate::platform::frame::NativeReadyBasis::for_test(),
             )
             .expect("the native create barrier registers");
 

@@ -1,7 +1,7 @@
-use dockspace::external_item_key::{
+use dockspace::ids::ItemId;
+use dockspace::persistence::item_key::{
     ExternalItemKeyMap, ExternalItemKeyMapError, ExternalItemKeyReconcileError,
 };
-use dockspace::ids::ItemId;
 
 #[test]
 fn lexical_predecessor_insertions_never_renumber_existing_items() {
@@ -143,11 +143,11 @@ fn reconciliation_rejects_key_and_item_conflicts_without_mutating_either_input()
 
 #[cfg(feature = "serde")]
 mod persistence {
-    use dockspace::external_item_key::{
+    use dockspace::ids::ItemId;
+    use dockspace::persistence::item_key::{
         ExternalItemKeyMap, ExternalItemKeyMapError, ExternalItemKeyReconcileError,
         ExternalItemKeyRestoreError, ExternalItemKeySnapshot, SnapshotExternalItemKeyEntry,
     };
-    use dockspace::ids::ItemId;
 
     fn snapshot(
         entries: impl IntoIterator<Item = (&'static str, u64)>,

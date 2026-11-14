@@ -6,8 +6,8 @@ impl DockEngine {
         input: InputSequence,
         provider: PlatformObservationLease,
         expected: WorkspaceVersion,
-        window: crate::viewport::WindowBinding,
-        placements: &[crate::coordinates::NativeSurfacePlacement],
+        window: crate::platform::viewport::WindowBinding,
+        placements: &[crate::platform::coordinates::NativeSurfacePlacement],
     ) -> Result<InputOutcome, EngineError> {
         if expected != self.version {
             return Ok(InputOutcome::StaleRejected {
@@ -30,7 +30,7 @@ impl DockEngine {
             return Err(EngineError::Viewport {
                 input,
                 source: ViewportCoordinatorError::Registry(
-                    crate::viewport_registry::ViewportRegistryError::WindowPlacementUnavailable {
+                    crate::platform::registry::ViewportRegistryError::WindowPlacementUnavailable {
                         binding: window,
                     },
                 ),
@@ -41,7 +41,7 @@ impl DockEngine {
                 return Err(EngineError::Viewport {
                     input,
                     source: ViewportCoordinatorError::Registry(
-                        crate::viewport_registry::ViewportRegistryError::MissingSurface {
+                        crate::platform::registry::ViewportRegistryError::MissingSurface {
                             surface: placement.surface(),
                         },
                     ),
@@ -55,7 +55,7 @@ impl DockEngine {
                 return Err(EngineError::Viewport {
                     input,
                     source: ViewportCoordinatorError::Registry(
-                        crate::viewport_registry::ViewportRegistryError::SurfaceAlreadyRegistered {
+                        crate::platform::registry::ViewportRegistryError::SurfaceAlreadyRegistered {
                             surface: placement.surface(),
                         },
                     ),

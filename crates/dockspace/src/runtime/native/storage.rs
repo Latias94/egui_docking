@@ -5,10 +5,10 @@ use super::{
     NativeBindingState, NativePlatformError, NativeSurfaceBinding, NativeWindowState,
     PreparedNativeHostCommit, RuntimeNativeState,
 };
-use crate::backend_ingress::BackendIngressRecorder;
+use crate::input::ingress::BackendIngressRecorder;
+use crate::platform::viewport::{ViewportBinding, WorkAreaToken};
 use crate::platform::{ObservedWindow, ObservedWorkArea, PlatformSnapshot, WindowCloseObservation};
 use crate::runtime::{DockspaceHostFrame, DockspaceRuntimeError, DockspaceSession};
-use crate::viewport::{ViewportBinding, WorkAreaToken};
 use std::num::NonZeroUsize;
 
 /// Optional admission limit for a managed host's recorded input transport.
@@ -263,7 +263,7 @@ impl RuntimeNativeState {
     fn input_owned_capacity_bytes(&self) -> Result<usize, NativePlatformError> {
         let mut bytes = size_of::<BackendIngressRecorder>()
             .saturating_add(size_of::<
-                Option<crate::backend_ingress::BackendIngressPrefixRetirementReceipt>,
+                Option<crate::input::ingress::BackendIngressPrefixRetirementReceipt>,
             >())
             .saturating_add(self.recorder.record_buffer_capacity_bytes())
             .saturating_add(self.recorder.shared_fixed_data_bytes());
@@ -302,7 +302,7 @@ pub(super) fn producer_buffer<T>(slots: usize) -> Result<Vec<T>, NativePlatformE
 pub(super) const fn producer_inline_capacity_bytes() -> usize {
     size_of::<Option<RuntimeNativeState>>()
         - size_of::<BackendIngressRecorder>()
-        - size_of::<Option<crate::backend_ingress::BackendIngressPrefixRetirementReceipt>>()
+        - size_of::<Option<crate::input::ingress::BackendIngressPrefixRetirementReceipt>>()
         - size_of::<Option<super::PendingNativeReplay>>()
 }
 

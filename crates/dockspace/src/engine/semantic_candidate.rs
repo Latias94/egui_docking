@@ -6,7 +6,7 @@ impl DockEngine {
     pub(super) fn reduce_host_focus_observation(
         &mut self,
         expected_epoch: crate::ids::WorkspaceEpoch,
-        observation: crate::viewport_focus::HostFocusObservation,
+        observation: crate::platform::focus::HostFocusObservation,
     ) -> InputOutcome {
         if expected_epoch != self.version.epoch() {
             return InputOutcome::PaneFocusObservationStale {
@@ -63,7 +63,7 @@ impl DockEngine {
         );
         if matches!(
             transition,
-            crate::viewport_focus::PaneFocusObservationTransition::Focused { .. }
+            crate::platform::focus::PaneFocusObservationTransition::Focused { .. }
         ) && let Some((stream, host, _)) = self
             .presentation_authority
             .presentation
@@ -82,13 +82,13 @@ impl DockEngine {
     pub(super) fn semantic_candidate(
         &self,
         scene: SurfaceSceneStamp,
-    ) -> Result<&crate::scene::SurfacePlanScene, InteractionRejection> {
+    ) -> Result<&crate::presentation::scene::SurfacePlanScene, InteractionRejection> {
         let candidate = self
             .presentation_authority
             .scene
             .surface(scene.surface())
             .and_then(SurfaceScene::ready)
-            .map(crate::scene::ReadySurfaceScene::candidate)
+            .map(crate::presentation::scene::ReadySurfaceScene::candidate)
             .filter(|candidate| candidate.stamp() == scene)
             .filter(|candidate| {
                 candidate.stamp().requirement().workspace_epoch() == self.version.epoch()
@@ -136,7 +136,7 @@ impl DockEngine {
         &mut self,
         input: InputSequence,
         focus_causal: FocusCausalStamp,
-        candidate: &crate::scene::SurfacePlanScene,
+        candidate: &crate::presentation::scene::SurfacePlanScene,
         selection: LocalTabSelection,
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
@@ -202,14 +202,15 @@ impl DockEngine {
                 ));
             }
             let raise = match self.workspace.presentation_for_root(tab.root) {
-                Some(crate::RootPresentationOwner::Main { surface })
+                Some(crate::graph::workspace::RootPresentationOwner::Main { surface })
                     if surface == scene.surface() =>
                 {
                     None
                 }
-                Some(crate::RootPresentationOwner::Contained { surface, floating })
-                    if surface == scene.surface() =>
-                {
+                Some(crate::graph::workspace::RootPresentationOwner::Contained {
+                    surface,
+                    floating,
+                }) if surface == scene.surface() => {
                     let Some(contained) = candidate.plan().contained_record(floating) else {
                         return Ok(self.candidate_action_rejection(
                             InteractionRejection::TabGestureSourceUnavailable {
@@ -343,7 +344,7 @@ impl DockEngine {
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InputOutcome, EngineError> {
-        let prepared = match crate::operation::prepare_transaction(
+        let prepared = match crate::graph::operation::prepare_transaction(
             &self.workspace,
             policy,
             &[raise, selection],
@@ -460,7 +461,7 @@ impl DockEngine {
         &mut self,
         cause: ReductionCause,
         focus_causal: FocusCausalStamp,
-        candidate: &crate::scene::SurfacePlanScene,
+        candidate: &crate::presentation::scene::SurfacePlanScene,
         action: &LocalTabChromeAction,
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
@@ -625,7 +626,7 @@ impl DockEngine {
         input: InputSequence,
         expected: WorkspaceVersion,
         scene: SurfaceSceneStamp,
-        junction: crate::scene::SplitterJunctionId,
+        junction: crate::presentation::scene::SplitterJunctionId,
         axis: crate::model::DockspaceAxis,
         delta: f64,
         policy: &DockPolicySnapshot,

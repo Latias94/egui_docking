@@ -3,10 +3,10 @@
 use thiserror::Error;
 
 use super::NativeWindowBinding;
-use crate::backend_ingress::BackendIngressLease;
-use crate::coordinates::WindowCoordinateSnapshot;
 use crate::geometry::{GeometryError, PhysicalPoint, PhysicalSize, ScaleFactor};
-use crate::viewport::CoordinateGeneration;
+use crate::input::ingress::BackendIngressLease;
+use crate::platform::coordinates::WindowCoordinateSnapshot;
+use crate::platform::viewport::CoordinateGeneration;
 
 /// Native client geometry observed at one callback boundary.
 ///
@@ -239,16 +239,16 @@ pub enum NativeLocalCoordinateError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::coordinates::CoordinateSnapshot;
     use crate::ids::{EngineAuthorityDomainId, SurfaceId, WorkspaceEpoch};
-    use crate::intent::{Authority, AuthorityUnavailableReason};
+    use crate::input::intent::{Authority, AuthorityUnavailableReason};
+    use crate::input::journal::{PointerInputLease, PointerProviderScope};
     use crate::platform::WindowCoordinateObservation;
-    use crate::platform_provider::PlatformObservationAuthority;
-    use crate::pointer_journal::{PointerInputLease, PointerProviderScope};
-    use crate::presentation_observation::PresentationLedger;
-    use crate::viewport::{
+    use crate::platform::coordinates::CoordinateSnapshot;
+    use crate::platform::provider::PlatformObservationAuthority;
+    use crate::platform::viewport::{
         CoordinateObservationGeneration, ViewportBinding, WindowIncarnation, WindowToken,
     };
+    use crate::presentation::observation::PresentationLedger;
 
     fn size(width: f64, height: f64) -> PhysicalSize {
         PhysicalSize::new(width, height).unwrap()
@@ -376,7 +376,7 @@ mod tests {
         let binding = coordinates.binding();
         let foreign = NativeWindowBinding::from_binding(
             binding.provider,
-            crate::viewport::WindowBinding::new(
+            crate::platform::viewport::WindowBinding::new(
                 binding.window.authority_domain(),
                 binding.window.epoch(),
                 binding.window.token(),

@@ -1,4 +1,4 @@
-use dockspace::canonical::{CanonicalizationError, canonicalize_workspace};
+use dockspace::graph::canonical::{CanonicalizationError, canonicalize_workspace};
 use dockspace::graph::{
     Axis, InvalidSplitWeight, Node, RootRecord, SplitWeight, SurfacePresentation, Workspace,
     WorkspaceBuilder,
@@ -208,7 +208,7 @@ fn empty_orphan_nodes_are_swept_but_item_bearing_orphans_fail_closed() {
             .iter()
             .any(|error| matches!(
                 error,
-                dockspace::validation::WorkspaceValidationError::OrphanNode { node }
+                dockspace::graph::validation::WorkspaceValidationError::OrphanNode { node }
                     if *node == owned_orphan
             ))
     );
@@ -308,7 +308,7 @@ fn build_rejects_non_normalized_weights_without_reinterpreting_central_shares() 
         .expect_err("strict validation must reject non-normalized weights");
     assert!(validation_error.errors().iter().any(|error| matches!(
         error,
-        dockspace::validation::WorkspaceValidationError::SplitWeightsNotNormalized {
+        dockspace::graph::validation::WorkspaceValidationError::SplitWeightsNotNormalized {
             split: invalid,
             ..
         } if *invalid == split

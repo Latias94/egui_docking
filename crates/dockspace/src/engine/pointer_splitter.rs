@@ -32,7 +32,7 @@ impl DockEngine {
         owner: GestureOwner,
         capture_authority: Authority<PointerCaptureOwner>,
         point: crate::geometry::LogicalPoint,
-        device: crate::pointer_journal::PointerDeviceKind,
+        device: crate::input::journal::PointerDeviceKind,
         policy: &DockPolicySnapshot,
     ) -> Result<ResizeStart, InteractionRejection> {
         let surface = presentation.surface();
@@ -89,7 +89,8 @@ impl DockEngine {
         &self,
         plan: &PresentationPlan,
         target: SplitterResizeTarget,
-    ) -> Result<Vec<(NodeSource, crate::scene::SplitterRecord)>, InteractionRejection> {
+    ) -> Result<Vec<(NodeSource, crate::presentation::scene::SplitterRecord)>, InteractionRejection>
+    {
         let surface = plan.surface();
         let ids = match target {
             SplitterResizeTarget::Handle(handle) => vec![handle],
@@ -129,7 +130,7 @@ impl DockEngine {
     pub(super) fn prepare_checked_resize_axis_groups(
         &self,
         plan: &PresentationPlan,
-        handles: Vec<(NodeSource, crate::scene::SplitterRecord)>,
+        handles: Vec<(NodeSource, crate::presentation::scene::SplitterRecord)>,
         policy: &DockPolicySnapshot,
     ) -> Result<Vec<crate::interaction::FrozenResizeAxisGroup>, InteractionRejection> {
         let groups = prepare_resize_axis_groups(&self.workspace, plan, handles)
@@ -203,7 +204,7 @@ impl DockEngine {
             }
         };
         if let Err(error) =
-            crate::operation::validate_split_resizes(&self.workspace, policy, &updates)
+            crate::graph::operation::validate_split_resizes(&self.workspace, policy, &updates)
         {
             return Ok(InteractionOutcome::Rejected(
                 InteractionRejection::ResizeRejected(error),
@@ -331,11 +332,11 @@ impl DockEngine {
         resize: &ActiveResize,
         point: crate::geometry::LogicalPoint,
         policy: &DockPolicySnapshot,
-    ) -> Result<Vec<crate::command::SplitResize>, InteractionRejection> {
+    ) -> Result<Vec<crate::graph::command::SplitResize>, InteractionRejection> {
         self.validate_resize_coordinate_authority(resize)?;
         let updates = split_resize_updates(resize, point)
             .ok_or(InteractionRejection::SplitterResizeGeometryUnavailable)?;
-        crate::operation::validate_split_resizes(&self.workspace, policy, &updates)
+        crate::graph::operation::validate_split_resizes(&self.workspace, policy, &updates)
             .map_err(InteractionRejection::ResizeRejected)?;
         Ok(updates)
     }
@@ -534,7 +535,7 @@ impl DockEngine {
     pub(super) fn adjust_splitter_from_candidate(
         &mut self,
         input: InputSequence,
-        painted: &crate::scene::SurfacePlanScene,
+        painted: &crate::presentation::scene::SurfacePlanScene,
         splitter: SplitterSceneId,
         delta: f64,
         policy: &DockPolicySnapshot,
@@ -609,7 +610,7 @@ impl DockEngine {
         &mut self,
         input: InputSequence,
         scene: SurfaceSceneStamp,
-        junction: crate::scene::SplitterJunctionId,
+        junction: crate::presentation::scene::SplitterJunctionId,
         axis: crate::model::DockspaceAxis,
         delta: f64,
         policy: &DockPolicySnapshot,
@@ -635,9 +636,10 @@ impl DockEngine {
     fn prepare_splitter_junction_axis_handles(
         &self,
         plan: &PresentationPlan,
-        junction: crate::scene::SplitterJunctionId,
+        junction: crate::presentation::scene::SplitterJunctionId,
         axis: Axis,
-    ) -> Result<Vec<(NodeSource, crate::scene::SplitterRecord)>, InteractionRejection> {
+    ) -> Result<Vec<(NodeSource, crate::presentation::scene::SplitterRecord)>, InteractionRejection>
+    {
         let surface = plan.surface();
         let Some(record) = plan
             .splitter_junction_records()
@@ -649,12 +651,12 @@ impl DockEngine {
 
         let directions = match axis {
             crate::graph::Axis::Horizontal => [
-                crate::scene::SplitterJunctionDirection::North,
-                crate::scene::SplitterJunctionDirection::South,
+                crate::presentation::scene::SplitterJunctionDirection::North,
+                crate::presentation::scene::SplitterJunctionDirection::South,
             ],
             crate::graph::Axis::Vertical => [
-                crate::scene::SplitterJunctionDirection::East,
-                crate::scene::SplitterJunctionDirection::West,
+                crate::presentation::scene::SplitterJunctionDirection::East,
+                crate::presentation::scene::SplitterJunctionDirection::West,
             ],
         };
         let mut ids = directions
@@ -698,8 +700,8 @@ impl DockEngine {
     pub(super) fn adjust_splitter_junction_from_candidate(
         &mut self,
         input: InputSequence,
-        painted: &crate::scene::SurfacePlanScene,
-        junction: crate::scene::SplitterJunctionId,
+        painted: &crate::presentation::scene::SurfacePlanScene,
+        junction: crate::presentation::scene::SplitterJunctionId,
         axis: crate::model::DockspaceAxis,
         delta: f64,
         policy: &DockPolicySnapshot,

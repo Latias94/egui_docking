@@ -3,11 +3,11 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use crate::command::{FingerprintNode, MovePayload, NodeFingerprint, NodeSource};
 use crate::geometry::LogicalRect;
+use crate::graph::command::{FingerprintNode, MovePayload, NodeFingerprint, NodeSource};
 use crate::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
 use crate::interaction::{ActiveDragView, DragPhase, DragSessionId};
-use crate::scene::{
+use crate::presentation::scene::{
     ContainedLayoutOwner, PaneSceneId, PresentationPlan, SurfaceSceneSet, TabSceneId,
 };
 

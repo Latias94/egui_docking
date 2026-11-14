@@ -1,7 +1,7 @@
 //! Content and native-surface close planning, settlement, and commit.
 
 use super::*;
-use crate::close_plan::{ContentCloseScope, prepare_scoped_content_close};
+use crate::close::plan::{ContentCloseScope, prepare_scoped_content_close};
 
 impl DockEngine {
     pub(super) fn capture_content_close(
@@ -168,7 +168,7 @@ impl DockEngine {
                 button,
                 position,
             } => {
-                if button != crate::intent::PointerButton::Primary {
+                if button != crate::input::intent::PointerButton::Primary {
                     return Ok(InteractionOutcome::Rejected(
                         InteractionRejection::CloseActivationButtonUnsupported { button },
                     ));
@@ -333,8 +333,8 @@ impl DockEngine {
                 ClosePlanPhase::CancelRequested | ClosePlanPhase::Indeterminate
                     if matches!(
                         plan.cancellation_state(),
-                        crate::close_plan::CloseCancellationState::Requested
-                            | crate::close_plan::CloseCancellationState::Indeterminate
+                        crate::close::plan::CloseCancellationState::Requested
+                            | crate::close::plan::CloseCancellationState::Indeterminate
                     ) && self.close.native_cancellation_effect(request).is_none() =>
                 {
                     let _ = self
@@ -373,8 +373,8 @@ impl DockEngine {
                     NativeCloseResolution::Accept => plan.phase() == ClosePlanPhase::Approved,
                     NativeCloseResolution::Cancel => matches!(
                         plan.cancellation_state(),
-                        crate::close_plan::CloseCancellationState::Requested
-                            | crate::close_plan::CloseCancellationState::Indeterminate
+                        crate::close::plan::CloseCancellationState::Requested
+                            | crate::close::plan::CloseCancellationState::Indeterminate
                     ),
                 }
             });
@@ -454,7 +454,7 @@ impl DockEngine {
                     return Ok(false);
                 }
                 if !content.is_empty()
-                    && crate::operation::prepare_surface_content_closes(
+                    && crate::graph::operation::prepare_surface_content_closes(
                         &self.workspace,
                         &self.policy,
                         &content,
@@ -464,7 +464,7 @@ impl DockEngine {
                     return Ok(false);
                 }
                 Ok(commands.is_empty()
-                    || crate::operation::prepare_transaction(
+                    || crate::graph::operation::prepare_transaction(
                         &self.workspace,
                         &self.policy,
                         &commands,
@@ -482,7 +482,7 @@ impl DockEngine {
                 if !roster.matches_workspace(&self.workspace) {
                     return Ok(false);
                 }
-                Ok(crate::operation::prepare_transaction(
+                Ok(crate::graph::operation::prepare_transaction(
                     &self.workspace,
                     &self.policy,
                     transaction.commands(),
@@ -637,7 +637,7 @@ impl DockEngine {
         prepared: &PreparedCloseOperation,
         workspace: &Workspace,
         policy: &DockPolicySnapshot,
-        registry: &crate::viewport_registry::ViewportRegistry,
+        registry: &crate::platform::registry::ViewportRegistry,
     ) -> bool {
         match prepared {
             PreparedCloseOperation::Window {
@@ -1667,8 +1667,11 @@ impl DockEngine {
         // the surface request. Recovery application itself is intentionally
         // policy-independent because an already-destroyed window must not be
         // left with a half-applied topology.
-        match crate::operation::prepare_transaction(&self.workspace, policy, transaction.commands())
-        {
+        match crate::graph::operation::prepare_transaction(
+            &self.workspace,
+            policy,
+            transaction.commands(),
+        ) {
             Ok(_) => {}
             Err(TransactionError::Command {
                 source: CommandError::Policy(reason),

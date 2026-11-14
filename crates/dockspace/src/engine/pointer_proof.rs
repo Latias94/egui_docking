@@ -1,14 +1,14 @@
 //! Pointer receiver and presentation authority validation.
 
 use super::*;
-use crate::drop_target::DropSourceSuppression;
-use crate::pointer_journal::{
+use crate::input::journal::{
     DesktopDockRoute, HostLocalPointerRoute, NativePointerRoutes, NativeSurfacePointerRoute,
     PointerDeviceKind,
 };
-use crate::pointer_receiver::PointerReceiverDeliveryRequest;
-use crate::pointer_receiver::{NativeWindowHitReceipt, NativeWindowPointerProbe};
-use crate::viewport::WindowBinding;
+use crate::input::receiver::PointerReceiverDeliveryRequest;
+use crate::input::receiver::{NativeWindowHitReceipt, NativeWindowPointerProbe};
+use crate::interaction::targeting::targets::DropSourceSuppression;
+use crate::platform::viewport::WindowBinding;
 
 fn owned_host_local_route(
     engine: &DockEngine,
@@ -139,7 +139,7 @@ pub(super) fn native_window_pointer_probe(
         }
         PointerEdgeLocation::Desktop { route } => {
             let window = if hover {
-                let Authority::Known(crate::pointer_journal::DesktopHoveredWindow::Dock(window)) =
+                let Authority::Known(crate::input::journal::DesktopHoveredWindow::Dock(window)) =
                     route.hovered()
                 else {
                     return None;
@@ -584,7 +584,7 @@ pub(super) fn validated_desktop_delivery_route(
     let selected = edge.native_routes().and_then(|routes| routes.manipulation);
     let source = native_source_route(engine, edge, selected)?;
     Some(DesktopRouteValidation::Known(
-        crate::pointer_journal::ValidatedDesktopRoute::Dock(DesktopDockRoute::new(
+        crate::input::journal::ValidatedDesktopRoute::Dock(DesktopDockRoute::new(
             source.binding(),
             source.coordinate_generation(),
             point,
@@ -646,7 +646,7 @@ pub enum PointerReceiverGeometryError {
     )]
     InteractionManifestUnavailable {
         /// Exact provider sequence carrying the claim.
-        sequence: crate::pointer_journal::PointerEdgeSequence,
+        sequence: crate::input::journal::PointerEdgeSequence,
         /// Surface named by the receipt's semantic region.
         surface: SurfaceId,
     },
@@ -655,7 +655,7 @@ pub enum PointerReceiverGeometryError {
     #[error("pointer receipt for edge {sequence} names a docking region without a logical point")]
     LogicalPointUnavailable {
         /// Exact provider sequence carrying the claim.
-        sequence: crate::pointer_journal::PointerEdgeSequence,
+        sequence: crate::input::journal::PointerEdgeSequence,
     },
     /// A known receiver-absence claim was bound to another logical surface.
     #[error(
@@ -663,7 +663,7 @@ pub enum PointerReceiverGeometryError {
     )]
     AbsenceSurfaceMismatch {
         /// Exact provider sequence carrying the claim.
-        sequence: crate::pointer_journal::PointerEdgeSequence,
+        sequence: crate::input::journal::PointerEdgeSequence,
         /// Surface implied by the provider route.
         expected: SurfaceId,
         /// Surface bound to the claimed absence observation.
@@ -677,7 +677,7 @@ pub enum PointerReceiverGeometryError {
     )]
     DesktopRoutePresentationMismatch {
         /// Exact provider sequence carrying the claim.
-        sequence: crate::pointer_journal::PointerEdgeSequence,
+        sequence: crate::input::journal::PointerEdgeSequence,
         /// Exact route-to-presentation mismatch.
         #[source]
         source: DesktopRoutePresentationError,
@@ -688,7 +688,7 @@ pub enum PointerReceiverGeometryError {
     )]
     NativeLocalPresentationMismatch {
         /// Exact provider edge carrying the receiver claim.
-        sequence: crate::pointer_journal::PointerEdgeSequence,
+        sequence: crate::input::journal::PointerEdgeSequence,
     },
     /// A known host-local hover answer does not name the edge's exact route output.
     #[error(
@@ -708,7 +708,7 @@ pub enum PointerReceiverGeometryError {
     )]
     SurfaceMismatch {
         /// Exact provider sequence carrying the claim.
-        sequence: crate::pointer_journal::PointerEdgeSequence,
+        sequence: crate::input::journal::PointerEdgeSequence,
         /// Surface implied by the provider's local endpoint.
         expected: SurfaceId,
         /// Surface owned by the receipt's semantic region.
@@ -720,7 +720,7 @@ pub enum PointerReceiverGeometryError {
     #[error("pointer receipt for edge {sequence} names region {region:?} outside the edge point")]
     RegionDoesNotCoverPoint {
         /// Exact provider sequence carrying the claim.
-        sequence: crate::pointer_journal::PointerEdgeSequence,
+        sequence: crate::input::journal::PointerEdgeSequence,
         /// Claimed semantic region.
         region: PresentationHitRegionId,
     },
@@ -731,7 +731,7 @@ pub enum PointerReceiverGeometryError {
     )]
     ReceiverWinnerMismatch {
         /// Exact provider sequence carrying the claim.
-        sequence: crate::pointer_journal::PointerEdgeSequence,
+        sequence: crate::input::journal::PointerEdgeSequence,
         /// Action lane selected from the semantic region kind.
         lane: PresentationPointerLane,
         /// Region claimed by the adapter, or `None` for known absence.
@@ -744,7 +744,7 @@ pub enum PointerReceiverGeometryError {
     #[error("pointer receipt for edge {sequence} has an ambiguous {lane:?} receiver winner")]
     ReceiverWinnerAmbiguous {
         /// Exact provider sequence carrying the claim.
-        sequence: crate::pointer_journal::PointerEdgeSequence,
+        sequence: crate::input::journal::PointerEdgeSequence,
         /// Action lane selected from the semantic region kind.
         lane: PresentationPointerLane,
     },
@@ -814,7 +814,7 @@ impl DockEngine {
         &self,
         host: PresentationHostLease,
         window: WindowBinding,
-    ) -> Option<crate::coordinates::WindowCoordinateSnapshot> {
+    ) -> Option<crate::platform::coordinates::WindowCoordinateSnapshot> {
         let provider = self.backend_ingress_provider()?;
         if provider.presentation_host() != host
             || provider.pointer_provider().scope() != PointerProviderScope::NativeJoined(host)
@@ -1014,7 +1014,7 @@ impl DockEngine {
                                 && disposition == PointerReceiverDeliveryDisposition::EmptyLane;
                             let scroll_absence = lane == PresentationPointerLane::Scroll
                                 && matches!(edge.kind(), PointerEdgeKind::Scrolled(scroll)
-                                    if matches!(scroll.phase(), crate::pointer_journal::ScrollPhase::Discrete | crate::pointer_journal::ScrollPhase::Begin))
+                                    if matches!(scroll.phase(), crate::input::journal::ScrollPhase::Discrete | crate::input::journal::ScrollPhase::Begin))
                                 && matches!(
                                     disposition,
                                     PointerReceiverDeliveryDisposition::EmptyLane
@@ -1041,7 +1041,7 @@ impl DockEngine {
                             // same rollback candidate.
                             if lane == PresentationPointerLane::Scroll
                                 && matches!(edge.kind(), PointerEdgeKind::Scrolled(scroll)
-                                    if !matches!(scroll.phase(), crate::pointer_journal::ScrollPhase::Discrete | crate::pointer_journal::ScrollPhase::Begin))
+                                    if !matches!(scroll.phase(), crate::input::journal::ScrollPhase::Discrete | crate::input::journal::ScrollPhase::Begin))
                             {
                                 continue;
                             }
@@ -1458,7 +1458,7 @@ impl DockEngine {
     /// Returns only the active source's retained coordinate authority.
     pub(crate) fn host_local_manipulation_authority(
         &self,
-        pointer: crate::intent::PointerId,
+        pointer: crate::input::intent::PointerId,
     ) -> Option<PresentedSurfaceAuthority> {
         let stream = self.interaction.active_stream()?;
         let host = self.pointer_provider()?.scope().host_local()?;
@@ -1762,15 +1762,15 @@ mod tests {
     use super::super::test_support::{TestPresentationHost, publish_surface};
     use super::*;
     use crate::graph::{RootRecord, SurfacePresentation};
-    use crate::intent::PointerId;
-    use crate::pointer_journal::HostLocalPointerRoute;
-    use crate::pointer_receiver::PresentedPointerReceiverObservation;
+    use crate::input::intent::PointerId;
+    use crate::input::journal::HostLocalPointerRoute;
+    use crate::input::receiver::PresentedPointerReceiverObservation;
 
     #[test]
     fn armed_touch_suppresses_only_the_disappearing_source_leaf() {
-        use crate::drop_guide::DropGuideClusterId;
-        use crate::drop_target::DropTargetId;
         use crate::graph::Axis;
+        use crate::interaction::targeting::guide::DropGuideClusterId;
+        use crate::interaction::targeting::targets::DropTargetId;
 
         for (items, central, group, removes_leaf) in [
             (vec![ItemId::new(1)], false, false, true),
@@ -1918,7 +1918,7 @@ mod tests {
             .iter()
             .find(|region| {
                 matches!(region.id().kind(), PresentationHitRegionKind::DropTarget(
-                    crate::drop_target::DropTargetId::Center { root: target_root, .. }
+                    crate::interaction::targeting::targets::DropTargetId::Center { root: target_root, .. }
                 ) if target_root == root)
             })
             .unwrap();

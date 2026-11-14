@@ -1,13 +1,15 @@
 use super::support;
 
-use dockspace::canonical::CanonicalizationError;
-use dockspace::command::{
+use dockspace::engine::{DockEngine, EngineInput};
+use dockspace::geometry::LogicalRect;
+use dockspace::graph::canonical::CanonicalizationError;
+use dockspace::graph::command::{
     CloseCommitOutcome, ContainedPosition, ContentCloseTarget, DockFraction, DockTarget, Edge,
     MovePayload, RootContent, RootPresentationTarget, WorkspaceCommand,
 };
-use dockspace::engine::{DockEngine, EngineInput};
-use dockspace::error::{CommandError, TransactionError};
-use dockspace::geometry::LogicalRect;
+use dockspace::graph::error::{CommandError, TransactionError};
+use dockspace::graph::transaction::WorkspaceTransaction;
+use dockspace::graph::validation::WorkspaceValidationError;
 use dockspace::graph::{
     Axis, ContainedFloating, Node, RootRecord, SplitWeight, SurfacePresentation, Workspace,
     WorkspaceBuilder,
@@ -16,8 +18,6 @@ use dockspace::ids::{
     FloatingPresentationId, ItemId, NodeId, RootId, StableInputSourceId, SurfaceId,
 };
 use dockspace::policy::{DockPolicy, DockPolicySnapshot, PolicyRevision};
-use dockspace::transaction::WorkspaceTransaction;
-use dockspace::validation::WorkspaceValidationError;
 use support::{TestPresentationHost, submit_input};
 
 const ROOT_A: RootId = RootId::new(1);
@@ -58,7 +58,7 @@ fn close(workspace: &mut Workspace, target: ContentCloseTarget) -> CloseCommitOu
         EngineInput::RequestContentClose { expected, target },
     )
     .expect("close request must reduce");
-    let dockspace::transition::InputOutcome::ContentCloseRequested { plan, .. } =
+    let dockspace::engine::transition::InputOutcome::ContentCloseRequested { plan, .. } =
         request.reduced_inputs()[0].outcome()
     else {
         panic!("close target must open a plan");
@@ -77,7 +77,7 @@ fn close(workspace: &mut Workspace, target: ContentCloseTarget) -> CloseCommitOu
             },
         )
         .expect("close decision must reduce");
-        if let dockspace::transition::InputOutcome::CloseDecisionProcessed {
+        if let dockspace::engine::transition::InputOutcome::CloseDecisionProcessed {
             application: Some(Ok(outcome)),
             ..
         } = transition.reduced_inputs()[0].outcome()
@@ -85,7 +85,7 @@ fn close(workspace: &mut Workspace, target: ContentCloseTarget) -> CloseCommitOu
             assert!(transition.events().iter().any(|event| {
                 matches!(
                     event.kind(),
-                    dockspace::event::WorkspaceEventKind::CloseCommitted(actual)
+                    dockspace::engine::event::WorkspaceEventKind::CloseCommitted(actual)
                         if actual == outcome
                 )
             }));
@@ -357,7 +357,7 @@ fn tabs_and_subtree_tabs_have_identical_self_center_noop_semantics() {
         .expect("self-center tabs move is a checked no-op");
         assert!(matches!(
             report.outcomes(),
-            [dockspace::command::CommandOutcome::Moved { changed: false, .. }]
+            [dockspace::graph::command::CommandOutcome::Moved { changed: false, .. }]
         ));
         assert_eq!(workspace, before);
     }
@@ -686,7 +686,7 @@ fn sole_noncentral_item_edge_to_its_own_tabs_is_a_checked_noop() {
     .expect("self-edge is a checked no-op");
     assert!(matches!(
         report.outcomes(),
-        [dockspace::command::CommandOutcome::Moved { changed: false, .. }]
+        [dockspace::graph::command::CommandOutcome::Moved { changed: false, .. }]
     ));
     assert_eq!(workspace, before);
 }
@@ -786,10 +786,12 @@ fn rehoming_between_contained_hosts_preserves_root_node_and_floating_identity() 
     assert_eq!(record.rect, rect(30.0, 40.0));
     assert_eq!(
         workspace.presentation_for_root(ROOT_C),
-        Some(dockspace::RootPresentationOwner::Contained {
-            surface: SURFACE_B,
-            floating,
-        })
+        Some(
+            dockspace::graph::workspace::RootPresentationOwner::Contained {
+                surface: SURFACE_B,
+                floating,
+            }
+        )
     );
 
     let source = workspace
@@ -862,10 +864,12 @@ fn rehoming_main_root_to_contained_supports_rootless_hosts_and_stable_floating_i
     );
     assert_eq!(
         workspace.presentation_for_root(ROOT_A),
-        Some(dockspace::RootPresentationOwner::Contained {
-            surface: SURFACE_A,
-            floating,
-        })
+        Some(
+            dockspace::graph::workspace::RootPresentationOwner::Contained {
+                surface: SURFACE_A,
+                floating,
+            }
+        )
     );
 
     let source = workspace
@@ -889,10 +893,12 @@ fn rehoming_main_root_to_contained_supports_rootless_hosts_and_stable_floating_i
     assert!(workspace.surface(SURFACE_A).is_none());
     assert_eq!(
         workspace.presentation_for_root(ROOT_A),
-        Some(dockspace::RootPresentationOwner::Contained {
-            surface: SURFACE_B,
-            floating,
-        })
+        Some(
+            dockspace::graph::workspace::RootPresentationOwner::Contained {
+                surface: SURFACE_B,
+                floating,
+            }
+        )
     );
 
     assert_contained_rehome_identity_is_stable(&mut workspace, main_a, floating);
@@ -1011,10 +1017,12 @@ fn contained_creation_rect_raise_and_last_close_share_one_transaction_boundary()
     );
     assert_eq!(
         workspace.presentation_for_root(ROOT_B),
-        Some(dockspace::RootPresentationOwner::Contained {
-            surface: SURFACE_A,
-            floating: floating_a,
-        })
+        Some(
+            dockspace::graph::workspace::RootPresentationOwner::Contained {
+                surface: SURFACE_A,
+                floating: floating_a,
+            }
+        )
     );
 
     assert_eq!(
@@ -1149,7 +1157,7 @@ fn contained_raise_uses_a_frozen_roster_and_rejects_stale_peers_atomically() {
     .expect("a refreshed roster permits the structural raise");
     assert!(matches!(
         report.outcomes(),
-        [dockspace::command::CommandOutcome::ContainedRaised {
+        [dockspace::graph::command::CommandOutcome::ContainedRaised {
             from: 0,
             to: 2,
             changed: true,
@@ -1165,10 +1173,12 @@ fn contained_raise_uses_a_frozen_roster_and_rejects_stale_peers_atomically() {
     );
     assert_eq!(
         workspace.presentation_for_root(ROOT_B),
-        Some(dockspace::RootPresentationOwner::Contained {
-            surface: SURFACE_A,
-            floating: floating_a,
-        })
+        Some(
+            dockspace::graph::workspace::RootPresentationOwner::Contained {
+                surface: SURFACE_A,
+                floating: floating_a,
+            }
+        )
     );
 
     let source = workspace
@@ -1190,7 +1200,7 @@ fn contained_raise_uses_a_frozen_roster_and_rejects_stale_peers_atomically() {
     .expect("raising the frontmost presentation is idempotent");
     assert!(matches!(
         report.outcomes(),
-        [dockspace::command::CommandOutcome::ContainedRaised { changed: false, .. }]
+        [dockspace::graph::command::CommandOutcome::ContainedRaised { changed: false, .. }]
     ));
     assert_eq!(workspace, before_idempotent_raise);
 }

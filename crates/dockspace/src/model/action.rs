@@ -150,7 +150,7 @@ impl NativeWindowPlacement {
 pub struct PreparedTabsGroup {
     pub(crate) authority_domain: EngineAuthorityDomainId,
     pub(crate) expected: WorkspaceVersion,
-    pub(crate) source: crate::command::NodeSource,
+    pub(crate) source: crate::graph::command::NodeSource,
 }
 
 impl PreparedTabsGroup {

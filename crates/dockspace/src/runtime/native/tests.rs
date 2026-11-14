@@ -1,11 +1,12 @@
 use super::compiler::compile_window_fact;
 use super::*;
-use crate::effect::{EffectId, EffectLedger, PlatformEffect};
 use crate::geometry::{LogicalRect, LogicalSize, PhysicalRect, ScaleFactor};
 use crate::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use crate::ids::{ItemId, RootId};
-use crate::intent::{Authority, AuthorityUnavailableReason};
+use crate::input::intent::{Authority, AuthorityUnavailableReason};
 use crate::platform::PlatformCapability;
+use crate::platform::effect::{EffectId, EffectLedger, PlatformEffect};
+use crate::platform::viewport::{InventoryGeneration, WindowIncarnation};
 use crate::policy::DockPolicy;
 use crate::runtime::native_effect::{NativeEffectDropQueue, NativeEffectRequest};
 use crate::runtime::{
@@ -14,7 +15,6 @@ use crate::runtime::{
     SurfacePaintProgramStep, SurfacePresentationResult, SurfaceProgramExecutionReceipt,
     SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
-use crate::viewport::{InventoryGeneration, WindowIncarnation};
 
 mod binding_retired;
 mod budget_replay;
@@ -56,13 +56,13 @@ fn native_surface_close_defaults_to_presentation_recovery() {
     assert_eq!(action, NativeSurfaceCloseAction::RecoverPresentation);
     assert_eq!(
         action.into_request(),
-        crate::close_plan::SurfaceCloseRequest::RecoverPresentation
+        crate::close::plan::SurfaceCloseRequest::RecoverPresentation
     );
 }
 
-fn unknown_focus() -> crate::viewport_focus::FocusObservationEnvelope {
-    crate::viewport_focus::unknown_focus_observation(
-        crate::viewport_focus::FocusObservationGeneration::new(0),
+fn unknown_focus() -> crate::platform::focus::FocusObservationEnvelope {
+    crate::platform::focus::unknown_focus_observation(
+        crate::platform::focus::FocusObservationGeneration::new(0),
         AuthorityUnavailableReason::NotReported,
     )
 }
@@ -1261,7 +1261,7 @@ fn unknown_inventory_does_not_skip_per_binding_window_observations() {
             .viewport()
             .registry()
             .record(SURFACE)
-            .is_some_and(crate::viewport_registry::ViewportRecord::is_ready)
+            .is_some_and(crate::platform::registry::ViewportRecord::is_ready)
     );
 
     session
@@ -1283,7 +1283,7 @@ fn unknown_inventory_does_not_skip_per_binding_window_observations() {
             .viewport()
             .registry()
             .record(SURFACE)
-            .is_some_and(crate::viewport_registry::ViewportRecord::is_ready),
+            .is_some_and(crate::platform::registry::ViewportRecord::is_ready),
         "an inventory-only generation must not create a gap in the binding-local coordinate stream"
     );
 }
@@ -1399,8 +1399,8 @@ fn losing_inventory_revokes_dock_focus_without_guessing_a_successor() {
 
 #[test]
 fn destroyed_snapshot_then_queued_dock_focus_retries_without_losing_the_raw_generation() {
-    use crate::backend_ingress::BackendIngressPayload;
-    use crate::viewport_focus::{FocusObservationGeneration, GlobalFocusedWindow};
+    use crate::input::ingress::BackendIngressPayload;
+    use crate::platform::focus::{FocusObservationGeneration, GlobalFocusedWindow};
 
     let (mut session, binding) =
         native_root_session_with_profile(NativeHostProfile::ManagedDesktop);
@@ -1591,7 +1591,7 @@ fn destroyed_snapshot_then_queued_dock_focus_retries_without_losing_the_raw_gene
 
 #[test]
 fn nonvisible_snapshots_revoke_dock_focus_once_and_visibility_needs_a_new_focus_fact() {
-    use crate::viewport_focus::{FocusObservationGeneration, GlobalFocusedWindow};
+    use crate::platform::focus::{FocusObservationGeneration, GlobalFocusedWindow};
 
     for presentation in [
         Some(NativeWindowPresentationState::Hidden),
@@ -1857,7 +1857,7 @@ fn native_pointer_batch_rejects_malformed_facts_before_exact_retry() {
         .records()
         .iter()
         .map(|record| {
-            let crate::backend_ingress::BackendIngressPayload::PointerSegment(journal) =
+            let crate::input::ingress::BackendIngressPayload::PointerSegment(journal) =
                 record.payload()
             else {
                 panic!("the retry must contain only pointer segments");
@@ -1884,7 +1884,7 @@ fn native_pointer_batch_rejects_malformed_facts_before_exact_retry() {
                 pointer_before.get() + 1,
                 pointer_before.get() + 1,
                 11,
-                crate::pointer_journal::PointerEdgeKind::Moved,
+                crate::input::journal::PointerEdgeKind::Moved,
             ),
             (
                 recorded_before.get() + 2,
@@ -1892,7 +1892,7 @@ fn native_pointer_batch_rejects_malformed_facts_before_exact_retry() {
                 pointer_before.get() + 2,
                 pointer_before.get() + 2,
                 12,
-                crate::pointer_journal::PointerEdgeKind::StreamEnded,
+                crate::input::journal::PointerEdgeKind::StreamEnded,
             ),
         ]
     );

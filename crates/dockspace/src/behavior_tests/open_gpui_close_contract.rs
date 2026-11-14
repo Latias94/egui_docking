@@ -20,37 +20,37 @@ use super::support;
 
 use support::TestPresentationHost;
 
-use dockspace::close::{CloseDecision, ClosePlanPhase, ClosePlanTarget, DeferredCloseDecision};
-use dockspace::close_plan::{CloseInertReason, ClosePlan, CloseResolutionOutcome};
-use dockspace::command::{CloseCommitOutcome, ContentCloseTarget};
+use dockspace::close::plan::{CloseInertReason, ClosePlan, ClosePlanPhase, CloseResolutionOutcome};
+use dockspace::close::{CloseDecision, ClosePlanTarget, DeferredCloseDecision};
+use dockspace::engine::transition::{EngineTransition, InputOutcome};
 use dockspace::engine::{DockEngine, EngineInput};
 use dockspace::geometry::{LogicalPoint, LogicalRect};
+use dockspace::graph::command::{CloseCommitOutcome, ContentCloseTarget};
 use dockspace::graph::{Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{
     FloatingPresentationId, ItemId, NodeId, RootId, SourceSequence, StableInputSourceId, SurfaceId,
 };
-use dockspace::intent::{Authority, CloseSceneTarget, PointerButton, PointerId};
-use dockspace::interaction::{InteractionOutcome, InteractionRejection, InteractionStatus};
-use dockspace::pointer_journal::{
+use dockspace::input::intent::{Authority, CloseSceneTarget, PointerButton, PointerId};
+use dockspace::input::journal::{
     PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
     PointerEdgeSequence, SurfaceLocalPointerEndpoint, SurfaceLocalPointerProvider,
     SurfaceLocalPointerScope,
 };
-use dockspace::pointer_receiver::{
+use dockspace::input::receiver::{
     PointerReceiverCandidate, PointerReceiverDelivery, PointerReceiverDeliveryDisposition,
     PointerReceiverHoverHit, PointerReceiverHoverHitDisposition, PointerReceiverObservation,
     PointerReceiverProbeReceipt, PointerReceiverProbeRequest, PointerReceiverReceipt,
     PointerReceiverReceiptBatch, PresentedPointerReceiverObservation,
 };
-use dockspace::policy::{CloseCapability, DockItemRule, DockPolicy};
-use dockspace::presentation_hit::{PresentationHitRegionId, PresentationHitRegionKind};
-use dockspace::scene::SurfaceSceneStamp;
-use dockspace::transition::{EngineTransition, InputOutcome};
-use dockspace::viewport::{ViewportRole, WindowToken};
-use dockspace::viewport_focus::{
+use dockspace::interaction::{InteractionOutcome, InteractionRejection, InteractionStatus};
+use dockspace::platform::focus::{
     PaneFocusIntent, PaneFocusObservationGeneration, PaneFocusRequestObservation,
     PaneFocusRequestObservationState, PanelFocusRecord,
 };
+use dockspace::platform::viewport::{ViewportRole, WindowToken};
+use dockspace::policy::{CloseCapability, DockItemRule, DockPolicy};
+use dockspace::presentation::hit::{PresentationHitRegionId, PresentationHitRegionKind};
+use dockspace::presentation::scene::SurfaceSceneStamp;
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const MAIN_ROOT: RootId = RootId::new(10);
@@ -631,9 +631,10 @@ fn programmatic_root_close_is_all_or_none_and_policy_owned() {
         only_outcome(&rejected),
         InputOutcome::ContentCloseRejected {
             target: ContentCloseTarget::Root(CONTAINED_ROOT),
-            reason: dockspace::transition::ContentCloseRequestRejection::ItemCloseDisabled {
-                item: CONTAINED_DEFERRED,
-            },
+            reason:
+                dockspace::engine::transition::ContentCloseRequestRejection::ItemCloseDisabled {
+                    item: CONTAINED_DEFERRED,
+                },
             ..
         }
     ));

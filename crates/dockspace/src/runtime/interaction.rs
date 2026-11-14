@@ -8,21 +8,23 @@ use super::{
 use crate::engine::EngineError;
 use crate::geometry::{LogicalPoint, LogicalRect};
 use crate::ids::SurfaceId;
-use crate::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
-use crate::pointer_journal::{
+use crate::input::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
+use crate::input::journal::{
     FiniteScrollVector, HostLocalPointerRoute, PhysicalScrollCoordinates, PointerCaptureOwner,
     PointerDeviceKind, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
     PointerEdgeSequence, PointerStreamCancelReason, ScrollCancelReason, ScrollDeliveryEndpoint,
     ScrollDelta, ScrollDeviceId, ScrollEdge, ScrollModifiers, ScrollMomentum, ScrollPhase,
     ScrollSequenceToken, SurfaceLocalPointerProvider,
 };
-use crate::pointer_receiver::{
+use crate::input::receiver::{
     PointerReceiverCandidate, PointerReceiverDelivery, PointerReceiverDeliveryDisposition,
     PointerReceiverHoverHit, PointerReceiverHoverHitDisposition, PointerReceiverObservation,
     PointerReceiverProbeReceipt, PointerReceiverReceiptBatch, PointerReceiverUnknownReason,
     PresentedPointerReceiverObservation,
 };
-use crate::presentation_observation::{PresentedSurfaceAuthority, SurfacePresentationOutputTicket};
+use crate::presentation::observation::{
+    PresentedSurfaceAuthority, SurfacePresentationOutputTicket,
+};
 
 /// Exact presented surface capability used to qualify known-empty facts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,7 +36,7 @@ pub struct PresentedDockspaceSurface {
 
 impl PresentedDockspaceSurface {
     pub(super) const fn from_projection(
-        projection: crate::scene::SurfaceInteractionProjection<'_>,
+        projection: crate::presentation::scene::SurfaceInteractionProjection<'_>,
     ) -> Self {
         Self {
             surface: projection.output_ticket().surface(),
@@ -66,8 +68,8 @@ impl PresentedDockspaceSurface {
         binding: super::native::NativeSurfaceBinding,
     ) -> bool {
         match self.authority.endpoint() {
-            crate::presentation_observation::HostPresentationEndpoint::Headless => false,
-            crate::presentation_observation::HostPresentationEndpoint::Native(endpoint) => {
+            crate::presentation::observation::HostPresentationEndpoint::Headless => false,
+            crate::presentation::observation::HostPresentationEndpoint::Native(endpoint) => {
                 binding.matches_viewport_binding(endpoint)
             }
         }
@@ -108,8 +110,8 @@ impl PresentedDockReceiver {
         self.descriptor
     }
     pub(super) fn from_projection_region(
-        projection: crate::scene::SurfaceInteractionProjection<'_>,
-        region: crate::presentation_hit::PresentationHitRegionId,
+        projection: crate::presentation::scene::SurfaceInteractionProjection<'_>,
+        region: crate::presentation::hit::PresentationHitRegionId,
     ) -> Option<Self> {
         let record = projection.hit_manifest().region(region)?;
         let descriptor = DockspaceReceiverDescriptor::from_projection_region(
@@ -139,7 +141,7 @@ impl PresentedDockReceiver {
         self.descriptor.center()
     }
 
-    pub(super) const fn region(self) -> crate::presentation_hit::PresentationHitRegionId {
+    pub(super) const fn region(self) -> crate::presentation::hit::PresentationHitRegionId {
         self.descriptor.region
     }
 }
@@ -1169,7 +1171,7 @@ fn host_pointer_hit(
     point: LogicalPoint,
     device: PointerDeviceKind,
 ) -> Option<HostPointerHit> {
-    use crate::presentation_hit::PresentationPointerLane;
+    use crate::presentation::hit::PresentationPointerLane;
     let projection = engine.interaction_projection(surface)?;
     if presentation.blocks_pointer_authority(surface, projection.authority()) {
         return None;
@@ -1202,8 +1204,8 @@ fn host_pointer_manipulation_surface(
     engine: &crate::engine::DockEngine,
     pointer: SurfacePointerId,
 ) -> Option<PresentedDockspaceSurface> {
-    let authority =
-        engine.host_local_manipulation_authority(crate::intent::PointerId::new(pointer.get()))?;
+    let authority = engine
+        .host_local_manipulation_authority(crate::input::intent::PointerId::new(pointer.get()))?;
     Some(PresentedDockspaceSurface {
         surface: authority.surface(),
         output: authority.ticket(),
@@ -1713,7 +1715,7 @@ impl DockspaceHostFrame<'_> {
         let mut probes = Vec::with_capacity(candidate.probes().probes().len());
         if candidate
             .probes()
-            .requires(crate::pointer_receiver::PointerReceiverProbe::Delivery)
+            .requires(crate::input::receiver::PointerReceiverProbe::Delivery)
         {
             let delivery = delivery_fact(delivery_projection.as_ref(), facts.delivery)?;
             let delivery = if let (Some(projection), Some(drag_fact)) =
@@ -1734,7 +1736,7 @@ impl DockspaceHostFrame<'_> {
         }
         if candidate
             .probes()
-            .requires(crate::pointer_receiver::PointerReceiverProbe::HoverHit)
+            .requires(crate::input::receiver::PointerReceiverProbe::HoverHit)
         {
             probes.push(PointerReceiverProbeReceipt::HoverHit(hover_fact(
                 self.frame.view(),
@@ -1835,7 +1837,7 @@ fn surface_scroll_delta(
 }
 
 fn delivery_fact(
-    projection: Option<&crate::scene::SurfaceInteractionProjection<'_>>,
+    projection: Option<&crate::presentation::scene::SurfaceInteractionProjection<'_>>,
     fact: ReceiverFact<'_>,
 ) -> Result<PointerReceiverDelivery, DockspaceRuntimeError> {
     let Some(projection) = projection else {
@@ -1914,7 +1916,7 @@ fn hover_fact(
 
 pub(super) fn receiver_matches(
     receiver: &PresentedDockReceiver,
-    projection: &crate::scene::SurfaceInteractionProjection<'_>,
+    projection: &crate::presentation::scene::SurfaceInteractionProjection<'_>,
 ) -> bool {
     receiver.descriptor.output == projection.output_ticket()
         && receiver.authority == projection.authority()
@@ -1926,7 +1928,7 @@ pub(super) fn receiver_matches(
 
 pub(super) fn surface_matches(
     surface: &PresentedDockspaceSurface,
-    projection: &crate::scene::SurfaceInteractionProjection<'_>,
+    projection: &crate::presentation::scene::SurfaceInteractionProjection<'_>,
 ) -> bool {
     surface.surface == projection.output_ticket().surface()
         && surface.output == projection.output_ticket()
@@ -1937,12 +1939,12 @@ pub(super) fn surface_matches(
 mod tests {
     use super::*;
     use crate::behavior_tests::support::{TestPresentationHost, publish_surface};
-    use crate::drop_target::DropTargetId;
     use crate::engine::DockEngine;
     use crate::graph::{Node, RootRecord, SurfacePresentation, Workspace};
     use crate::ids::{ItemId, RootId};
+    use crate::interaction::targeting::targets::DropTargetId;
     use crate::policy::DockPolicy;
-    use crate::presentation_hit::PresentationHitRegionKind;
+    use crate::presentation::hit::PresentationHitRegionKind;
 
     #[test]
     fn clear_hover_lane_resolves_only_an_exact_current_presentation() {

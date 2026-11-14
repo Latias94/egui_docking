@@ -3,10 +3,10 @@
 use std::fmt;
 use std::sync::Arc;
 
-#[cfg(feature = "serde")]
-use crate::document::PendingRuntimeDocumentRestore;
 use crate::engine::CoreHostFrame;
-use crate::presentation_observation::PresentationHostLease;
+#[cfg(feature = "serde")]
+use crate::persistence::document::PendingRuntimeDocumentRestore;
+use crate::presentation::observation::PresentationHostLease;
 
 use super::host_frame::EncodingState;
 use super::presentation::SubmittedPresentationObservation;

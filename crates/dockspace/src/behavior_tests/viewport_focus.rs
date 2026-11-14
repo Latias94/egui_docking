@@ -4,19 +4,16 @@
 
 use super::support;
 
-use dockspace::effect::{
-    DispatchFailureReason, EffectDispatchResult, EffectId, EffectIndeterminateReason,
-};
+use dockspace::engine::event::ReductionCause;
+use dockspace::engine::transition::InputOutcome;
 use dockspace::engine::{DockEngine, EngineInput};
-use dockspace::event::ReductionCause;
-use dockspace::frame::PanelFocus;
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, ReducerTickId, RootId, StableInputSourceId, SurfaceId};
-use dockspace::intent::{Authority, AuthorityUnavailableReason};
-use dockspace::policy::DockPolicy;
-use dockspace::transition::InputOutcome;
-use dockspace::viewport::{ViewportBinding, ViewportRole, WindowToken};
-use dockspace::viewport_focus::{
+use dockspace::input::intent::{Authority, AuthorityUnavailableReason};
+use dockspace::platform::effect::{
+    DispatchFailureReason, EffectDispatchResult, EffectId, EffectIndeterminateReason,
+};
+use dockspace::platform::focus::{
     ActivationCancellation, ActivationStartOutcome, ActivationSuppression,
     FocusAuthorityRevocation, FocusCausalStamp, FocusEffectAttachment, FocusEffectReportTransition,
     FocusObservationEnvelope, FocusObservationGeneration, FocusObservationTransition,
@@ -26,6 +23,9 @@ use dockspace::viewport_focus::{
     PendingPlatformFocus, PendingViewportActivation, PlatformFocusEvidence,
     ViewportActivationCause, ViewportActivationRequest, ViewportFocusCoordinator,
 };
+use dockspace::platform::frame::PanelFocus;
+use dockspace::platform::viewport::{ViewportBinding, ViewportRole, WindowToken};
+use dockspace::policy::DockPolicy;
 use support::{TestPresentationHost, submit_inputs};
 
 const SURFACE_A: SurfaceId = SurfaceId::new(1);

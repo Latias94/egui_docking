@@ -1,11 +1,11 @@
 //! Deferred native close acceptance must yield to cancellation before delivery.
 
 use super::*;
-use crate::close_plan::{CloseDecision, ClosePlanPhase};
-use crate::effect::{EffectPhase, NativeCloseResolution};
-use crate::frame::PanelFocus;
+use crate::close::plan::{CloseDecision, ClosePlanPhase};
+use crate::platform::effect::{EffectPhase, NativeCloseResolution};
+use crate::platform::focus::ViewportActivationRequest;
+use crate::platform::frame::PanelFocus;
 use crate::runtime::{HostInputOutcome, NativeCloseDisposition};
-use crate::viewport_focus::ViewportActivationRequest;
 
 #[test]
 fn emitted_close_accept_revokes_the_ready_scene_before_a_later_paint_can_use_old_coordinates() {
@@ -56,7 +56,7 @@ fn emitted_close_accept_revokes_the_ready_scene_before_a_later_paint_can_use_old
             .viewport(SURFACE)
             .unwrap()
             .lifecycle(),
-        crate::viewport_registry::ViewportLifecycle::AwaitingDestroyed
+        crate::platform::registry::ViewportLifecycle::AwaitingDestroyed
     );
     assert!(!session.native_binding_can_report_focus(binding));
 
@@ -75,7 +75,7 @@ fn emitted_close_accept_revokes_the_ready_scene_before_a_later_paint_can_use_old
 
 #[test]
 fn emitted_close_accept_discards_an_unconfirmed_paint_fallback_and_bootstraps_the_scene() {
-    use crate::scene::{BootstrapSurfaceSceneReason, SurfaceScene};
+    use crate::presentation::scene::{BootstrapSurfaceSceneReason, SurfaceScene};
 
     let (mut session, binding) =
         native_root_session_with_profile(NativeHostProfile::ManagedDesktop);
@@ -185,7 +185,7 @@ fn emitted_close_accept_discards_an_unconfirmed_paint_fallback_and_bootstraps_th
             .viewport(SURFACE)
             .unwrap()
             .lifecycle(),
-        crate::viewport_registry::ViewportLifecycle::AwaitingDestroyed
+        crate::platform::registry::ViewportLifecycle::AwaitingDestroyed
     );
     assert!(matches!(
         session.engine.scene().surface(SURFACE),

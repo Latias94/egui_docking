@@ -2,17 +2,17 @@
 
 use super::*;
 
-use crate::frame::NativeCreatePhase;
-use crate::presentation_observation::{
+use crate::engine::surface_recovery::SurfaceRecoveryBlockedReason;
+use crate::platform::frame::NativeCreatePhase;
+use crate::platform::registry::ViewportAdmission;
+use crate::platform::viewport::PresentationObservationGeneration;
+use crate::presentation::observation::{
     HostPresentationContinuation, HostPresentationEndpoint, HostPresentationOutput,
 };
 use crate::runtime::{
     DockspacePresentationCommandKind, DockspacePresentationCommandUnavailable,
     DockspaceRuntimeErrorKind,
 };
-use crate::surface_recovery::SurfaceRecoveryBlockedReason;
-use crate::viewport::PresentationObservationGeneration;
-use crate::viewport_registry::ViewportAdmission;
 
 fn observed_source_window(
     binding: ViewportBinding,
@@ -430,7 +430,7 @@ fn source_recovery_cancels_first_live_projection_without_workspace_or_version_ch
         .expect("the cancelled target must retain its exact cleanup owner");
     assert_eq!(
         retirement.origin(),
-        crate::frame::BindingRetirementOrigin::NativeCreateAborted { create }
+        crate::platform::frame::BindingRetirementOrigin::NativeCreateAborted { create }
     );
     assert!(
         fixture
@@ -446,7 +446,7 @@ fn source_recovery_cancels_first_live_projection_without_workspace_or_version_ch
             .iter()
             .any(|outcome| matches!(
                 outcome,
-                crate::presentation_observation::HostPresentationObservationOutcome::Retired {
+                crate::presentation::observation::HostPresentationObservationOutcome::Retired {
                     stream,
                     settled_through,
                     presented: Authority::Known(Some(presented)),
@@ -638,9 +638,9 @@ fn source_recovery_revokes_later_direct_prepared_action_in_the_same_snapshot() {
     assert!(matches!(
         actions,
         [
-            crate::frame::ViewportLifecycleAction::SurfaceDestroyed { observation, .. },
-            crate::frame::ViewportLifecycleAction::PrepareNativeCreateFirstLive { saga: b, .. },
-            crate::frame::ViewportLifecycleAction::PrepareNativeCreateFirstLive { saga: a, .. },
+            crate::platform::frame::ViewportLifecycleAction::SurfaceDestroyed { observation, .. },
+            crate::platform::frame::ViewportLifecycleAction::PrepareNativeCreateFirstLive { saga: b, .. },
+            crate::platform::frame::ViewportLifecycleAction::PrepareNativeCreateFirstLive { saga: a, .. },
         ] if observation.binding() == source && *b == b_saga && *a == a_saga
     ));
     assert_eq!(fixture.engine.workspace(), &workspace);
@@ -726,7 +726,11 @@ fn source_recovery_revokes_later_direct_prepared_action_in_the_same_snapshot() {
             .find_map(|(binding, retirement)| {
                 (binding == a_binding).then_some(retirement.origin())
             }),
-        Some(crate::frame::BindingRetirementOrigin::NativeCreateAborted { create: a_create })
+        Some(
+            crate::platform::frame::BindingRetirementOrigin::NativeCreateAborted {
+                create: a_create
+            }
+        )
     );
     assert_eq!(
         fixture
@@ -773,8 +777,9 @@ fn source_recovery_revokes_later_direct_prepared_action_in_the_same_snapshot() {
 
     let mut unexplained = actions[2].clone();
     let missing = crate::ids::NativeCreateSagaId::new(u64::MAX);
-    let crate::frame::ViewportLifecycleAction::PrepareNativeCreateFirstLive { saga, .. } =
-        &mut unexplained
+    let crate::platform::frame::ViewportLifecycleAction::PrepareNativeCreateFirstLive {
+        saga, ..
+    } = &mut unexplained
     else {
         unreachable!();
     };
@@ -795,7 +800,7 @@ fn source_recovery_revokes_later_direct_prepared_action_in_the_same_snapshot() {
     assert!(matches!(
         error,
         EngineError::Viewport {
-            source: crate::frame::ViewportCoordinatorError::MissingCreateSaga { saga },
+            source: crate::platform::frame::ViewportCoordinatorError::MissingCreateSaga { saga },
             ..
         } if saga == missing
     ));

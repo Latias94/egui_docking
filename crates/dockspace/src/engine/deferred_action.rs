@@ -10,7 +10,7 @@ impl DockEngine {
         cause: ReductionCause,
         focus_causal: FocusCausalStamp,
         expected: WorkspaceVersion,
-        witness: &crate::scene::SurfacePlanScene,
+        witness: &crate::presentation::scene::SurfacePlanScene,
         action: &LocalSurfaceAction,
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
@@ -173,7 +173,7 @@ impl DockEngine {
 
     fn validate_deferred_surface_action(
         &self,
-        witness: &crate::scene::SurfacePlanScene,
+        witness: &crate::presentation::scene::SurfacePlanScene,
         action: &LocalSurfaceAction,
         policy: &DockPolicySnapshot,
     ) -> Result<(), InteractionRejection> {
@@ -218,7 +218,7 @@ impl DockEngine {
         // z-order. Its current rectangle is part of the receiver's authority.
         if !plan.contained_records().iter().all(|record| {
             self.workspace.presentation_for_root(record.root())
-                == Some(crate::RootPresentationOwner::Contained {
+                == Some(crate::graph::workspace::RootPresentationOwner::Contained {
                     surface,
                     floating: record.floating(),
                 })
@@ -317,7 +317,7 @@ impl DockEngine {
 
     fn deferred_resize_geometry_is_current(
         &self,
-        witness: &crate::scene::SurfacePlanScene,
+        witness: &crate::presentation::scene::SurfacePlanScene,
         action: &LocalSurfaceAction,
     ) -> bool {
         let Some(current) = self.scene().surface(witness.stamp().surface()) else {
@@ -352,13 +352,13 @@ impl DockEngine {
             // current requirements. An explicit failed observation cannot.
             SurfaceScene::Bootstrap(scene) => matches!(
                 scene.reason(),
-                crate::scene::BootstrapSurfaceSceneReason::AwaitingContribution
-                    | crate::scene::BootstrapSurfaceSceneReason::RequirementsChanged
-                    | crate::scene::BootstrapSurfaceSceneReason::WorkspaceReplaced
+                crate::presentation::scene::BootstrapSurfaceSceneReason::AwaitingContribution
+                    | crate::presentation::scene::BootstrapSurfaceSceneReason::RequirementsChanged
+                    | crate::presentation::scene::BootstrapSurfaceSceneReason::WorkspaceReplaced
             ),
             SurfaceScene::Stale(scene) => matches!(
                 scene.reason(),
-                crate::scene::StaleSurfaceSceneReason::RequirementsChanged
+                crate::presentation::scene::StaleSurfaceSceneReason::RequirementsChanged
             ),
         }
     }
@@ -441,8 +441,8 @@ impl DockEngine {
         };
         let owner_is_current = match self.workspace.presentation_for_root(key.bar().root) {
             Some(
-                crate::RootPresentationOwner::Main { surface }
-                | crate::RootPresentationOwner::Contained { surface, .. },
+                crate::graph::workspace::RootPresentationOwner::Main { surface }
+                | crate::graph::workspace::RootPresentationOwner::Contained { surface, .. },
             ) => surface == key.surface(),
             None => false,
         };
@@ -501,7 +501,7 @@ impl DockEngine {
     fn close_from_candidate(
         &mut self,
         input: InputSequence,
-        candidate: &crate::scene::SurfacePlanScene,
+        candidate: &crate::presentation::scene::SurfacePlanScene,
         target: CloseSceneTarget,
         policy: &DockPolicySnapshot,
     ) -> Result<InputOutcome, EngineError> {
@@ -544,7 +544,7 @@ impl DockEngine {
     fn close_root_from_candidate(
         &mut self,
         input: InputSequence,
-        candidate: &crate::scene::SurfacePlanScene,
+        candidate: &crate::presentation::scene::SurfacePlanScene,
         root: RootId,
         policy: &DockPolicySnapshot,
     ) -> Result<InputOutcome, EngineError> {

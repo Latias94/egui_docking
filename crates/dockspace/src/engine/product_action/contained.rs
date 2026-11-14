@@ -1,7 +1,7 @@
 use super::*;
 
-use crate::command::{ContainedPosition, ContainedRosterSource};
 use crate::geometry::LogicalRect;
+use crate::graph::command::{ContainedPosition, ContainedRosterSource};
 use crate::model::{DockAnchor, DockEdge, DockFraction, DockPlacement};
 
 struct ProductContainedSource {
@@ -77,7 +77,7 @@ impl DockEngine {
         let target = self
             .scene()
             .surface(surface)
-            .and_then(crate::scene::SurfaceScene::ready)
+            .and_then(crate::presentation::scene::SurfaceScene::ready)
             .ok_or(DockspaceActionRejection::PresentationUnavailable { surface })?;
         let bounds = target.plan().bounds();
         let source = match self
@@ -85,17 +85,17 @@ impl DockEngine {
             .presentation_for_root(root)
             .ok_or(DockspaceActionRejection::RootUnavailable { root })?
         {
-            crate::RootPresentationOwner::Contained { floating, .. } => self
+            crate::graph::workspace::RootPresentationOwner::Contained { floating, .. } => self
                 .workspace
                 .contained_floating(floating)
                 .map(|contained| contained.rect)
                 .ok_or(DockspaceActionRejection::Conflict)?,
-            crate::RootPresentationOwner::Main {
+            crate::graph::workspace::RootPresentationOwner::Main {
                 surface: source_surface,
             } => self
                 .scene()
                 .surface(source_surface)
-                .and_then(crate::scene::SurfaceScene::ready)
+                .and_then(crate::presentation::scene::SurfaceScene::ready)
                 .and_then(|scene| scene.plan().layout_facts())
                 .and_then(|facts| facts.root(root))
                 .map(|facts| facts.bounds())
@@ -110,7 +110,7 @@ impl DockEngine {
         &self,
         root: RootId,
         surface: SurfaceId,
-        plan: &crate::scene::PresentationPlan,
+        plan: &crate::presentation::scene::PresentationPlan,
     ) -> Result<LogicalRect, DockspaceActionRejection> {
         self.require_product_surface(surface)?;
         let source = match self
@@ -118,25 +118,25 @@ impl DockEngine {
             .presentation_for_root(root)
             .ok_or(DockspaceActionRejection::RootUnavailable { root })?
         {
-            crate::RootPresentationOwner::Contained {
+            crate::graph::workspace::RootPresentationOwner::Contained {
                 surface: owner_surface,
                 floating,
             } if owner_surface == surface => plan
                 .contained_record(floating)
                 .filter(|record| record.root() == root)
-                .map(crate::scene::ContainedRecord::outer_bounds)
+                .map(crate::presentation::scene::ContainedRecord::outer_bounds)
                 .ok_or(DockspaceActionRejection::PresentationUnavailable { surface })?,
-            crate::RootPresentationOwner::Main {
+            crate::graph::workspace::RootPresentationOwner::Main {
                 surface: owner_surface,
             } if owner_surface == surface => plan
                 .layout_facts()
                 .and_then(|facts| facts.root(root))
                 .map(|facts| facts.bounds())
                 .ok_or(DockspaceActionRejection::PresentationUnavailable { surface })?,
-            crate::RootPresentationOwner::Main {
+            crate::graph::workspace::RootPresentationOwner::Main {
                 surface: owner_surface,
             }
-            | crate::RootPresentationOwner::Contained {
+            | crate::graph::workspace::RootPresentationOwner::Contained {
                 surface: owner_surface,
                 ..
             } => {
@@ -180,7 +180,7 @@ impl DockEngine {
         &self,
         root: RootId,
     ) -> Result<ProductActionPlan, DockspaceActionRejection> {
-        let crate::RootPresentationOwner::Contained { surface, .. } = self
+        let crate::graph::workspace::RootPresentationOwner::Contained { surface, .. } = self
             .workspace
             .presentation_for_root(root)
             .ok_or(DockspaceActionRejection::RootUnavailable { root })?
@@ -233,11 +233,10 @@ impl DockEngine {
             .presentation_for_root(root)
             .ok_or(DockspaceActionRejection::RootUnavailable { root })?
         {
-            crate::RootPresentationOwner::Contained { surface, .. } => surface,
-            crate::RootPresentationOwner::Main { .. } => {
-                self.native_main_dock_back_target(root)?
-                    .ok_or(DockspaceActionRejection::DockBackUnavailable { root })?
-            }
+            crate::graph::workspace::RootPresentationOwner::Contained { surface, .. } => surface,
+            crate::graph::workspace::RootPresentationOwner::Main { .. } => self
+                .native_main_dock_back_target(root)?
+                .ok_or(DockspaceActionRejection::DockBackUnavailable { root })?,
         };
         let target_root = self
             .workspace
@@ -311,12 +310,14 @@ impl DockEngine {
             .presentation_for_root(root)
             .ok_or(DockspaceActionRejection::Conflict)?
         {
-            crate::RootPresentationOwner::Contained {
+            crate::graph::workspace::RootPresentationOwner::Contained {
                 surface: current_surface,
                 ..
             } if current_surface == surface => return Err(DockspaceActionRejection::Conflict),
-            crate::RootPresentationOwner::Contained { floating, .. } => floating,
-            crate::RootPresentationOwner::Main { .. } => self.next_product_floating()?,
+            crate::graph::workspace::RootPresentationOwner::Contained { floating, .. } => floating,
+            crate::graph::workspace::RootPresentationOwner::Main { .. } => {
+                self.next_product_floating()?
+            }
         };
         Ok(ProductActionPlan::Command {
             command: WorkspaceCommand::RehomeRoot {
@@ -408,7 +409,7 @@ impl DockEngine {
             .presentation_for_root(source_root)
             .ok_or(DockspaceActionRejection::Conflict)?;
         match owner {
-            crate::RootPresentationOwner::Contained {
+            crate::graph::workspace::RootPresentationOwner::Contained {
                 surface: current_surface,
                 floating,
             } if current_surface == surface => {
@@ -430,7 +431,7 @@ impl DockEngine {
                     ),
                 })
             }
-            crate::RootPresentationOwner::Contained { floating, .. } => {
+            crate::graph::workspace::RootPresentationOwner::Contained { floating, .. } => {
                 Ok(ProductActionPlan::Command {
                     command: WorkspaceCommand::RehomeRoot {
                         source: root_source,
@@ -449,7 +450,7 @@ impl DockEngine {
                     ),
                 })
             }
-            crate::RootPresentationOwner::Main { .. } => {
+            crate::graph::workspace::RootPresentationOwner::Main { .. } => {
                 let floating = self.next_product_floating()?;
                 Ok(ProductActionPlan::Command {
                     command: WorkspaceCommand::RehomeRoot {
@@ -499,7 +500,7 @@ impl DockEngine {
         let ready = self
             .scene()
             .surface(contained.surface)
-            .and_then(crate::scene::SurfaceScene::ready)
+            .and_then(crate::presentation::scene::SurfaceScene::ready)
             .filter(|ready| ready.stamp().requirement().workspace_epoch() == self.version().epoch())
             .ok_or(DockspaceActionRejection::PresentationUnavailable {
                 surface: contained.surface,
@@ -540,7 +541,7 @@ impl DockEngine {
     ) -> Result<ProductContainedSource, DockspaceActionRejection> {
         let item_source = self.capture_product_item(item)?;
         let root = item_source.root();
-        let crate::RootPresentationOwner::Contained { surface, floating } = self
+        let crate::graph::workspace::RootPresentationOwner::Contained { surface, floating } = self
             .workspace
             .presentation_for_root(root)
             .ok_or(DockspaceActionRejection::Conflict)?

@@ -16,7 +16,9 @@ pub(crate) struct NodeStore {
 impl Clone for NodeStore {
     fn clone(&self) -> Self {
         #[cfg(test)]
-        crate::drop_resolver::structural_work::record_node_store_clone(self.slots.len());
+        crate::interaction::targeting::resolver::structural_work::record_node_store_clone(
+            self.slots.len(),
+        );
         Self {
             slots: self.slots.clone(),
         }

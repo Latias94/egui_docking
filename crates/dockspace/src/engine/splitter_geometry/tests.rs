@@ -1,21 +1,21 @@
 use std::sync::Arc;
 
 use super::*;
-use crate::drop_target::SceneLayerKey;
 use crate::geometry::Constraints;
 use crate::graph::{RootRecord, SurfacePresentation, WorkspaceBuilder};
-use crate::hit_region::HitRegion;
 use crate::ids::{EngineAuthorityDomainId, ItemId, SurfaceId, WorkspaceEpoch};
-use crate::layout::{
+use crate::interaction::targeting::targets::SceneLayerKey;
+use crate::policy::PolicyRevision;
+use crate::presentation::config::{DockPresentationConfig, PresentationConfigRevision};
+use crate::presentation::hit::region::HitRegion;
+use crate::presentation::layout::{
     LayoutMetrics, SplitWeightOverride, project_root, project_root_with_overrides,
 };
-use crate::policy::PolicyRevision;
-use crate::presentation_config::{DockPresentationConfig, PresentationConfigRevision};
-use crate::scene::{RootLayoutFacts, SplitterSceneId};
-use crate::scene_manifest::{
+use crate::presentation::manifest::{
     Measurement, SurfaceMeasurementTicket, SurfaceMeasurements, SurfaceRequirementRevision,
     SurfaceRequirements,
 };
+use crate::presentation::scene::{RootLayoutFacts, SplitterSceneId};
 
 const ROOT: RootId = RootId::new(1);
 const SURFACE: SurfaceId = SurfaceId::new(1);

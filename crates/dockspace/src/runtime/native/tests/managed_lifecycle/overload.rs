@@ -2,7 +2,7 @@ use super::*;
 use crate::engine::{CoreHostFrameError, EngineInput};
 use crate::geometry::LogicalPoint;
 use crate::graph::Axis;
-use crate::pointer_journal::AnyButtonDownAuthority;
+use crate::input::journal::AnyButtonDownAuthority;
 use crate::runtime::{
     ContainedResizeDirection, DockspaceManipulationDelivery, DockspaceManipulationStatus,
     HostInputOutcome, NativeHostErrorKind, NativeInputBudget, NativeMonotonicClock,
@@ -452,7 +452,7 @@ fn overload_cancel_is_terminal_and_a_failed_commit_preserves_the_published_owner
         let error = if append_pointer {
             frame.frame.submit_pointer_journal(
                 provider,
-                crate::pointer_journal::PointerEdgeJournal::new(through, through, Vec::new())
+                crate::input::journal::PointerEdgeJournal::new(through, through, Vec::new())
                     .unwrap(),
             )
         } else {
@@ -924,7 +924,7 @@ fn overload_cancel_cannot_be_recorded_as_an_ordinary_backend_action() {
         native
             .recorder
             .record_semantic_input(EngineInput::CancelNativeInputForOverload { provider }),
-        Err(crate::backend_ingress::BackendIngressError::SemanticInputIsHostControl)
+        Err(crate::input::ingress::BackendIngressError::SemanticInputIsHostControl)
     );
     assert_eq!(native.recorder.recorded_through(), recorded);
 }
@@ -1056,7 +1056,7 @@ fn overload_cancel_preserves_an_accepted_native_create_lifecycle() {
                 saga.binding() == child_binding.binding
                     && matches!(
                         saga.phase(),
-                        crate::frame::NativeCreatePhase::AwaitingPrepared { .. }
+                        crate::platform::frame::NativeCreatePhase::AwaitingPrepared { .. }
                     )
             }),
         "overload cancellation must preserve the accepted native create"

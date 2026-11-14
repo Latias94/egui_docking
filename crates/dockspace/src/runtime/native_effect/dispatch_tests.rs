@@ -3,10 +3,10 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use super::*;
-use crate::effect::{EffectLedger, EffectPhase, EffectTransition};
 use crate::ids::{EngineAuthorityDomainId, SurfaceId};
-use crate::platform_provider::PlatformObservationAuthority;
-use crate::viewport::{InventoryGeneration, WindowIncarnation, WindowToken};
+use crate::platform::effect::{EffectLedger, EffectPhase, EffectTransition};
+use crate::platform::provider::PlatformObservationAuthority;
+use crate::platform::viewport::{InventoryGeneration, WindowIncarnation, WindowToken};
 
 fn emitted_release() -> (EffectLedger, PlatformEffectEmission) {
     let domain = EngineAuthorityDomainId::new_for_test(199);

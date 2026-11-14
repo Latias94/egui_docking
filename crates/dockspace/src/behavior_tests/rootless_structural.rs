@@ -1,14 +1,14 @@
-use dockspace::command::{
+use dockspace::geometry::LogicalRect;
+use dockspace::graph::command::{
     CommandOutcome, ContainedPosition, DockTarget, RootContent, RootPresentationTarget,
     WorkspaceCommand,
 };
-use dockspace::error::{CommandError, ReferenceRole, TransactionError};
-use dockspace::geometry::LogicalRect;
+use dockspace::graph::error::{CommandError, ReferenceRole, TransactionError};
+use dockspace::graph::transaction::WorkspaceTransaction;
+use dockspace::graph::validation::WorkspaceValidationError;
 use dockspace::graph::{ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
 use dockspace::policy::{DockPolicy, DockPolicySnapshot, PolicyRejection, PolicyRevision};
-use dockspace::transaction::WorkspaceTransaction;
-use dockspace::validation::WorkspaceValidationError;
 
 const SOURCE: SurfaceId = SurfaceId::new(1);
 const TARGET: SurfaceId = SurfaceId::new(2);
@@ -652,7 +652,7 @@ fn complete_and_partial_payloads_fill_rootless_main_slots_explicitly() {
     WorkspaceTransaction::from_commands([WorkspaceCommand::InstallMainRoot {
         surface: SOURCE,
         root: fresh,
-        content: RootContent::Move(dockspace::command::MovePayload::Item(item_source)),
+        content: RootContent::Move(dockspace::graph::command::MovePayload::Item(item_source)),
     }])
     .apply(&mut workspace, &DockPolicySnapshot::default())
     .expect("partial payload must use the caller-provided fresh root identity");
