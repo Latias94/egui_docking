@@ -12,6 +12,7 @@ const THIRD_SURFACE: SurfaceId = SurfaceId::new(3);
 const SURFACES: [SurfaceId; 3] = [FIRST_SURFACE, SECOND_SURFACE, THIRD_SURFACE];
 const ROUNDS: usize = 12;
 
+mod capacity;
 mod last_pane;
 
 struct Random(u64);
