@@ -3,6 +3,8 @@
 use super::*;
 use dockspace::model::{DockspaceAxis, DockspaceContainedLayout, FloatingPresentationId};
 
+mod real_hits;
+
 const INSPECTOR: ItemId = ItemId::new(4);
 const CONSOLE: ItemId = ItemId::new(5);
 const HISTORY: ItemId = ItemId::new(6);

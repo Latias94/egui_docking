@@ -167,13 +167,17 @@ impl SplitterFixture {
                 },
             )
             .drop_without_applying_deltas();
-        let pass =
-            NativeReceiverPass::capture(&self.context, egui::ViewportId::ROOT, self.zoom).unwrap();
         let paint = painted.unwrap();
         let output = output.unwrap();
-        let pending = PendingReceiverSet::from_paint(&pass, self.binding, &output, &paint).unwrap();
-        self.store
-            .finish_renderer_presented(Some(pending), egui::ViewportId::ROOT, self.binding);
+        super::test_support::present_completed_output(
+            &mut self.store,
+            &self.context,
+            self.zoom,
+            self.binding,
+            &output,
+            &paint,
+        )
+        .unwrap();
         self.session
             .report_surface_presentation(output, SurfacePresentationResult::Presented)
             .unwrap();

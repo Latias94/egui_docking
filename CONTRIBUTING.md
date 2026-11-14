@@ -97,6 +97,13 @@ command with `-E 'test(seeded_native_mouse_stress)' --run-ignored only`. These
 journeys exercise real adapter/reducer code with controlled callback facts;
 physical input and GPU presentation still require the native checks above.
 
+For the contained-window drain, remote reentry and device-removal regressions,
+run the combined callback and receiver journeys:
+
+```sh
+cargo nextest run --manifest-path integration/egui-fork-workspace/Cargo.toml -p egui_dockspace_native --all-features --lib --locked -E 'test(local_pointer::drain_resize::real_hits) | test(device_removal_isolates_mouse_and_scroll_tails_before_the_next_dock)' --test-threads=2
+```
+
 ## Reports and changes
 
 For a bug report, include the source revision, example/host, OS/backend, enabled

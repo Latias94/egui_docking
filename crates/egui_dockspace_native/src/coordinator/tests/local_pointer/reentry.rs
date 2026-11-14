@@ -1,5 +1,7 @@
 use super::*;
 
+mod device_removed;
+
 #[test]
 fn native_mouse_reentry_without_release_recovers_on_a_new_press() {
     for desktop in [false, true] {

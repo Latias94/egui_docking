@@ -90,6 +90,16 @@ fresh press after each case. Check that the terminal is emitted at most once and
 the next interaction succeeds. Random seeds cannot cover a callback sequence
 which the generator's grammar excludes.
 
+Compose these checks across the adapter's real seams as well. A callback test
+which supplies its own receiver answers cannot detect disagreement between a
+framework's completed hit graph and the core geometry. The native editor
+regressions render actual egui widgets, translate raw callbacks, drain both tabs
+from a contained root and then resize both nested dividers through fresh hits.
+They include lost releases, candidate retries and a late dropped output. Separate
+device-removal journeys reject old mouse and scroll tails before completing the
+next docking gesture. These deterministic journeys do not qualify OS event
+delivery or a GPU presentation backend.
+
 ## Reusable automatic tests
 
 | Layer | Existing asset | What passing proves |
