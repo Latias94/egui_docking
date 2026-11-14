@@ -34,7 +34,7 @@ const DOCUMENT_ID: DockspaceDocumentId = DockspaceDocumentId::from_bytes(*b"nati
 
 #[path = "basic/command_smoke.rs"]
 mod command_smoke;
-#[path = "basic/docking_smoke.rs"]
+#[path = "basic/docking_smoke/mod.rs"]
 mod docking_smoke;
 #[path = "basic/layout.rs"]
 mod layout;

@@ -11,7 +11,7 @@ programmatic docking commands, infer Rust behavior or replace their assertions.
 
 | Driver | Required behavior |
 | --- | --- |
-| [`editor_docking_x11.py`](editor_docking_x11.py) | Five fresh editor processes: physically drag an inactive tab into Outline, Console, Inspector, Preview and Profiler; verify actual merge membership, selection, presentation and quiescence. |
+| [`editor_docking_x11.py`](editor_docking_x11.py) | Seven fresh editor processes: five inactive-tab merges into Outline, Console, Inspector, Preview and Profiler; two Inspector/Preview drain orders followed by both nested divider drags. Verify actual membership, selection, presentation, retained content and quiescence. |
 | [`editor_x11.py`](editor_x11.py) | Real text edits and OS close through native first-live, Dock Back, close/Allow/reopen, locking and Default reset; preserved application text and final native quiescence. A serde build also covers JSON restore, missing content/reload and replacement of two live children. |
 
 The runner always enables the existing `EGUI_DOCKSPACE_EDITOR_ROOT_REBIND=1`
@@ -19,7 +19,14 @@ extension: cross-surface reset and fresh Root edits, plus saved-document and
 preset rebinds with serde. The driver independently observes that the original
 Root receives no `DestroyNotify`, and checks retired child X11 resources.
 Lifecycle commands inside that workflow remain programmatic where its driver
-documents them. The five docking cases supply actual pointer input.
+documents them. All seven docking cases supply actual pointer input. Each drain
+journey keeps primary pressed while leaving and re-entering the editor client
+area during its first tab drag. After both tabs merge into Outline, the observer
+requires the contained shell and old root to disappear, all eight original items
+and their text to survive, and both neighboring panes to change size for each
+divider drag. Divider presses start inside the interaction padding but outside
+the visible one-point line. This checks OS window re-entry with a held button;
+it does not emulate a remote desktop disconnect or a missing release callback.
 
 The lifecycle driver also checks descriptive OS titles for Inspector and the
 simultaneous Inspector/Assets children while retaining its PID, exact window ID,
