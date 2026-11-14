@@ -1,5 +1,7 @@
 use super::*;
 
+mod endpoint_revocation;
+
 struct DragFixture {
     native: NativeCoordinator,
     host: NativeSurfaceBinding,
@@ -391,97 +393,4 @@ fn a_prior_gestures_preview_cannot_authorize_the_replacement_release() {
         .unwrap();
     let report = commit_boundary(&mut fixture.native);
     finish_delivery(&mut fixture, second_pending, report);
-}
-
-#[test]
-fn a_target_coordinate_or_visibility_change_revokes_a_waiting_last_pane_release() {
-    for change_scale in [false, true] {
-        let mut fixture = dragging(0x0e90_ca1e + u64::from(change_scale));
-        fixture.trace.event(("target invalidation", change_scale));
-        let stale = hold_target_preview(&mut fixture.native, fixture.host);
-        let artifact = stale.presentation_artifact();
-        let pending = release(&mut fixture);
-        let version = fixture.native.session.version();
-        let changed = if change_scale {
-            ready_window_facts(0.0).with_presentation_scale_factor(ScaleFactor::new(2.0).unwrap())
-        } else {
-            ready_window_facts(0.0).with_presentation(NativeWindowPresentationState::Hidden)
-        };
-        fixture
-            .native
-            .report_snapshot(
-                [
-                    (fixture.host, changed),
-                    (fixture.child, ready_window_facts(720.0)),
-                ],
-                NativeWorkAreaRoster::Unknown,
-                crate::capabilities::capabilities_for_backend(eframe::NativeWindowingBackend::X11),
-            )
-            .unwrap();
-        let mut invalidated = commit_boundary(&mut fixture.native);
-        fixture
-            .native
-            .settle_host_frame_report(&invalidated)
-            .unwrap();
-        let [cancelled] = invalidated.manipulation_feedback() else {
-            panic!("{}: {invalidated:?}", fixture.trace.replay());
-        };
-        let cancelled = *cancelled;
-        assert_eq!(cancelled.manipulation_id(), pending.manipulation_id());
-        assert!(
-            matches!(cancelled.status(), Status::Cancelled(_)),
-            "{}: {invalidated:?}",
-            fixture.trace.replay()
-        );
-        assert!(!invalidated.workspace_changed());
-        assert!(invalidated.take_native_effects().is_empty());
-        assert_eq!(fixture.native.session.version(), version);
-        assert!(!fixture.native.session.has_pending_presentation());
-        assert_child_retained(&fixture.native, fixture.child);
-        fixture
-            .native
-            .session
-            .report_surface_presentation(stale, SurfacePresentationResult::Presented)
-            .unwrap();
-        let mut late = commit_boundary(&mut fixture.native);
-        fixture.native.settle_host_frame_report(&late).unwrap();
-        assert!(
-            late.surface_presentation_commits()
-                .iter()
-                .any(|commit| commit.retires(artifact))
-        );
-        assert!(late.manipulation_feedback().is_empty());
-        assert!(late.take_native_effects().is_empty());
-        assert!(!late.workspace_changed());
-        assert_eq!(fixture.native.session.version(), version);
-        assert_child_retained(&fixture.native, fixture.child);
-        fixture
-            .native
-            .report_snapshot(
-                [
-                    (fixture.host, ready_window_facts(0.0)),
-                    (fixture.child, ready_window_facts(720.0)),
-                ],
-                NativeWorkAreaRoster::Unknown,
-                crate::capabilities::capabilities_for_backend(eframe::NativeWindowingBackend::X11),
-            )
-            .unwrap();
-        let restored = commit_boundary(&mut fixture.native);
-        fixture.native.settle_host_frame_report(&restored).unwrap();
-        assert!(restored.manipulation_feedback().is_empty());
-        let effects = retry_last_pane_after_cancellation(
-            &mut fixture.native,
-            fixture.host,
-            fixture.child,
-            cancelled,
-            &mut fixture.trace,
-        );
-        retire_child(
-            &mut fixture.native,
-            fixture.host,
-            fixture.child,
-            effects,
-            &mut fixture.trace,
-        );
-    }
 }
