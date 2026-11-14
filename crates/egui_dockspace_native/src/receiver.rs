@@ -467,12 +467,30 @@ impl NativeReceiverStore {
             Ok(receiver)
         };
         let Some(identity) = identity else {
-            // An overlay can occlude both lanes while sensing only one of them.
-            // Its missing lane does not prove that the underlying core geometry is empty.
-            return hit
-                .contains_pointer()
-                .and_then(|identity| receiver_for(identity).err())
-                .unwrap_or_else(|| NativeReceiverAnswer::NoReceiver(query.presented_surface()));
+            if let Some(identity) = hit.contains_pointer() {
+                if let Err(answer) = receiver_for(identity) {
+                    return answer;
+                }
+                // egui can suppress one capture lane behind a widget owning
+                // the other, including registered docking controls. This is
+                // lane occlusion, not evidence of empty core hit geometry.
+                // Keep the other lane independently available to its receiver.
+                let occluding = match query.purpose() {
+                    NativeReceiverPurpose::ClickDelivery => hit.drag(),
+                    NativeReceiverPurpose::DragDelivery => hit.click(),
+                    NativeReceiverPurpose::HoverHit => None,
+                    NativeReceiverPurpose::ScrollDelivery(_) => {
+                        unreachable!("scroll resolved above")
+                    }
+                };
+                if let Some(identity) = occluding {
+                    return match receiver_for(identity) {
+                        Ok(_) => NativeReceiverAnswer::Blocked(query.presented_surface()),
+                        Err(answer) => answer,
+                    };
+                }
+            }
+            return NativeReceiverAnswer::NoReceiver(query.presented_surface());
         };
         let receiver = match receiver_for(identity) {
             Ok(receiver) => receiver,
@@ -625,6 +643,10 @@ mod menu_tests;
 #[cfg(test)]
 #[path = "receiver_no_frame_tests.rs"]
 mod no_frame_tests;
+
+#[cfg(test)]
+#[path = "receiver_lane_tests.rs"]
+mod lane_tests;
 
 #[cfg(test)]
 mod tests {

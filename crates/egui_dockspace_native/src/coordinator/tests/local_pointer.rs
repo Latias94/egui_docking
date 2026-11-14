@@ -27,6 +27,7 @@ const THIRD: ItemId = ItemId::new(3);
 const WINDOW: u64 = 11;
 const CAPTURED_AT: Duration = Duration::from_millis(40);
 
+mod drain_resize;
 mod random_journey;
 mod reentry;
 
