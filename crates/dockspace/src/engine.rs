@@ -96,7 +96,9 @@ pub use self::input::{
 };
 pub(crate) use self::input::{LocalSurfaceAction, LocalTabChromeAction, LocalTabSelection};
 use self::native_admission::NativeAdmissionState;
-use self::pending_mutation::{PendingMutation, PendingPresentationTracker};
+use self::pending_mutation::{
+    PendingDragRelease, PendingMutation, PendingPresentationRehome, PresentationProgress,
+};
 use self::presentation_authority::PresentationAuthorityState;
 use self::presentation_identity::PresentationIdentityAuthority;
 use self::presentation_roster::{
@@ -1150,45 +1152,6 @@ enum PreviewDecision {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct PendingDragRelease {
-    source_version: WorkspaceVersion,
-    policy_revision: PolicyRevision,
-    cause: ReductionCause,
-    focus_causal: FocusCausalStamp,
-    session: crate::interaction::DragSessionId,
-    drag: crate::interaction::ActiveDrag,
-    physical_route: Option<(
-        crate::viewport::ViewportBinding,
-        crate::platform::NativeDragSourceInput,
-    )>,
-    release_decision: PreviewDecision,
-    preview: crate::interaction::PreviewToken,
-    presentation: PendingPresentationTracker,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct PendingPresentationRehome {
-    source_version: WorkspaceVersion,
-    policy_revision: PolicyRevision,
-    cause: ReductionCause,
-    focus_causal: FocusCausalStamp,
-    root: RootId,
-    source: crate::command::NodeSource,
-    source_owner: crate::RootPresentationOwner,
-    source_surface: SurfaceId,
-    source_binding: crate::viewport::ViewportBinding,
-    source_recovery: SurfaceRecoveryObligationId,
-    source_presentation: PresentedSurfaceAuthority,
-    commit_authority: PresentationRehomeCommitAuthority,
-    target_surface: SurfaceId,
-    floating: Option<FloatingPresentationId>,
-    context: product_action::ProductCommandContext,
-    pane_focus: PaneFocusDisposition,
-    preview: crate::interaction::PublishedPreview,
-    presentation: PendingPresentationTracker,
-}
-
-#[derive(Debug, Clone, PartialEq)]
 struct PreviewEvaluation {
     decision: PreviewDecision,
     affordance: Option<DropAffordance>,
@@ -1660,7 +1623,7 @@ impl DockEngine {
         self.pending_mutation
             .as_ref()
             .filter(|pending| pending.presentation().awaiting_presentation())
-            .map(|pending| (pending.surface(), pending.presentation().outputs.is_empty()))
+            .map(|pending| (pending.surface(), pending.presentation().needs_paint()))
             .into_iter()
     }
 

@@ -337,75 +337,6 @@ impl DockEngine {
         )
     }
 
-    pub(super) fn cancel_pending_release_obligations_caused(
-        &mut self,
-        cause: ReductionCause,
-        reason: InteractionCancelReason,
-        interaction_events: &mut Vec<InteractionEvent>,
-    ) -> Vec<InteractionOutcome> {
-        self.pending_mutation
-            .take_if(|pending| pending.gesture().is_some())
-            .and_then(|pending| pending.gesture().map(|(_, status)| status))
-            .into_iter()
-            .map(|status| {
-                interaction_events.push(InteractionEvent::new_caused(
-                    cause,
-                    self.version,
-                    InteractionEventKind::Cancelled { status, reason },
-                ));
-                InteractionOutcome::Cancelled { status, reason }
-            })
-            .collect()
-    }
-
-    pub(super) fn cancel_pending_release_obligations_input(
-        &mut self,
-        input: InputSequence,
-        reason: InteractionCancelReason,
-        interaction_events: &mut Vec<InteractionEvent>,
-    ) {
-        let status = self
-            .pending_mutation
-            .take_if(|pending| pending.gesture().is_some())
-            .and_then(|pending| pending.gesture().map(|(_, status)| status));
-        interaction_events.extend(status.into_iter().map(|status| {
-            InteractionEvent::new(
-                input,
-                self.version,
-                InteractionEventKind::Cancelled { status, reason },
-            )
-        }));
-    }
-
-    pub(super) fn cancel_invalid_pending_release_obligations_caused(
-        &mut self,
-        cause: ReductionCause,
-        interaction_events: &mut Vec<InteractionEvent>,
-    ) {
-        let reason = self
-            .pending_mutation
-            .as_ref()
-            .and_then(|pending| match pending {
-                PendingMutation::DragRelease(pending) => {
-                    Some((pending.source_version, pending.policy_revision))
-                }
-                PendingMutation::Rehome(_) => None,
-            })
-            .and_then(|(source_version, policy_revision)| {
-                if self.version != source_version {
-                    Some(InteractionCancelReason::WorkspaceChanged)
-                } else if self.policy.revision() != policy_revision {
-                    Some(InteractionCancelReason::PolicyChanged)
-                } else {
-                    None
-                }
-            });
-        if let Some(reason) = reason {
-            let _ =
-                self.cancel_pending_release_obligations_caused(cause, reason, interaction_events);
-        }
-    }
-
     /// Cancels an exact journal or local-response owner through one terminal path.
     pub(super) fn cancel_gesture_owner(
         &mut self,
@@ -457,21 +388,7 @@ impl DockEngine {
                 },
             ));
         }
-        let pending_status = self
-            .pending_mutation
-            .take_if(|pending| {
-                pending
-                    .gesture()
-                    .is_some_and(|(owner, _)| owner == provider)
-            })
-            .and_then(|pending| pending.gesture().map(|(_, status)| status));
-        interaction_events.extend(pending_status.into_iter().map(|status| {
-            InteractionEvent::new_caused(
-                cause,
-                self.version,
-                InteractionEventKind::Cancelled { status, reason },
-            )
-        }));
+        self.cancel_pending_release_for_provider(cause, provider, reason, interaction_events);
         let Some(owner) = self
             .interaction
             .active_owner()

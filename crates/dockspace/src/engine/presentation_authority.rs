@@ -2157,7 +2157,9 @@ impl DockEngine {
             if let Some(pending) = self.pending_mutation.as_mut().filter(|pending| {
                 pending.surface() == ticket.surface() && pending.matches_interaction(interaction)
             }) {
-                pending.presentation_mut().presented = Some(promotion.key());
+                pending
+                    .presentation_mut()
+                    .observe_presented(promotion.key());
             }
             if let Some(token) = interaction.drag_preview() {
                 self.interaction

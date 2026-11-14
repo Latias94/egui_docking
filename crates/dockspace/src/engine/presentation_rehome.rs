@@ -385,7 +385,7 @@ impl DockEngine {
             context,
             pane_focus,
             preview,
-            presentation: PendingPresentationTracker::default(),
+            presentation: PresentationProgress::default(),
         }));
         let _ = events;
         Ok(Some(InputOutcome::ProductActionProcessed {
@@ -522,7 +522,7 @@ impl DockEngine {
             && (pending.source_version != self.version
                 || pending.policy_revision != self.policy.revision())
         {
-            pending.presentation.failed = true;
+            pending.presentation.fail();
         }
     }
 
@@ -532,7 +532,7 @@ impl DockEngine {
             .as_mut()
             .and_then(PendingMutation::rehome_mut)
         {
-            pending.presentation.failed = true;
+            pending.presentation.fail();
         }
     }
 
@@ -557,7 +557,7 @@ impl DockEngine {
                 )
         });
         if failed {
-            pending.presentation.failed = true;
+            pending.presentation.fail();
         }
         failed
     }
@@ -876,7 +876,7 @@ impl DockEngine {
             context,
             pane_focus,
             preview,
-            presentation: PendingPresentationTracker::default(),
+            presentation: PresentationProgress::default(),
         }));
         Ok(InputOutcome::ProductActionProcessed {
             outcome: DockspaceActionOutcome::RootFloatRequested {
@@ -926,7 +926,7 @@ impl DockEngine {
             Some(crate::event::PresentationRehomeResult::WorkspaceChanged)
         } else if self.policy.revision() != pending.policy_revision {
             Some(crate::event::PresentationRehomeResult::PolicyChanged)
-        } else if pending.presentation.failed {
+        } else if pending.presentation.is_failed() {
             Some(crate::event::PresentationRehomeResult::TargetNotPresented)
         } else if !source_is_current
             || self.workspace.presentation_for_root(pending.root) != Some(pending.source_owner)
@@ -935,7 +935,7 @@ impl DockEngine {
         } else {
             None
         };
-        if rejection.is_none() && pending.presentation.presented.is_none() {
+        if rejection.is_none() && !pending.presentation.is_presented() {
             return Ok(false);
         }
         let Some(PendingMutation::Rehome(pending)) = self.pending_mutation.take() else {

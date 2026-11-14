@@ -1061,8 +1061,7 @@ impl DockEngine {
                 .as_mut()
                 .expect("the matching mutation is still pending")
                 .presentation_mut()
-                .outputs
-                .insert(output.key());
+                .record_output(output.key());
         }
         Ok(())
     }

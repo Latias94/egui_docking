@@ -2,55 +2,57 @@
 
 use super::*;
 
+mod drag_release;
+mod presentation;
+mod termination;
+#[cfg(test)]
+mod tests;
+
+pub(super) use presentation::PresentationProgress;
+
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum PendingMutation {
     DragRelease(PendingDragRelease),
     Rehome(PendingPresentationRehome),
 }
 
-/// Shared progress of the one presentation-gated mutation. The semantic
-/// command and terminal outcome remain specific to each mutation variant.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub(super) struct PendingPresentationTracker {
-    pub(super) outputs: BTreeSet<HostFrameKey>,
-    pub(super) presented: Option<HostFrameKey>,
-    pub(super) failed: bool,
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct PendingDragRelease {
+    pub(super) source_version: WorkspaceVersion,
+    pub(super) policy_revision: PolicyRevision,
+    pub(super) cause: ReductionCause,
+    pub(super) focus_causal: FocusCausalStamp,
+    pub(super) session: crate::interaction::DragSessionId,
+    pub(super) drag: crate::interaction::ActiveDrag,
+    pub(super) physical_route: Option<(
+        crate::viewport::ViewportBinding,
+        crate::platform::NativeDragSourceInput,
+    )>,
+    pub(super) release_decision: PreviewDecision,
+    pub(super) preview: crate::interaction::PreviewToken,
+    pub(super) presentation: PresentationProgress,
 }
 
-impl PendingPresentationTracker {
-    pub(super) fn awaiting_presentation(&self) -> bool {
-        self.presented.is_none() && !self.failed
-    }
-
-    #[cfg(test)]
-    pub(super) fn retire_keys(&mut self, retired: &BTreeSet<HostFrameKey>) {
-        if self.presented.is_some() || self.outputs.is_empty() {
-            return;
-        }
-        let before = self.outputs.len();
-        self.outputs.retain(|output| !retired.contains(output));
-        self.failed |= self.outputs.len() < before && self.outputs.is_empty();
-    }
-
-    pub(super) fn retire_prefixes(&mut self, outcomes: &[HostPresentationObservationOutcome]) {
-        if self.presented.is_some() || self.outputs.is_empty() {
-            return;
-        }
-        let before = self.outputs.len();
-        self.outputs.retain(|output| {
-            !outcomes.iter().any(|outcome| {
-                matches!(outcome, HostPresentationObservationOutcome::Retired {
-                    stream, settled_through, ..
-                } if output.stream() == *stream && *output <= *settled_through)
-            })
-        });
-        self.failed |= self.outputs.len() < before && self.outputs.is_empty();
-    }
-
-    pub(super) fn retain_emissions(&self, emissions: &mut BTreeSet<HostFrameKey>) {
-        emissions.extend(self.outputs.iter().copied());
-        emissions.extend(self.presented);
-    }
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct PendingPresentationRehome {
+    pub(super) source_version: WorkspaceVersion,
+    pub(super) policy_revision: PolicyRevision,
+    pub(super) cause: ReductionCause,
+    pub(super) focus_causal: FocusCausalStamp,
+    pub(super) root: RootId,
+    pub(super) source: crate::command::NodeSource,
+    pub(super) source_owner: crate::RootPresentationOwner,
+    pub(super) source_surface: SurfaceId,
+    pub(super) source_binding: crate::viewport::ViewportBinding,
+    pub(super) source_recovery: SurfaceRecoveryObligationId,
+    pub(super) source_presentation: PresentedSurfaceAuthority,
+    pub(super) commit_authority: PresentationRehomeCommitAuthority,
+    pub(super) target_surface: SurfaceId,
+    pub(super) floating: Option<FloatingPresentationId>,
+    pub(super) context: product_action::ProductCommandContext,
+    pub(super) pane_focus: PaneFocusDisposition,
+    pub(super) preview: crate::interaction::PublishedPreview,
+    pub(super) presentation: PresentationProgress,
 }
 
 impl PendingMutation {
@@ -75,14 +77,14 @@ impl PendingMutation {
         }
     }
 
-    pub(super) fn presentation(&self) -> &PendingPresentationTracker {
+    pub(super) fn presentation(&self) -> &PresentationProgress {
         match self {
             Self::DragRelease(pending) => &pending.presentation,
             Self::Rehome(pending) => &pending.presentation,
         }
     }
 
-    pub(super) fn presentation_mut(&mut self) -> &mut PendingPresentationTracker {
+    pub(super) fn presentation_mut(&mut self) -> &mut PresentationProgress {
         match self {
             Self::DragRelease(pending) => &mut pending.presentation,
             Self::Rehome(pending) => &mut pending.presentation,
