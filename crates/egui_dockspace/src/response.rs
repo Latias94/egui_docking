@@ -8,8 +8,8 @@ pub use dockspace::runtime::{
     DockspaceLayoutChange, DockspaceManipulationFeedback, DockspaceNotification,
 };
 use dockspace::runtime::{
-    DockspaceTouchEvent, HostCloseRequestOrigin, HostFrameReport, HostInputOutcome,
-    HostSurfaceCommitStatus,
+    DockspaceSubmittedAction, DockspaceTouchEvent, HostCloseRequestOrigin, HostFrameReport,
+    HostInputOutcome, HostSurfaceCommitStatus,
 };
 
 /// Product-level summary of committed docking publications.
@@ -141,25 +141,28 @@ pub struct DockspaceActionResult {
 }
 
 impl DockspaceActionResult {
-    pub(crate) fn from_runtime_report(report: &HostFrameReport) -> Option<Self> {
-        let status = report.inputs().iter().find_map(|input| match input {
+    pub(crate) fn from_runtime_report(
+        report: &HostFrameReport,
+        submitted: DockspaceSubmittedAction,
+    ) -> Option<Self> {
+        let status = match report.submitted_action_outcome(submitted)? {
             HostInputOutcome::ProductActionApplied(outcome) => {
-                Some(DockspaceActionStatus::Applied(outcome.clone()))
+                DockspaceActionStatus::Applied(outcome.clone())
             }
             HostInputOutcome::ProductPresentationActionRequested { outcome, .. } => {
-                Some(DockspaceActionStatus::Applied(outcome.clone()))
+                DockspaceActionStatus::Applied(outcome.clone())
             }
             HostInputOutcome::ProductActionRejected(reason) => {
-                Some(DockspaceActionStatus::Rejected(*reason))
+                DockspaceActionStatus::Rejected(*reason)
             }
             HostInputOutcome::StaleRejected { expected, accepted } => {
-                Some(DockspaceActionStatus::Stale {
+                DockspaceActionStatus::Stale {
                     expected: *expected,
                     accepted: *accepted,
-                })
+                }
             }
-            _ => None,
-        })?;
+            _ => return None,
+        };
         Some(Self {
             mutation: DockspaceMutation::from_runtime_report(report),
             status,
@@ -231,26 +234,27 @@ pub struct DockspaceCloseRequestResult {
 }
 
 impl DockspaceCloseRequestResult {
-    pub(crate) fn from_runtime_report(report: &HostFrameReport) -> Option<Self> {
-        let status = report.inputs().iter().find_map(|input| match input {
+    pub(crate) fn from_runtime_report(
+        report: &HostFrameReport,
+        submitted: DockspaceSubmittedAction,
+    ) -> Option<Self> {
+        let status = match report.submitted_action_outcome(submitted)? {
             HostInputOutcome::CloseRequested {
                 plan,
                 reused,
                 origin: HostCloseRequestOrigin::Application,
-            } => Some(DockspaceCloseRequestStatus::Requested(
-                DockspaceCloseRequest::new(plan, *reused),
-            )),
+            } => DockspaceCloseRequestStatus::Requested(DockspaceCloseRequest::new(plan, *reused)),
             HostInputOutcome::CloseRejected(reason) => {
-                Some(DockspaceCloseRequestStatus::Rejected(*reason))
+                DockspaceCloseRequestStatus::Rejected(*reason)
             }
             HostInputOutcome::StaleRejected { expected, accepted } => {
-                Some(DockspaceCloseRequestStatus::Stale {
+                DockspaceCloseRequestStatus::Stale {
                     expected: *expected,
                     accepted: *accepted,
-                })
+                }
             }
-            _ => None,
-        })?;
+            _ => return None,
+        };
         Some(Self {
             mutation: DockspaceMutation::from_runtime_report(report),
             status,
@@ -299,26 +303,29 @@ pub struct DockspaceCloseResult {
 }
 
 impl DockspaceCloseResult {
-    pub(crate) fn from_runtime_report(report: &HostFrameReport) -> Option<Self> {
-        let outcome = report.inputs().iter().find_map(|input| match input {
+    pub(crate) fn from_runtime_report(
+        report: &HostFrameReport,
+        submitted: DockspaceSubmittedAction,
+    ) -> Option<Self> {
+        let outcome = match report.submitted_action_outcome(submitted)? {
             HostInputOutcome::CloseDecisionProcessed {
                 resolution,
                 plan,
                 application,
                 ..
-            } => Some(DockspaceCloseOutcome::Processed {
+            } => DockspaceCloseOutcome::Processed {
                 resolution: *resolution,
                 plan: plan.clone(),
                 application: application.clone(),
-            }),
+            },
             HostInputOutcome::StaleRejected { expected, accepted } => {
-                Some(DockspaceCloseOutcome::Stale {
+                DockspaceCloseOutcome::Stale {
                     expected: *expected,
                     accepted: *accepted,
-                })
+                }
             }
-            _ => None,
-        })?;
+            _ => return None,
+        };
         Some(Self {
             mutation: DockspaceMutation::from_runtime_report(report),
             outcome,
@@ -610,5 +617,98 @@ impl DockspaceResponse {
     #[must_use]
     pub const fn pane_focus_capability(&self) -> DockspaceCapability {
         self.paint.pane_focus_capability
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dockspace::model::{
+        DockspaceActionOutcome, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
+        DockspaceSurfaceLayout, ItemId, RootId, SurfaceId,
+    };
+    use dockspace::policy::DockPolicy;
+    use dockspace::runtime::{DockspaceSession, SurfaceUnavailableReason};
+
+    const SURFACE: SurfaceId = SurfaceId::new(1);
+    const OTHER_SURFACE: SurfaceId = SurfaceId::new(2);
+    const ROOT: RootId = RootId::new(1);
+    const OTHER_ROOT: RootId = RootId::new(2);
+    const FIRST: ItemId = ItemId::new(1);
+    const SECOND: ItemId = ItemId::new(2);
+
+    fn session() -> DockspaceSession {
+        DockspaceSession::from_layout(
+            DockspaceLayout::new([
+                DockspaceSurfaceLayout::new(
+                    SURFACE,
+                    DockspaceRootLayout::new(ROOT, DockspaceNode::tabs([FIRST, SECOND])),
+                ),
+                DockspaceSurfaceLayout::new(
+                    OTHER_SURFACE,
+                    DockspaceRootLayout::new(OTHER_ROOT, DockspaceNode::tabs([ItemId::new(3)])),
+                ),
+            ])
+            .unwrap(),
+            DockPolicy::default(),
+        )
+        .unwrap()
+    }
+
+    fn commit(mut frame: dockspace::runtime::DockspaceHostFrame<'_>) -> HostFrameReport {
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .unwrap();
+        frame.commit().unwrap()
+    }
+
+    #[test]
+    fn action_response_uses_the_submitted_action_when_a_frame_has_multiple_actions() {
+        let mut session = session();
+        let first_prepared = session.prepare_select_item(FIRST);
+        let second_prepared = session.prepare_select_item(SECOND);
+        let mut frame = session.begin_host_frame().unwrap();
+        let first = frame.submit_prepared_action(first_prepared).unwrap();
+        let second = frame.submit_prepared_action(second_prepared).unwrap();
+        let report = commit(frame);
+
+        assert!(matches!(
+            DockspaceActionResult::from_runtime_report(&report, first)
+                .unwrap()
+                .status(),
+            DockspaceActionStatus::Applied(DockspaceActionOutcome::Selected { item: FIRST, .. })
+        ));
+        assert!(matches!(
+            DockspaceActionResult::from_runtime_report(&report, second)
+                .unwrap()
+                .status(),
+            DockspaceActionStatus::Applied(DockspaceActionOutcome::Selected { item: SECOND, .. })
+        ));
+    }
+
+    #[test]
+    fn close_request_response_uses_the_submitted_request_when_a_frame_has_multiple_requests() {
+        let mut session = session();
+        let first_prepared = session.prepare_close_item(FIRST);
+        let root_prepared = session.prepare_close_root(OTHER_ROOT);
+        let mut frame = session.begin_host_frame().unwrap();
+        let first = frame.submit_prepared_close_request(first_prepared).unwrap();
+        let root = frame.submit_prepared_close_request(root_prepared).unwrap();
+        let report = commit(frame);
+
+        assert!(matches!(
+            DockspaceCloseRequestResult::from_runtime_report(&report, first)
+                .unwrap()
+                .status(),
+            DockspaceCloseRequestStatus::Requested(request)
+                if request.plan().target() == dockspace::close::ClosePlanTarget::Item { item: FIRST }
+        ));
+        assert!(matches!(
+            DockspaceCloseRequestResult::from_runtime_report(&report, root)
+                .unwrap()
+                .status(),
+            DockspaceCloseRequestStatus::Requested(request)
+                if request.plan().target() == dockspace::close::ClosePlanTarget::Root { root: OTHER_ROOT }
+        ));
     }
 }

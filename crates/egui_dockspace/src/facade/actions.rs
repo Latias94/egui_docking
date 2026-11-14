@@ -130,14 +130,14 @@ impl Dockspace {
             .session
             .begin_host_frame()
             .map_err(DockspaceError::from_detail)?;
-        frame
+        let submitted = frame
             .submit_prepared_action(prepared)
             .map_err(DockspaceError::from_detail)?;
         frame
             .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
             .map_err(DockspaceError::from_detail)?;
         let report = frame.commit().map_err(DockspaceError::from_detail)?;
-        DockspaceActionResult::from_runtime_report(&report)
+        DockspaceActionResult::from_runtime_report(&report, submitted)
             .ok_or(DockspaceErrorSource::ApplicationOutcomeUnavailable {
                 operation: "product action",
             })
@@ -315,14 +315,14 @@ impl Dockspace {
             .session
             .begin_host_frame()
             .map_err(DockspaceError::from_detail)?;
-        frame
+        let submitted = frame
             .submit_prepared_close_request(prepared)
             .map_err(DockspaceError::from_detail)?;
         frame
             .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
             .map_err(DockspaceError::from_detail)?;
         let report = frame.commit().map_err(DockspaceError::from_detail)?;
-        DockspaceCloseRequestResult::from_runtime_report(&report)
+        DockspaceCloseRequestResult::from_runtime_report(&report, submitted)
             .ok_or(DockspaceErrorSource::ApplicationOutcomeUnavailable {
                 operation: "close request",
             })
@@ -369,14 +369,14 @@ impl Dockspace {
             .session
             .begin_host_frame()
             .map_err(DockspaceError::from_detail)?;
-        frame
+        let submitted = frame
             .resolve_close(request, token, decision)
             .map_err(DockspaceError::from_detail)?;
         frame
             .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
             .map_err(DockspaceError::from_detail)?;
         let report = frame.commit().map_err(DockspaceError::from_detail)?;
-        DockspaceCloseResult::from_runtime_report(&report)
+        DockspaceCloseResult::from_runtime_report(&report, submitted)
             .ok_or(DockspaceErrorSource::ApplicationOutcomeUnavailable {
                 operation: "close decision",
             })
@@ -399,14 +399,14 @@ impl Dockspace {
             .session
             .begin_host_frame()
             .map_err(DockspaceError::from_detail)?;
-        frame
+        let submitted = frame
             .continue_deferred_close(request, token, decision)
             .map_err(DockspaceError::from_detail)?;
         frame
             .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
             .map_err(DockspaceError::from_detail)?;
         let report = frame.commit().map_err(DockspaceError::from_detail)?;
-        DockspaceCloseResult::from_runtime_report(&report)
+        DockspaceCloseResult::from_runtime_report(&report, submitted)
             .ok_or(DockspaceErrorSource::ApplicationOutcomeUnavailable {
                 operation: "deferred close decision",
             })
