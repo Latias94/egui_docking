@@ -14,6 +14,7 @@ const ROUNDS: usize = 12;
 
 mod capacity;
 mod last_pane;
+mod lifecycle_interleavings;
 
 struct Random(u64);
 

@@ -81,6 +81,8 @@ enum NativeMouseButtonState {
         origin: Option<NativeWindowBinding>,
         primary_press: Option<PointerPressToken>,
     },
+    /// The matching release was forwarded; late copies cannot release it again.
+    Released,
     Cancelled,
 }
 
@@ -908,7 +910,10 @@ fn allocate_scroll_sequence(next_scroll_sequence: &mut u64) -> Option<NativeScro
 
 impl NativeMouseState {
     fn is_idle(&self) -> bool {
-        self.buttons.is_empty() && self.capture.is_none()
+        self.buttons
+            .values()
+            .all(|state| !matches!(state, NativeMouseButtonState::Active { .. }))
+            && self.capture.is_none()
     }
 
     fn active_press(&self, button: NativePointerButton) -> Option<Option<&PointerPressToken>> {
@@ -916,7 +921,9 @@ impl NativeMouseState {
             Some(NativeMouseButtonState::Active { primary_press, .. }) => {
                 Some(primary_press.as_ref())
             }
-            Some(NativeMouseButtonState::Cancelled) | None => None,
+            Some(NativeMouseButtonState::Released | NativeMouseButtonState::Cancelled) | None => {
+                None
+            }
         }
     }
 
@@ -931,15 +938,18 @@ impl NativeMouseState {
         if self.should_ignore_captured_move(event, routes) {
             return false;
         }
-        self.observe_routes(routes);
         if matches!(
             event,
             NativePointerEvent::ButtonReleased(button)
                 | NativePointerEvent::ContactEnded(button)
-                if matches!(self.buttons.remove(&button), Some(NativeMouseButtonState::Cancelled))
+                if matches!(
+                    self.buttons.get(&button),
+                    Some(NativeMouseButtonState::Released | NativeMouseButtonState::Cancelled)
+                )
         ) {
             return false;
         }
+        self.observe_routes(routes);
         match event {
             NativePointerEvent::ButtonPressed(button) => {
                 let delivery = exact_delivery_binding(routes.delivery());
@@ -950,7 +960,8 @@ impl NativeMouseState {
                                 *origin = delivery;
                             }
                         }
-                        state @ NativeMouseButtonState::Cancelled => {
+                        state @ (NativeMouseButtonState::Released
+                        | NativeMouseButtonState::Cancelled) => {
                             *state = NativeMouseButtonState::Active {
                                 origin: delivery,
                                 primary_press: None,
@@ -967,11 +978,14 @@ impl NativeMouseState {
             }
             NativePointerEvent::ButtonReleased(button)
             | NativePointerEvent::ContactEnded(button) => {
-                let _ = self.buttons.remove(&button);
+                // An unknown initial button may belong to the host's enrollment
+                // roster. Forward its first release, then retain the same slot
+                // until an explicit press starts this button again.
+                self.buttons
+                    .insert(button, NativeMouseButtonState::Released);
             }
             NativePointerEvent::StreamEnded | NativePointerEvent::StreamCancelled(_) => {
-                self.buttons.clear();
-                self.capture = None;
+                self.cancel_buttons();
             }
             NativePointerEvent::CaptureChanged => {
                 if let Some(NativeMouseButtonState::Active { primary_press, .. }) =
@@ -1220,6 +1234,7 @@ mod overload;
 #[cfg(test)]
 mod tests {
     mod docking_enabled;
+    mod duplicate_release;
 
     use super::*;
 
@@ -1563,7 +1578,8 @@ mod tests {
                     routes,
                 )
         );
-        assert!(translator.owned_data_capacity_bytes() > idle);
+        let pressed = translator.owned_data_capacity_bytes();
+        assert!(pressed > idle);
         assert!(
             translator
                 .device_mut(mouse)
@@ -1574,7 +1590,8 @@ mod tests {
                     routes,
                 )
         );
-        assert_eq!(translator.owned_data_capacity_bytes(), idle);
+        // Released buttons retain a charged tail gate until device retirement.
+        assert_eq!(translator.owned_data_capacity_bytes(), pressed);
 
         translator.forget_removed_devices();
         assert_eq!(translator.devices.len(), 1);
