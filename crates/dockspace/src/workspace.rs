@@ -341,8 +341,7 @@ impl WorkspaceIndex {
 
         let removes_complete_root = match payload {
             MovePayload::Item(source) => {
-                indexed.central.is_none()
-                    && indexed.item_count == 1
+                workspace.item_move_removes_root(root, indexed.item_count)
                     && matches!(
                         workspace.node(source.tabs()),
                         Some(Node::Tabs { items, .. }) if items.contains(&source.item())
@@ -474,7 +473,7 @@ impl<'index> WorkspaceIndexView<'index> {
 }
 
 impl RootPresentationOwner {
-    const fn surface(self) -> SurfaceId {
+    pub(crate) const fn surface(self) -> SurfaceId {
         match self {
             Self::Main { surface } | Self::Contained { surface, .. } => surface,
         }
@@ -482,6 +481,21 @@ impl RootPresentationOwner {
 }
 
 impl Workspace {
+    /// Empty central areas persist only in main dockspaces, not floating shells.
+    pub(crate) fn retains_empty_central_root(&self, root: RootId) -> bool {
+        self.root(root)
+            .is_some_and(|record| record.central.is_some())
+            && matches!(
+                self.presentation_for_root(root),
+                Some(RootPresentationOwner::Main { .. })
+            )
+    }
+
+    /// Classifies a checked singleton payload using its current root item count.
+    pub(crate) fn item_move_removes_root(&self, root: RootId, item_count: usize) -> bool {
+        item_count == 1 && !self.retains_empty_central_root(root)
+    }
+
     pub(crate) fn matches_surface_roster_source(&self, source: &SurfaceRosterSource) -> bool {
         let Some(presentation) = self.surface(source.surface()) else {
             return false;

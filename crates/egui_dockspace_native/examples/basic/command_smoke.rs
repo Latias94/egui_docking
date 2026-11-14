@@ -20,7 +20,10 @@ pub(super) fn layout() -> DockspaceLayout {
     )
     .with_contained(DockspaceContainedLayout::new(
         INSPECTOR_FLOATING,
-        DockspaceRootLayout::new(INSPECTOR_ROOT, DockspaceNode::tabs([INSPECTOR, EDITOR])),
+        DockspaceRootLayout::new(
+            INSPECTOR_ROOT,
+            DockspaceNode::central_tabs([INSPECTOR, EDITOR]),
+        ),
         LogicalRect::new(5000.0, 4000.0, 360.0, 300.0).unwrap(),
     ))
     .with_contained(DockspaceContainedLayout::new(
@@ -72,7 +75,7 @@ impl CommandSmoke {
                 self.done = true;
                 match result {
                     Ok(true) => eprintln!(
-                        "command-smoke: complete; nine docking commands, four style updates, two singleton native-child round trips, eight stable panes and retained document data; presented and quiescent"
+                        "command-smoke: complete; eleven docking commands, four style updates, two singleton native-child round trips, drained central contained root, eight stable panes and retained document data; presented and quiescent"
                     ),
                     Err(error) => eprintln!("command-smoke: FAIL {error}"),
                     Ok(false) => unreachable!(),
@@ -251,9 +254,12 @@ impl CommandSmoke {
                 self.style_window.unwrap()
             );
         }
-        if self.step == 9 {
+        if self.step == 11 {
             if !app.with_view(|view| {
                 view.surfaces().count() == 1
+                    && view
+                        .surface(host)
+                        .is_some_and(|surface| surface.contained_count() == 0)
                     && view
                         .item(EDITOR)
                         .is_some_and(|pane| pane.root() == MAIN_ROOT)
@@ -271,6 +277,10 @@ impl CommandSmoke {
             2 => NativeCommand::BringContainedIntoView { item: INSPECTOR },
             3 | 8 => NativeCommand::DockItem {
                 item: EDITOR,
+                placement: DockPlacement::Center(DockAnchor::Item(OUTLINE)),
+            },
+            9 | 10 => NativeCommand::DockItem {
+                item: if self.step == 9 { INSPECTOR } else { ASSETS },
                 placement: DockPlacement::Center(DockAnchor::Item(OUTLINE)),
             },
             5 | 7 => {
@@ -352,6 +362,15 @@ impl CommandSmoke {
                 self.child = None;
                 true
             }
+            (
+                9 | 10,
+                DockspaceActionOutcome::Docked {
+                    item,
+                    target_root: MAIN_ROOT,
+                    changed: true,
+                    ..
+                },
+            ) => *item == if self.step == 9 { INSPECTOR } else { ASSETS },
             _ => false,
         };
         if valid {

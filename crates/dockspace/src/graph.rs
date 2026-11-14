@@ -304,6 +304,9 @@ pub struct RootRecord {
     /// Topology root node.
     pub node: NodeId,
     /// Reachable tabs leaf that receives remaining central space.
+    ///
+    /// A main dockspace retains this leaf when its last content leaves. A
+    /// contained floating root retires when all of its content leaves.
     pub central: Option<NodeId>,
 }
 

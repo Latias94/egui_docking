@@ -814,12 +814,14 @@ fn whole_contained_tabs_and_subtree_suppress_their_presentations() {
 
 #[test]
 fn partial_contained_item_tabs_and_subtree_keep_source_occlusion_and_guides() {
-    let item_fixture = fixture_with_floating_tabs([ItemId::new(20), ItemId::new(22)], false);
-    assert_affordance_root(
-        &item_fixture,
-        floating_item_payload(&item_fixture),
-        FLOATING_ROOT,
-    );
+    for central in [false, true] {
+        let item_fixture = fixture_with_floating_tabs([ItemId::new(20), ItemId::new(22)], central);
+        assert_affordance_root(
+            &item_fixture,
+            floating_item_payload(&item_fixture),
+            FLOATING_ROOT,
+        );
+    }
 
     let node_fixture = fixture_with_split_floating();
     assert_affordance_root(
@@ -835,10 +837,10 @@ fn partial_contained_item_tabs_and_subtree_keep_source_occlusion_and_guides() {
 }
 
 #[test]
-fn central_single_item_root_is_not_suppressed_because_cleanup_preserves_it() {
+fn central_contained_singleton_suppresses_the_shell_that_will_retire() {
     let fixture = fixture_with_floating_tabs([ItemId::new(20)], true);
 
-    assert_affordance_root(&fixture, floating_item_payload(&fixture), FLOATING_ROOT);
+    assert_affordance_root(&fixture, floating_item_payload(&fixture), TARGET_ROOT);
 }
 
 #[test]

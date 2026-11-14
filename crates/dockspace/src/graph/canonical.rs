@@ -266,37 +266,40 @@ pub(super) fn finish_item_move(
         finish_item_target_root(workspace, target_root, &mut results, &mut output_splits)?;
     }
     if matches!(workspace.node(source), Some(Node::Tabs { items, .. }) if items.is_empty()) {
-        if let Some(record) = workspace.root(source_root).copied() {
-            if record.central != Some(source) {
-                let path = workspace.path_to_node(source_root, source).ok_or(
-                    CanonicalizationError::TraversalInvariant {
-                        stage: "locate emptied source path",
-                    },
-                )?;
-                workspace.begin_root_edit(source_root);
-                let storage = &mut workspace.storage;
-                results.insert(source, None);
-                storage.remove_runtime_node(source);
-                for &parent in path[..path.len() - 1].iter().rev() {
-                    rewrite_local_split(storage, parent, &mut results, &mut output_splits)?;
-                }
-                let next = results
-                    .get(record.node)
-                    .copied()
-                    .flatten()
-                    .ok_or(CanonicalizationError::EmptyRoot { root: source_root })?;
-                let mut current = storage.roots.get(&source_root).copied().ok_or(
-                    CanonicalizationError::TraversalInvariant {
-                        stage: "publish repaired root",
-                    },
-                )?;
-                if current.node != next {
-                    current.node = next;
-                    Arc::make_mut(&mut storage.roots).insert(source_root, current);
-                }
+        // Retirement owns complete subtree destruction. A surviving empty leaf
+        // must still belong to a live root whose source path needs repair.
+        let record = workspace.root(source_root).copied().ok_or(
+            CanonicalizationError::TraversalInvariant {
+                stage: "locate surviving source root",
+            },
+        )?;
+        if record.central != Some(source) {
+            let path = workspace.path_to_node(source_root, source).ok_or(
+                CanonicalizationError::TraversalInvariant {
+                    stage: "locate emptied source path",
+                },
+            )?;
+            workspace.begin_root_edit(source_root);
+            let storage = &mut workspace.storage;
+            results.insert(source, None);
+            storage.remove_runtime_node(source);
+            for &parent in path[..path.len() - 1].iter().rev() {
+                rewrite_local_split(storage, parent, &mut results, &mut output_splits)?;
             }
-        } else {
-            workspace.remove_runtime_node(source);
+            let next = results
+                .get(record.node)
+                .copied()
+                .flatten()
+                .ok_or(CanonicalizationError::EmptyRoot { root: source_root })?;
+            let mut current = storage.roots.get(&source_root).copied().ok_or(
+                CanonicalizationError::TraversalInvariant {
+                    stage: "publish repaired root",
+                },
+            )?;
+            if current.node != next {
+                current.node = next;
+                Arc::make_mut(&mut storage.roots).insert(source_root, current);
+            }
         }
     }
 

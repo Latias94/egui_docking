@@ -32,11 +32,18 @@ impl DetachedPayload {
     }
 }
 
+/// Concrete topology changes produced by one completed move.
+#[derive(Default)]
+pub(super) struct MoveEffects {
+    pub(super) inserted_split: Option<NodeId>,
+    pub(super) retired_source_surface: Option<SurfaceId>,
+}
+
 pub(super) fn apply_command(
     workspace: &mut Workspace,
     authority: TransactionAuthority<'_>,
     command: &WorkspaceCommand,
-) -> Result<(AppliedCommand, Option<NodeId>), CommandError> {
+) -> Result<(AppliedCommand, MoveEffects), CommandError> {
     if let TransactionAuthority::Policy(policy) = authority {
         if matches!(command, WorkspaceCommand::Move { .. }) {
             policy.check_arrangement_unlocked()?;
@@ -122,7 +129,7 @@ pub(super) fn apply_command(
         WorkspaceCommand::RemoveEmptyRoot { source } => remove_empty_root(workspace, source),
     };
     let applied = result?;
-    Ok((applied, None))
+    Ok((applied, MoveEffects::default()))
 }
 
 pub(super) fn select(
@@ -228,7 +235,7 @@ fn move_payload(
     policy: Option<&DockPolicySnapshot>,
     payload: &MovePayload,
     target: &DockTarget,
-) -> Result<(AppliedCommand, Option<NodeId>), CommandError> {
+) -> Result<(AppliedCommand, MoveEffects), CommandError> {
     // This private owner checks and executes the exact command against its
     // exclusive candidate. No checked token or index can cross a mutation.
     check_move(workspace, policy, payload, target)?;
@@ -249,7 +256,7 @@ fn move_payload(
                 },
                 delta: ItemDelta::None,
             },
-            None,
+            MoveEffects::default(),
         ));
     }
 
@@ -267,7 +274,7 @@ fn move_payload(
                 },
                 delta: ItemDelta::None,
             },
-            None,
+            MoveEffects::default(),
         ));
     }
 
@@ -289,7 +296,7 @@ fn move_payload(
                 },
                 delta: ItemDelta::None,
             },
-            None,
+            MoveEffects::default(),
         ));
     }
 
@@ -298,6 +305,7 @@ fn move_payload(
     let items = detached.items();
     let target_root = target_root(target);
     let inserted_split = insert_payload(workspace, detached, target)?;
+    let retired_source_surface = cleanup_empty_source_root(workspace, source_root)?;
     workspace.complete_root_change(source_root)?;
     if target_root != source_root {
         workspace.complete_root_change(target_root)?;
@@ -312,7 +320,10 @@ fn move_payload(
             },
             delta: ItemDelta::None,
         },
-        inserted_split,
+        MoveEffects {
+            inserted_split,
+            retired_source_surface,
+        },
     ))
 }
 
@@ -561,8 +572,7 @@ fn retire_empty_surface(
         return Err(CommandError::SurfaceNotEmpty { surface, items });
     }
     for root in roots {
-        let record = remove_root_and_presentation(workspace, root)?;
-        remove_subtree_nodes(workspace, record.node)?;
+        retire_root(workspace, root)?;
     }
     workspace.storage.surfaces.remove(&surface);
     Ok(AppliedCommand {
@@ -1137,7 +1147,7 @@ fn remove_empty_root(
             items: item_count,
         });
     }
-    remove_root_and_presentation(workspace, root)?;
+    retire_root(workspace, root)?;
     Ok(AppliedCommand {
         outcome: CommandOutcome::EmptyRootRemoved { root },
         delta: ItemDelta::None,
@@ -1164,6 +1174,7 @@ fn detach_root_content(
         RootContent::Move(payload) => {
             let detached = detach_payload(workspace, payload)?;
             let items = detached.items();
+            cleanup_empty_source_root(workspace, detached.source_root())?;
             // RootContent::Move always removes actual content from its donor.
             // This completion precedes the next command's capture/check.
             workspace.complete_root_change(detached.source_root())?;
@@ -1188,7 +1199,6 @@ fn detach_payload(
     match payload {
         MovePayload::Item(source) => {
             remove_item(workspace, source.tabs(), source.item())?;
-            cleanup_item_source_root(workspace, source.root())?;
             Ok(DetachedPayload::Item {
                 source_root: source.root(),
                 item: source.item(),
@@ -1257,7 +1267,7 @@ fn detach_node(
         .get(&root)
         .ok_or(CommandError::MissingRoot { root })?;
     if record.node == node {
-        remove_root_and_presentation(workspace, root)?;
+        detach_root(workspace, root)?;
         return Ok(record.central);
     }
     if let Some(central) = record.central
@@ -1749,112 +1759,6 @@ pub(super) fn remove_item(
     mru.remove(mru_index);
     if was_selected {
         *selected = mru.first().copied();
-    }
-    Ok(())
-}
-
-pub(super) fn cleanup_item_source_root(
-    workspace: &mut Workspace,
-    root: RootId,
-) -> Result<(), CommandError> {
-    let record = *workspace
-        .storage
-        .roots
-        .get(&root)
-        .ok_or(CommandError::MissingRoot { root })?;
-    if record.central.is_none() && !workspace.subtree_has_items(record.node) {
-        remove_root_and_presentation(workspace, root)?;
-    }
-    Ok(())
-}
-
-pub(super) fn remove_root_and_presentation(
-    workspace: &mut Workspace,
-    root: RootId,
-) -> Result<RootRecord, CommandError> {
-    let presentation = workspace
-        .presentation_for_root(root)
-        .ok_or(CommandError::Invariant {
-            stage: "locate root presentation owner",
-        })?;
-    detach_root_presentation(workspace, root, presentation)?;
-    let record = Arc::make_mut(&mut workspace.storage.roots)
-        .remove(&root)
-        .ok_or(CommandError::MissingRoot { root })?;
-    workspace.unroot_subtree(record.node);
-    workspace.complete_root_change(root)?;
-    Ok(record)
-}
-
-pub(super) fn remove_subtree_nodes(
-    workspace: &mut Workspace,
-    root: NodeId,
-) -> Result<(), CommandError> {
-    let mut stack = vec![root];
-    while let Some(node_id) = stack.pop() {
-        let node = workspace
-            .remove_runtime_node(node_id)
-            .ok_or(CommandError::MissingNode {
-                role: ReferenceRole::Source,
-                node: node_id,
-            })?;
-        if let Node::Split { children, .. } = node.as_ref() {
-            stack.extend(children.iter().rev().copied());
-        }
-    }
-    Ok(())
-}
-
-fn detach_root_presentation(
-    workspace: &mut Workspace,
-    root: RootId,
-    presentation: RootPresentationOwner,
-) -> Result<(), CommandError> {
-    match presentation {
-        RootPresentationOwner::Main { surface } => {
-            if workspace
-                .storage
-                .surfaces
-                .get(&surface)
-                .map(|entry| entry.main_root)
-                != Some(Some(root))
-            {
-                return Err(CommandError::Invariant {
-                    stage: "detach matching main-root presentation",
-                });
-            }
-            workspace
-                .storage
-                .surfaces
-                .get_mut(&surface)
-                .ok_or(CommandError::MissingSurface { surface })?
-                .main_root = None;
-        }
-        RootPresentationOwner::Contained { surface, floating } => {
-            let record = workspace
-                .storage
-                .contained_floatings
-                .remove(&floating)
-                .ok_or(CommandError::MissingFloating { floating })?;
-            if record.root != root {
-                return Err(CommandError::Invariant {
-                    stage: "detach matching contained-root presentation",
-                });
-            }
-            let presentation = workspace
-                .storage
-                .surfaces
-                .get_mut(&surface)
-                .ok_or(CommandError::MissingSurface { surface })?;
-            let index = presentation
-                .contained
-                .iter()
-                .position(|entry| *entry == floating)
-                .ok_or(CommandError::Invariant {
-                    stage: "remove contained presentation backlink",
-                })?;
-            presentation.contained.remove(index);
-        }
     }
     Ok(())
 }

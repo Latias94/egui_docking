@@ -31,6 +31,7 @@ use crate::workspace::WorkspaceIndex;
 mod authorization;
 mod close;
 mod references;
+mod root_lifecycle;
 mod topology;
 pub(crate) use authorization::{
     DropCommandEligibility, authorize_captured_drag_source, authorize_workspace_command,
@@ -46,13 +47,15 @@ use references::{
     validate_node_source, validate_root_content, validate_root_source, validate_target,
     validate_target_with,
 };
+use root_lifecycle::{
+    cleanup_empty_source_root, detach_root, detach_root_presentation, retire_root,
+};
 pub(crate) use topology::validate_split_resizes;
 #[cfg(test)]
 use topology::validate_split_resizes_structure;
 use topology::{
-    apply_command, cleanup_item_source_root, floating_presentation_mismatch,
-    moves_central_tab_contents, remove_item, remove_root_and_presentation, remove_subtree_nodes,
-    select, select_tabs_item, validate_contained,
+    apply_command, floating_presentation_mismatch, moves_central_tab_contents, remove_item, select,
+    select_tabs_item, validate_contained,
 };
 
 /// A completed candidate paired with the report frozen by its prepare owner.
@@ -305,24 +308,9 @@ fn prepare_transaction_inner(
     ] = commands
         && matches!(authority, TransactionAuthority::Policy(_))
     {
-        // Only removing a singleton, unprotected root can vacate its surface.
-        let retires_root = workspace.root(source.root()).is_some_and(|record| {
-            record.node == source.tabs() && record.central.is_none()
-                && matches!(workspace.node(source.tabs()), Some(Node::Tabs { items, .. }) if items.len() == 1)
-        });
-        let source_surface = if retires_root {
-            workspace
-                .presentation_for_root(source.root())
-                .map(|owner| match owner {
-                    RootPresentationOwner::Main { surface }
-                    | RootPresentationOwner::Contained { surface, .. } => surface,
-                })
-        } else {
-            None
-        };
-        let (applied, inserted_split) = apply_command(&mut candidate, authority, command)
+        let (applied, effects) = apply_command(&mut candidate, authority, command)
             .map_err(|source| TransactionError::Command { index: 0, source })?;
-        if let Some(surface) = source_surface {
+        if let Some(surface) = effects.retired_source_surface {
             prune_vacant_surface(&mut candidate, surface);
         }
         // A checked Item move transfers one existing item. Repair its source
@@ -336,7 +324,7 @@ fn prepare_transaction_inner(
                 DockTarget::OuterEdge(edge) => Some(edge.root()),
                 _ => None,
             },
-            inserted_split,
+            effects.inserted_split,
         )?;
         // Different-pane center/gap transfers change membership. A real edge
         // transfer retains a newly allocated nonempty tabs identity; normalization
@@ -630,6 +618,7 @@ fn edge_axis_and_order(edge: Edge) -> (Axis, bool) {
 mod tests {
     mod arrangement_lock;
     mod checked_move;
+    mod contained_central;
     mod local_item_move;
     mod local_selection;
     mod logical_surfaces;

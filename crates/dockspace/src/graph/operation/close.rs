@@ -122,9 +122,7 @@ pub(crate) fn prepare_surface_content_closes(
             subtract_closed_item(&mut expected_after, *item)?;
         }
         for (source, _) in prepared.roots() {
-            let record = remove_root_and_presentation(&mut candidate, source.root())
-                .map_err(close_command_error)?;
-            remove_subtree_nodes(&mut candidate, record.node).map_err(close_command_error)?;
+            retire_root(&mut candidate, source.root()).map_err(close_command_error)?;
         }
         outcomes.push(CloseCommitOutcome::SurfaceClosed {
             surface: prepared.surface(),
@@ -296,7 +294,7 @@ pub(crate) fn prepare_content_close(
                 select_tabs_item(&mut candidate, source.tabs(), successor)
                     .map_err(close_command_error)?;
             }
-            cleanup_item_source_root(&mut candidate, root).map_err(close_command_error)?;
+            cleanup_empty_source_root(&mut candidate, root).map_err(close_command_error)?;
             candidate
                 .complete_root_change(root)
                 .map_err(close_command_error)?;
@@ -328,9 +326,7 @@ pub(crate) fn prepare_content_close(
                     source: CommandError::RootEmpty { root },
                 });
             }
-            let record =
-                remove_root_and_presentation(&mut candidate, root).map_err(close_command_error)?;
-            remove_subtree_nodes(&mut candidate, record.node).map_err(close_command_error)?;
+            retire_root(&mut candidate, root).map_err(close_command_error)?;
             CloseCommitOutcome::RootClosed {
                 root,
                 items: items.clone(),

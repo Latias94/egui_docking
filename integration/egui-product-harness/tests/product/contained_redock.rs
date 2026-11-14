@@ -1,6 +1,161 @@
 use super::*;
 
 #[test]
+fn redocking_both_tabs_of_a_central_contained_root_retires_it_and_keeps_input_live() {
+    fn frame(context: &Context, dock: &mut Dockspace, events: Vec<Event>) -> FrameOutput {
+        let mut raw = input(events);
+        raw.screen_rect = Some(Rect::from_min_size(Pos2::ZERO, vec2(1_280.0, 820.0)));
+        raw.time = Some(context.input(|input| input.time) + 1.0 / 60.0);
+        let (output, response) = dock
+            .run_single_surface(context, raw, SURFACE, &mut Panes)
+            .unwrap();
+        let close_requests = response.close_request_events().to_vec();
+        assert!(close_requests.is_empty());
+        let (mut output, receipt) = output.into_parts();
+        receipt.report(SurfacePresentationResult::Presented);
+        output.textures_delta.clear();
+        FrameOutput {
+            output,
+            close_requests,
+        }
+    }
+
+    fn collect(node: egui_dockspace::DockspaceNodeView<'_>, items: &mut Vec<ItemId>) {
+        if let Some(tabs) = node.tabs() {
+            items.extend_from_slice(tabs.items());
+        } else {
+            for child in node.split().unwrap().children() {
+                collect(child, items);
+            }
+        }
+    }
+
+    for last_direction in ["Dockspace center drop guide", "Dockspace left drop guide"] {
+        let context = Context::default();
+        context.enable_accesskit();
+        let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+            SURFACE,
+            DockspaceRootLayout::new(ROOT, DockspaceNode::tabs([FIRST, SECOND])),
+        )
+        .with_contained(DockspaceContainedLayout::new(
+            FLOATING,
+            DockspaceRootLayout::new(
+                FLOATING_ROOT,
+                DockspaceNode::central_tabs_with_selection([THIRD, FOURTH], Some(FOURTH)).unwrap(),
+            ),
+            LogicalRect::new(850.0, 80.0, 360.0, 410.0).unwrap(),
+        ))])
+        .unwrap();
+        let mut dock =
+            Dockspace::builder(("central-contained-tabs-redock", last_direction), layout)
+                .style(instrumented_style())
+                .build()
+                .unwrap();
+        frame(&context, &mut dock, Vec::new());
+
+        for (item, label, direction) in [
+            (THIRD, "Third", "Dockspace center drop guide"),
+            (FOURTH, "Fourth", last_direction),
+        ] {
+            let stable = frame(&context, &mut dock, Vec::new());
+            let (tab, _) = accesskit_node(&stable.output, Role::Tab, label);
+            let source = tab_center(&stable.output, label);
+            frame(&context, &mut dock, vec![Event::PointerMoved(source)]);
+            assert!(
+                context.viewport(|viewport| viewport
+                    .hits
+                    .drag
+                    .is_some_and(|hit| hit.id.accesskit_id() == tab)),
+                "{label} must start from its actual tab, including the last tab"
+            );
+            frame(&context, &mut dock, vec![pointer_button(source, true)]);
+            assert!(dock.has_active_gesture());
+            frame(
+                &context,
+                &mut dock,
+                vec![Event::PointerMoved(source + vec2(-20.0, 16.0))],
+            );
+            let preview = settle_until(8, || {
+                let frame = frame(
+                    &context,
+                    &mut dock,
+                    vec![Event::PointerMoved(Pos2::new(640.0, 424.0))],
+                );
+                let missing = if try_node_rect(&frame.output, Role::Label, direction).is_some() {
+                    Vec::new()
+                } else {
+                    vec!["main-root drop guide"]
+                };
+                (frame, missing)
+            })
+            .unwrap();
+            let target = node_center(&preview.output, Role::Label, direction);
+            frame(&context, &mut dock, vec![Event::PointerMoved(target)]);
+            frame(&context, &mut dock, vec![pointer_button(target, false)]);
+            frame(&context, &mut dock, Vec::new());
+            let moved = dock.view().item(item).unwrap();
+            assert_eq!(
+                moved.contained(),
+                None,
+                "{label} must actually dock into the main root"
+            );
+            assert_eq!(moved.root(), ROOT);
+            assert!(!dock.has_active_gesture());
+            if item == THIRD {
+                let source = dock.view().contained(FLOATING).unwrap().root().unwrap();
+                assert_eq!(source.content().unwrap().tabs().unwrap().items(), &[FOURTH]);
+            }
+        }
+
+        let surface = dock.view().surface(SURFACE).unwrap();
+        assert_eq!(
+            surface.contained_count(),
+            0,
+            "docking the last central tab must retire its empty floating presentation ({last_direction})"
+        );
+        assert!(dock.view().contained(FLOATING).is_none());
+        let mut items = Vec::new();
+        collect(surface.main_root().unwrap().content().unwrap(), &mut items);
+        items.sort_unstable();
+        assert_eq!(items, [FIRST, SECOND, THIRD, FOURTH]);
+        let stable = frame(&context, &mut dock, Vec::new());
+        let first = tab_center(&stable.output, "First");
+        frame(
+            &context,
+            &mut dock,
+            vec![
+                Event::PointerMoved(first),
+                pointer_button(first, true),
+                pointer_button(first, false),
+            ],
+        );
+        assert!(
+            dock.view().item(FIRST).unwrap().is_selected(),
+            "retiring the floating root must leave tab selection usable"
+        );
+        let stable = frame(&context, &mut dock, Vec::new());
+        let second = tab_center(&stable.output, "Second");
+        frame(
+            &context,
+            &mut dock,
+            vec![Event::PointerMoved(second), pointer_button(second, true)],
+        );
+        frame(
+            &context,
+            &mut dock,
+            vec![Event::PointerMoved(second + vec2(40.0, 80.0))],
+        );
+        assert!(
+            dock.has_active_gesture(),
+            "retirement must permit a new real docking gesture"
+        );
+        frame(&context, &mut dock, key_press(Key::Escape));
+        assert!(!dock.has_active_gesture());
+        assert_eq!(surface_ids(&dock), [SURFACE]);
+    }
+}
+
+#[test]
 fn first_contained_drag_projection_paints_the_same_guide_it_hits() {
     let context = Context::default();
     context.enable_accesskit();

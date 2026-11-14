@@ -170,6 +170,62 @@ fn indexed_drag_source_preparation_matches_live_payload_rejections() {
 }
 
 #[test]
+fn singleton_central_root_coverage_matches_its_presentation_in_indexed_and_live_paths() {
+    use crate::graph::ContainedFloating;
+    use crate::ids::FloatingPresentationId;
+
+    let root = RootId::new(1);
+    let surface = SurfaceId::new(1);
+    let item = ItemId::new(7);
+    for contained in [false, true] {
+        for nested in [false, true] {
+            let mut builder = Workspace::builder();
+            let central = builder.insert_node(Node::tabs(if nested { vec![] } else { vec![item] }));
+            let (root_node, source_tabs) = if nested {
+                let tabs = builder.insert_node(Node::tabs([item]));
+                let split = builder
+                    .insert_node(Node::equal_split(Axis::Horizontal, [central, tabs]).unwrap());
+                (split, tabs)
+            } else {
+                (central, central)
+            };
+            builder.set_root(root, RootRecord::new(root_node).with_central(central));
+            if contained {
+                let floating = FloatingPresentationId::new(1);
+                builder.set_surface(surface, SurfacePresentation::rootless());
+                builder.set_contained_floating(
+                    floating,
+                    ContainedFloating::new(
+                        root,
+                        LogicalRect::new(20.0, 20.0, 320.0, 240.0).unwrap(),
+                    ),
+                );
+                builder.attach_contained(surface, floating).unwrap();
+            } else {
+                builder.set_surface(surface, SurfacePresentation::with_main(root));
+            }
+            let engine = DockEngine::new(builder.build().unwrap(), DockPolicy::default()).unwrap();
+            let payload = MovePayload::Item(
+                engine
+                    .workspace
+                    .capture_item_source(root, source_tabs, item)
+                    .unwrap(),
+            );
+            let indexed = prepare(&engine, &payload).unwrap();
+            assert_eq!(Ok(indexed.clone()), prepare_live(&engine, &payload));
+            assert_eq!(indexed.0, surface);
+            assert_eq!(
+                indexed.1,
+                contained.then(|| engine
+                    .workspace
+                    .capture_node_source(root, root_node)
+                    .unwrap()),
+            );
+        }
+    }
+}
+
+#[test]
 fn indexed_drag_source_preparation_reuses_current_root_fingerprints() {
     let fixture = fixture();
     let engine = &fixture.engine;

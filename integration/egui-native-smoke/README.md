@@ -26,11 +26,13 @@ simultaneous Inspector/Assets children while retaining its PID, exact window ID,
 and destruction assertions. Unicode captions are compared in Python rather than
 through the window-search tool's locale-sensitive regular expressions.
 
-The separate `basic --command-smoke` journey retains its nine docking commands
+The separate `basic --command-smoke` journey exercises eleven docking commands
 and applies four styles while a native child is live: geometry, visual-only,
 unchanged, and restored defaults. It checks each terminal result, fresh child
 content bounds, the unchanged physical window ID, and retained application data
-before completing the second native round trip.
+before completing the second native round trip. It then drains the central
+contained group and the remaining floating pane, requiring all floating shells
+to retire while application content remains intact.
 
 ## Run against a built editor
 

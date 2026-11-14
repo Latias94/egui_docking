@@ -735,10 +735,10 @@ impl DockEngine {
             .root(root)
             .ok_or(crate::error::CommandError::MissingRoot { root })?;
         let complete = match payload {
-            MovePayload::Item(_) => {
-                record.central.is_none()
-                    && self.workspace.collect_items_in_subtree(record.node).len() == 1
-            }
+            MovePayload::Item(_) => self.workspace.item_move_removes_root(
+                root,
+                self.workspace.collect_items_in_subtree(record.node).len(),
+            ),
             MovePayload::Tabs(source) | MovePayload::Subtree(source) => {
                 source.node() == record.node
             }

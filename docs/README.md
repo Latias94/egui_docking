@@ -38,3 +38,4 @@
 - [Native window composition](adr/0003-native-window-composition.md)
 - [Separate official and fork workspaces](adr/0004-isolate-native-forks.md)
 - [Motion and presentation geometry](adr/0005-motion-and-presentation-geometry.md)
+- [Complete source-root lifecycle](adr/0006-complete-root-lifecycle.md)

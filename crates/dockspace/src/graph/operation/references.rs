@@ -331,9 +331,8 @@ fn move_removes_complete_root(
         .get(&root)
         .ok_or(CommandError::MissingRoot { root })?;
     Ok(match payload {
-        MovePayload::Item(_) => {
-            record.central.is_none() && workspace.collect_items_in_subtree(record.node).len() == 1
-        }
+        MovePayload::Item(_) => workspace
+            .item_move_removes_root(root, workspace.collect_items_in_subtree(record.node).len()),
         MovePayload::Tabs(source) | MovePayload::Subtree(source) => source.node() == record.node,
     })
 }
