@@ -1,5 +1,6 @@
 //! Regressions for translation after committed core overload cancellation.
 
+use super::mouse::NativeMouseState;
 use super::*;
 use crate::viewport_map::NativeViewportMap;
 use dockspace::model::{
@@ -8,12 +9,13 @@ use dockspace::model::{
 };
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
-    DockspaceSession, HostInputOutcome, HostWindowToken, NativePointerRoster, NativeSurfaceBinding,
-    SurfaceUnavailableReason,
+    DockspaceSession, HostInputOutcome, HostWindowToken, NativePointerRoster, NativeScrollDeviceId,
+    NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum, NativeScrollPhase,
+    NativeScrollSequenceId, NativeSurfaceBinding, SurfaceUnavailableReason,
 };
 use eframe::egui::ViewportId;
 use winit::dpi::PhysicalPosition;
-use winit::event::{PointerEventFacts, PointerWindowRoute, Touch};
+use winit::event::{DeviceId, MouseScrollDelta, PointerEventFacts, PointerWindowRoute, Touch};
 use winit::window::WindowId;
 
 fn record(event: WindowEvent) -> NativeWindowEventRecord {
@@ -179,14 +181,11 @@ fn binding_and_provider_terminals_reuse_all_button_contact_and_scroll_slots() {
     let Some(NativePointerDeviceEntry::Live(device)) = translator.devices.get(&mouse) else {
         panic!("binding retirement retains the exact mouse identity");
     };
-    assert_eq!(device.mouse.buttons.len(), 64);
-    assert!(
-        device
-            .mouse
-            .buttons
-            .values()
-            .all(|button| matches!(button, NativeMouseButtonState::Cancelled))
+    assert_eq!(
+        device.mouse.owned_button_capacity_bytes(),
+        64 * NativeMouseState::button_slot_capacity_bytes()
     );
+    assert!((0..64).all(|button| !device.mouse.is_pressed(NativePointerButton::Other(button))));
     assert_eq!(
         translator
             .devices
