@@ -437,6 +437,15 @@ impl<P: PaneView> NativeRuntimeState<P> {
         main.or_else(|| surface.contained().next()?.root())
     }
 
+    fn host_root_may_retire(&self, root: DockspaceRootView<'_>) -> bool {
+        let view = self.coordinator.session().view();
+        let host_root_is_main = view
+            .surface(self.root_surface)
+            .and_then(|surface| surface.main_root())
+            .is_some_and(|main| main.id() == root.id());
+        !host_root_is_main || root.central().is_none()
+    }
+
     fn command_removes_host_surface(&self, command: &crate::NativeCommand) -> bool {
         use crate::NativeCommand;
 
@@ -447,8 +456,11 @@ impl<P: PaneView> NativeRuntimeState<P> {
         let Some(root) = self.sole_host_root() else {
             return false;
         };
-        let complete_item = |item| root.contains_only_item(item);
-        let complete_tabs = |group: &PreparedTabsGroup| root.contains_only_tabs_group(group);
+        let may_retire = self.host_root_may_retire(root);
+        let complete_item = |item| root.contains_only_item(item) && may_retire;
+        let complete_tabs = |group: &PreparedTabsGroup| {
+            root.contains_only_tabs_group(group) && may_retire
+        };
         let view = self.coordinator.session().view();
         let target = match command {
             NativeCommand::DockItem { item, placement } if complete_item(*item) => {
@@ -577,7 +589,9 @@ impl<P: PaneView> NativeRuntimeState<P> {
         };
         match target {
             ClosePlanTarget::Root { root: target } => root.id() == target,
-            ClosePlanTarget::Item { item } => root.contains_only_item(item),
+            ClosePlanTarget::Item { item } => {
+                root.contains_only_item(item) && self.host_root_may_retire(root)
+            }
             ClosePlanTarget::Surface { .. } => false,
         }
     }
