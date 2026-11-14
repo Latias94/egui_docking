@@ -154,17 +154,21 @@ fn paint_native_error_status(
             if presentation == NativeErrorPresentation::RetainedOverlay {
                 ui.add_space(8.0);
             }
-            ui.add(
+            let response = ui.add(
                 egui::Label::new(
                     egui::RichText::new(message)
                         .font(egui::FontId::proportional(13.0))
                         .color(text_color),
                 )
-                .selectable(false)
+                // Keep the compact status strip single-line, but expose the
+                // complete error chain on hover and to text selection. A
+                // narrow native window must not hide the useful cause behind
+                // the generic stopped message.
+                .selectable(true)
                 .sense(egui::Sense::hover())
-                .show_tooltip_when_elided(false)
                 .truncate(),
             );
+            response.on_hover_text(message);
         },
     );
 }

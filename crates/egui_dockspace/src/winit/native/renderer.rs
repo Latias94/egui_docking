@@ -32,14 +32,18 @@ impl DropReason {
     }
 
     pub(super) const fn needs_retry(self) -> bool {
-        matches!(self, Self::Outdated | Self::Lost | Self::TimedOut)
+        matches!(
+            self,
+            Self::RecreationFailed | Self::Outdated | Self::Lost | Self::TimedOut
+        )
     }
 
     pub(super) const fn retry_delay(self) -> Duration {
-        if self.needs_retry() {
-            Duration::from_millis(16)
-        } else {
-            Duration::from_millis(250)
+        match self {
+            Self::Outdated | Self::Lost | Self::TimedOut => Duration::from_millis(16),
+            Self::RecreationFailed | Self::ZeroSized | Self::Occluded | Self::Validation => {
+                Duration::from_millis(250)
+            }
         }
     }
 }
@@ -253,5 +257,33 @@ impl Drop for WgpuRenderer {
     fn drop(&mut self) {
         // The renderer and context are shutting down; no future frame will use these deltas.
         self.pending_textures.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DropReason;
+    use std::time::Duration;
+
+    #[test]
+    fn failed_surface_recreation_keeps_the_runner_wakeable() {
+        assert!(DropReason::RecreationFailed.needs_retry());
+        assert_eq!(
+            DropReason::RecreationFailed.retry_delay(),
+            Duration::from_millis(250)
+        );
+    }
+
+    #[test]
+    fn transient_surface_loss_keeps_the_fast_recovery_budget() {
+        assert_eq!(DropReason::Lost.retry_delay(), Duration::from_millis(16));
+        assert_eq!(
+            DropReason::Outdated.retry_delay(),
+            Duration::from_millis(16)
+        );
+        assert_eq!(
+            DropReason::TimedOut.retry_delay(),
+            Duration::from_millis(16)
+        );
     }
 }
