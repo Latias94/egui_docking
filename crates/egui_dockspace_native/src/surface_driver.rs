@@ -160,11 +160,10 @@ fn paint_native_error_status(
                         .font(egui::FontId::proportional(13.0))
                         .color(text_color),
                 )
-                // Keep the compact status strip single-line, but expose the
-                // complete error chain on hover and to text selection. A
-                // narrow native window must not hide the useful cause behind
-                // the generic stopped message.
-                .selectable(true)
+                // Keep the compact status strip inert, but expose the complete
+                // error chain on hover. A narrow native window must not hide
+                // the useful cause behind the generic stopped message.
+                .selectable(false)
                 .sense(egui::Sense::hover())
                 .truncate(),
             );
