@@ -282,6 +282,21 @@ impl<'a> DockspaceRootView<'a> {
         })
     }
 
+    /// Returns whether an empty central leaf keeps this root alive.
+    ///
+    /// Only the main root of a logical surface retains an empty central area;
+    /// contained roots are retired once their content is gone. This is the
+    /// renderer-neutral lifecycle rule used by native hosts before admitting a
+    /// move or close that would empty the root.
+    #[must_use]
+    pub fn retains_empty_central_root(self) -> bool {
+        self.central.is_some()
+            && matches!(
+                self.workspace.presentation_for_root(self.id),
+                Some(crate::workspace::RootPresentationOwner::Main { .. })
+            )
+    }
+
     /// Returns whether this complete root contains exactly `item` and no other
     /// content.
     ///
@@ -314,10 +329,9 @@ impl<'a> DockspaceRootView<'a> {
     /// Returns whether this root contains no content outside one captured tabs
     /// group.
     ///
-    /// The captured group must still refer to a node in this root. Empty tabs
-    /// leaves are ignored, which keeps the query aligned with root retirement
-    /// after a nested split has been drained. The caller remains responsible
-    /// for checking the capture against the current workspace revision.
+    /// The captured group must still refer to the current node in this root.
+    /// Empty tabs leaves are ignored, which keeps the query aligned with root
+    /// retirement after a nested split has been drained.
     #[must_use]
     pub fn contains_only_tabs_group(self, group: &PreparedTabsGroup) -> bool {
         if group.source.root != self.id

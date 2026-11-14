@@ -438,12 +438,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
     }
 
     fn host_root_may_retire(&self, root: DockspaceRootView<'_>) -> bool {
-        let view = self.coordinator.session().view();
-        let host_root_is_main = view
-            .surface(self.root_surface)
-            .and_then(|surface| surface.main_root())
-            .is_some_and(|main| main.id() == root.id());
-        !host_root_is_main || root.central().is_none()
+        !root.retains_empty_central_root()
     }
 
     fn command_removes_host_surface(&self, command: &crate::NativeCommand) -> bool {
