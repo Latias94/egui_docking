@@ -167,7 +167,7 @@ fn paint_native_error_status(
                 .sense(egui::Sense::hover())
                 .truncate(),
             );
-            response.on_hover_text(message);
+            response.on_disabled_hover_text(message);
         },
     );
 }
