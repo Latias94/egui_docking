@@ -9,6 +9,8 @@ use super::*;
 use crate::host_frame::NativeSurfacePaint;
 use crate::receiver::test_support::present_completed_output;
 
+mod scale_changes;
+
 struct Panes(BTreeMap<ItemId, String>);
 
 impl PaneView for Panes {
@@ -133,6 +135,8 @@ pub(super) struct Editor {
     ordinal: u64,
     pass: u64,
     desktop: bool,
+    native_scale: f32,
+    presentation_scale: f32,
 }
 
 impl Editor {
@@ -156,6 +160,8 @@ impl Editor {
             ordinal: 0,
             pass: 0,
             desktop,
+            native_scale: 2.0,
+            presentation_scale: 1.5,
         }
     }
 
@@ -164,7 +170,7 @@ impl Editor {
         let mut input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
-                egui::vec2(800.0, 600.0),
+                egui::vec2(1200.0, 900.0) / self.presentation_scale,
             )),
             time: Some(Duration::from_millis(self.pass * 16).as_secs_f64()),
             ..Default::default()
@@ -173,7 +179,7 @@ impl Editor {
             .viewports
             .get_mut(&ViewportId::ROOT)
             .unwrap()
-            .native_pixels_per_point = Some(2.0);
+            .native_pixels_per_point = Some(self.native_scale);
         let mut encoded = None;
         let output = self.context.run_ui(input, |ui| {
             let outline_selected = self
@@ -194,7 +200,7 @@ impl Editor {
                 .measure_surface(
                     FIRST_SURFACE,
                     ui,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 94.0), egui::pos2(800.0, 600.0)),
+                    egui::Rect::from_min_max(egui::pos2(0.0, 94.0), ui.max_rect().max),
                     ui.max_rect(),
                     &self.panes,
                     &style,
@@ -276,8 +282,8 @@ impl Editor {
             ));
         });
         let pixels_per_point = output.pixels_per_point;
-        assert_eq!(pixels_per_point, 1.5);
         output.drop_without_applying_deltas();
+        assert_eq!(pixels_per_point, self.presentation_scale);
         let (scene, output, paint) = encoded.unwrap();
         EncodedScene {
             scene,
@@ -347,7 +353,22 @@ impl Editor {
         self.now.store(40 + self.ordinal, Ordering::SeqCst);
         let record = if NativeWindowEventClass::classify(&event) == NativeWindowEventClass::Pointer
         {
-            capture(&self.native, self.binding, self.ordinal, event)
+            let coordinates = self
+                .native
+                .session
+                .native_local_coordinates(self.binding)
+                .unwrap();
+            self.native.bridge.with_viewports(|routes| {
+                NativeWindowEventRecord::for_test_local_capture(
+                    self.ordinal,
+                    WindowId::from(WINDOW),
+                    Some(ViewportId::ROOT),
+                    event,
+                    routes,
+                    Some(coordinates),
+                    Some(coordinates.geometry()),
+                )
+            })
         } else {
             NativeWindowEventRecord::for_test(
                 self.ordinal,
@@ -371,11 +392,31 @@ impl Editor {
         point: LogicalPoint,
         state: Option<ElementState>,
     ) -> HostFrameReport {
-        self.callback(if self.desktop {
-            raw_desktop_event(point, state)
-        } else {
-            raw_event(point, state, 2.0)
-        })
+        let mut event = raw_event(point, state, f64::from(self.native_scale));
+        let position = PhysicalPosition::new(
+            point.x() * f64::from(self.presentation_scale),
+            point.y() * f64::from(self.presentation_scale),
+        );
+        let (WindowEvent::CursorMoved { facts, .. } | WindowEvent::MouseInput { facts, .. }) =
+            &mut event
+        else {
+            unreachable!("the fixture only creates mouse samples");
+        };
+        facts.surface_position = Some(position);
+        if self.desktop {
+            facts.desktop_position = Some(PhysicalPosition::new(
+                400.0 + position.x,
+                -300.0 + position.y,
+            ));
+            facts.hover = PointerWindowRoute::Window(WindowId::from(WINDOW));
+        }
+        if let WindowEvent::CursorMoved {
+            position: cursor, ..
+        } = &mut event
+        {
+            *cursor = position;
+        }
+        self.callback(event)
     }
 
     pub(super) fn hold_output(&mut self) -> PaintedSurfaceOutput {

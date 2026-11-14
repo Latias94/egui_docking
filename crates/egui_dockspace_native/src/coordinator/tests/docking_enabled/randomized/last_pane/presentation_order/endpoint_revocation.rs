@@ -1,38 +1,56 @@
 //! Either endpoint can revoke a released drag before its held preview settles.
+//!
+//! Controlled window snapshots exercise reducer authority, not native
+//! `ScaleFactorChanged` callbacks or GPU presentation.
 
 use super::*;
 use dockspace::runtime::PaintedSurfaceOutput;
 
+mod window_change;
+
+use window_change::WindowChange;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Endpoint {
+    Target,
+    Source,
+}
+
+impl Endpoint {
+    const fn index(self) -> usize {
+        match self {
+            Self::Target => 0,
+            Self::Source => 1,
+        }
+    }
+}
+
 fn endpoint_revocation(
-    source_changed: bool,
-    change_scale: bool,
+    endpoint: Endpoint,
+    change: WindowChange,
     result: SurfacePresentationResult,
 ) {
     let seed = 0x0e90_ca1e
-        + 4 * u64::from(source_changed)
-        + 2 * u64::from(change_scale)
+        + 16 * endpoint as u64
+        + 2 * change as u64
         + u64::from(matches!(result, SurfacePresentationResult::Dropped));
     let mut fixture = dragging(seed);
-    fixture.trace.event((
-        "endpoint invalidation",
-        source_changed,
-        change_scale,
-        result,
-    ));
+    fixture
+        .trace
+        .event(("endpoint invalidation", endpoint, change, result));
     let stale = hold_target_preview(&mut fixture.native, fixture.host);
     let pending = release(&mut fixture);
     let version = fixture.native.session.version();
-    let origin = if source_changed { 720.0 } else { 0.0 };
-    let changed = if change_scale {
-        ready_window_facts(origin).with_presentation_scale_factor(ScaleFactor::new(2.0).unwrap())
-    } else {
-        ready_window_facts(origin).with_presentation(NativeWindowPresentationState::Hidden)
-    };
     let mut windows = [
         (fixture.host, ready_window_facts(0.0)),
         (fixture.child, ready_window_facts(720.0)),
     ];
-    windows[usize::from(source_changed)].1 = changed;
+    let binding = windows[endpoint.index()].0;
+    let original_coordinates = fixture.native.session.native_local_coordinates(binding);
+    let original_placement = fixture.native.session.native_surface_placement(binding);
+    assert!(original_coordinates.is_some());
+    assert!(original_placement.is_some());
+    windows[endpoint.index()].1 = change.facts(x(binding.surface()));
     fixture
         .native
         .report_snapshot(
@@ -51,6 +69,18 @@ fn endpoint_revocation(
     assert_eq!(fixture.native.session.version(), version);
     assert!(fixture.native.session.has_pending_presentation());
     assert_child_retained(&fixture.native, fixture.child);
+    assert_eq!(
+        fixture.native.session.native_local_coordinates(binding),
+        original_coordinates,
+        "{}: dropping invalidation must preserve committed coordinates",
+        fixture.trace.replay()
+    );
+    assert_eq!(
+        fixture.native.session.native_surface_placement(binding),
+        original_placement,
+        "{}: dropping invalidation must preserve committed placement",
+        fixture.trace.replay()
+    );
 
     let mut invalidated = commit_boundary(&mut fixture.native);
     fixture
@@ -73,8 +103,9 @@ fn endpoint_revocation(
     assert!(!fixture.native.session.has_pending_presentation());
     assert!(!fixture.native.session.has_active_gesture());
     assert_child_retained(&fixture.native, fixture.child);
+    change.assert_applied(&fixture.native, binding);
 
-    settle_revoked_preview(&mut fixture, stale, result, source_changed);
+    settle_revoked_preview(&mut fixture, stale, result, endpoint);
 
     fixture
         .native
@@ -116,7 +147,7 @@ fn settle_revoked_preview(
     fixture: &mut DragFixture,
     stale: PaintedSurfaceOutput,
     result: SurfacePresentationResult,
-    source_changed: bool,
+    endpoint: Endpoint,
 ) {
     let version = fixture.native.session.version();
     let artifact = stale.presentation_artifact();
@@ -146,7 +177,7 @@ fn settle_revoked_preview(
     );
     // Changing the source does not invalidate the target's coordinates. Its
     // renderer terminal must settle without reviving the cancelled mutation.
-    if !source_changed || result == SurfacePresentationResult::Dropped {
+    if endpoint == Endpoint::Target || result == SurfacePresentationResult::Dropped {
         assert!(
             late.surface_presentation_commits()
                 .iter()
@@ -163,26 +194,55 @@ fn settle_revoked_preview(
     assert_terminal_stays_settled(&mut fixture.native);
 }
 
-#[test]
-fn a_target_coordinate_or_visibility_change_revokes_a_waiting_last_pane_release() {
-    for change_scale in [false, true] {
-        for result in [
-            SurfacePresentationResult::Presented,
-            SurfacePresentationResult::Dropped,
-        ] {
-            endpoint_revocation(false, change_scale, result);
+fn endpoint_changes(endpoints: &[Endpoint], changes: &[WindowChange]) {
+    for &endpoint in endpoints {
+        for &change in changes {
+            for result in [
+                SurfacePresentationResult::Presented,
+                SurfacePresentationResult::Dropped,
+            ] {
+                endpoint_revocation(endpoint, change, result);
+            }
         }
     }
 }
 
 #[test]
+fn a_target_coordinate_or_visibility_change_revokes_a_waiting_last_pane_release() {
+    endpoint_changes(
+        &[Endpoint::Target],
+        &[WindowChange::Hidden, WindowChange::PresentationScale],
+    );
+}
+
+#[test]
 fn a_source_coordinate_or_visibility_change_revokes_a_waiting_last_pane_release() {
-    for change_scale in [false, true] {
-        for result in [
-            SurfacePresentationResult::Presented,
-            SurfacePresentationResult::Dropped,
-        ] {
-            endpoint_revocation(true, change_scale, result);
-        }
-    }
+    endpoint_changes(
+        &[Endpoint::Source],
+        &[WindowChange::Hidden, WindowChange::PresentationScale],
+    );
+}
+
+#[test]
+fn a_native_dpi_change_alone_revokes_either_endpoint_without_changing_presentation_scale() {
+    endpoint_changes(
+        &[Endpoint::Source, Endpoint::Target],
+        &[WindowChange::NativeDpi],
+    );
+}
+
+#[test]
+fn desktop_origin_moves_in_both_directions_revoke_either_pending_endpoint() {
+    endpoint_changes(
+        &[Endpoint::Source, Endpoint::Target],
+        &[WindowChange::NegativeOrigin, WindowChange::PositiveOrigin],
+    );
+}
+
+#[test]
+fn a_client_physical_resize_revokes_either_pending_endpoint() {
+    endpoint_changes(
+        &[Endpoint::Source, Endpoint::Target],
+        &[WindowChange::ClientResize],
+    );
 }

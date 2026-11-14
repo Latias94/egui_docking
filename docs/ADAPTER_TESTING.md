@@ -102,6 +102,13 @@ Cancellation after chrome or viewport changes must restore current committed
 geometry even when the preview was not presented or the recovery output is
 dropped. Later structural changes must retain their normal motion policy.
 
+Vary native DPI, presentation scale, client physical size and desktop origin
+independently. Test a change followed by a return to the original numeric
+geometry: old receivers and cancelled gestures must remain revoked. Raw client
+pixel coordinates can stay valid across a presentation-scale change while the
+surface's hit geometry requires fresh presentation. Include delayed output
+terminals and a successful new gesture after remeasurement.
+
 Compose these checks across the adapter's real seams as well. A callback test
 which supplies its own receiver answers cannot detect disagreement between a
 framework's completed hit graph and the core geometry. The native editor
