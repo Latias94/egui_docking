@@ -1342,7 +1342,10 @@ fn smooth_scroll_rejects_token_replacement_until_the_active_sequence_terminates(
             .expect("replacement receipt roster is exact"),
         )
         .expect_err("a live smooth sequence cannot be replaced by a newer token");
-    assert_eq!(error, CoreHostFrameError::InputPrefixReductionFailed);
+    assert!(matches!(
+        error,
+        CoreHostFrameError::InputPrefixReductionFailed { .. }
+    ));
     drop(replacement);
     assert_eq!(engine.version(), version_before_rejection);
 
@@ -3162,14 +3165,16 @@ fn invalid_close_release_receipt_rolls_back_session_and_watermark_before_exact_r
             unexpected_hover,
         )])
         .expect("hover-only observation omits the required delivery probe");
-    assert_eq!(
-        failed.submit_pointer_receiver_receipts(
-            PointerReceiverReceiptBatch::new([
-                candidate.receipt(PointerReceiverObservation::Presented(incomplete))
-            ])
-            .expect("failed release receipt set is exact by candidate"),
+    assert!(
+        matches!(
+            failed.submit_pointer_receiver_receipts(
+                PointerReceiverReceiptBatch::new([
+                    candidate.receipt(PointerReceiverObservation::Presented(incomplete))
+                ])
+                .expect("failed release receipt set is exact by candidate"),
+            ),
+            Err(CoreHostFrameError::InputPrefixReductionFailed { .. })
         ),
-        Err(CoreHostFrameError::InputPrefixReductionFailed),
         "an invalid receipt poisons the private input prefix immediately",
     );
     assert!(matches!(
@@ -5355,13 +5360,13 @@ fn menu_row_wins_over_a_claimed_frame_blocker_without_advancing_watermark() {
         )])
         .expect("blocker answers the delivery probe"),
     );
-    assert_eq!(
+    assert!(matches!(
         frame.submit_pointer_receiver_receipts(
             PointerReceiverReceiptBatch::new([candidate.receipt(observation)])
                 .expect("one exact row receipt"),
         ),
-        Err(CoreHostFrameError::InputPrefixReductionFailed),
-    );
+        Err(CoreHostFrameError::InputPrefixReductionFailed { .. })
+    ));
     let error = frame
         .finish(&mut engine)
         .expect_err("the lower-priority blocker claim must be rejected atomically");
@@ -5607,19 +5612,21 @@ fn surface_local_tab_wrong_receiver_region_rejects_atomically() {
         PointerReceiverDeliveryDisposition::Dock(wrong_tab),
     )
     .expect("wrong region is structurally part of the same manifest");
-    assert_eq!(
-        failed.submit_pointer_receiver_receipts(
-            PointerReceiverReceiptBatch::new([failed_candidate.receipt(
-                PointerReceiverObservation::Presented(
-                    PresentedPointerReceiverObservation::new([
-                        PointerReceiverProbeReceipt::Delivery(wrong_delivery),
-                    ])
-                    .expect("delivery observation is structurally valid"),
-                ),
-            )])
-            .expect("receipt set is exact"),
+    assert!(
+        matches!(
+            failed.submit_pointer_receiver_receipts(
+                PointerReceiverReceiptBatch::new([failed_candidate.receipt(
+                    PointerReceiverObservation::Presented(
+                        PresentedPointerReceiverObservation::new([
+                            PointerReceiverProbeReceipt::Delivery(wrong_delivery),
+                        ])
+                        .expect("delivery observation is structurally valid"),
+                    ),
+                )])
+                .expect("receipt set is exact"),
+            ),
+            Err(CoreHostFrameError::InputPrefixReductionFailed { .. })
         ),
-        Err(CoreHostFrameError::InputPrefixReductionFailed),
         "invalid geometry poisons the input prefix immediately",
     );
     assert!(matches!(
@@ -6389,15 +6396,15 @@ fn known_hover_must_echo_the_exact_edge_point() {
             known_hover(interaction(&engine), mismatched),
         )])
         .expect("known hover probe is structurally valid");
-    assert_eq!(
+    assert!(matches!(
         frame.submit_pointer_receiver_receipts(
             PointerReceiverReceiptBatch::new([
                 candidate.receipt(PointerReceiverObservation::Presented(presented))
             ])
             .expect("one candidate receipt"),
         ),
-        Err(CoreHostFrameError::InputPrefixReductionFailed),
-    );
+        Err(CoreHostFrameError::InputPrefixReductionFailed { .. })
+    ));
     assert!(matches!(
         frame.finish(&mut engine),
         Err(EngineError::PointerReceiverReceipt {
@@ -6894,9 +6901,11 @@ fn failed_frame_receipts_cannot_replay_into_a_new_attempt() {
     replay
         .submit_surface_pointer_journal(provider, press_journal(0))
         .expect("retry has the same uncommitted provider sequence");
-    assert_eq!(
-        replay.submit_pointer_receiver_receipts(stale_receipts),
-        Err(CoreHostFrameError::InputPrefixReductionFailed),
+    assert!(
+        matches!(
+            replay.submit_pointer_receiver_receipts(stale_receipts),
+            Err(CoreHostFrameError::InputPrefixReductionFailed { .. })
+        ),
         "foreign frame attempts fail at the private receipt boundary",
     );
     assert!(matches!(

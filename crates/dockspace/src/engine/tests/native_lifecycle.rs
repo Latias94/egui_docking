@@ -3854,14 +3854,14 @@ fn explicit_tick_fatal_reduction_rolls_back_provenance_and_complete_state() {
             EngineInput::WorkspaceCommand { expected, command },
         )
         .expect("workspace command belongs to the semantic phase");
-    assert_eq!(
+    assert!(matches!(
         frame.append_configuration(
             source,
             SourceSequence::new(2),
             EngineInput::ReplacePolicy { expected, policy },
         ),
-        Err(CoreHostFrameError::InputPrefixReductionFailed)
-    );
+        Err(CoreHostFrameError::InputPrefixReductionFailed { .. })
+    ));
     let before = engine.candidate();
 
     assert!(matches!(
@@ -3898,13 +3898,15 @@ fn explicit_tick_counter_exhaustion_is_atomic() {
     let source = StableInputSourceId::new(42);
     let before_input_exhaustion = fixture.engine.candidate();
     let mut frame = begin_test_host_frame(&fixture.engine, fixture.presentation_host);
-    assert_eq!(
-        frame.append_input(
-            source,
-            SourceSequence::new(1),
-            EngineInput::ValidateWorkspace,
+    assert!(
+        matches!(
+            frame.append_input(
+                source,
+                SourceSequence::new(1),
+                EngineInput::ValidateWorkspace,
+            ),
+            Err(CoreHostFrameError::InputPrefixReductionFailed { .. })
         ),
-        Err(CoreHostFrameError::InputPrefixReductionFailed),
         "input sequence exhaustion fails while reducing the input prefix",
     );
     assert_eq!(

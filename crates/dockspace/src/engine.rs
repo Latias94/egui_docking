@@ -341,7 +341,7 @@ pub enum BackendIngressProgress {
 }
 
 /// Invalid construction of one core-owned host frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[derive(Debug, Clone, PartialEq, Error)]
 pub enum CoreHostFrameError {
     #[error(
         "host focus observation belongs to {submitted:?}, but this frame belongs to {expected:?}"
@@ -649,11 +649,15 @@ pub enum CoreHostFrameError {
     /// pointer provider.
     #[error("host frame has no active pointer provider for submitted receiver receipts")]
     PointerReceiverReceiptsUnexpected,
-    /// Exact receipt or semantic-input reduction failed inside the private
-    /// rollback candidate. The original typed engine error is returned by
-    /// `finish`; no later receiver challenge may be minted.
-    #[error("host-frame input-prefix reduction failed")]
-    InputPrefixReductionFailed,
+    /// Exact receipt, layout, or semantic-input reduction failed inside the
+    /// private rollback candidate. The same typed source is retained by every
+    /// later operation; no accepted prefix or receiver challenge may escape.
+    #[error("host-frame input-prefix reduction failed: {source}")]
+    InputPrefixReductionFailed {
+        /// Original reduction failure, preserved across facade conversion.
+        #[source]
+        source: Box<EngineError>,
+    },
 }
 
 /// An opaque causal position minted by the core while appending one host input.
@@ -870,7 +874,6 @@ pub struct CoreHostFrame {
     input_terminated_for_overload: bool,
     next_causal_ordinal: u64,
     poison: Option<CoreHostFrameError>,
-    input_prefix_error: Option<EngineError>,
 }
 
 /// Presentation-only phase of one rollbackable core host frame.

@@ -340,15 +340,15 @@ fn source_sequence_replay_rejects_the_entire_host_frame_atomically() {
     let before_input = engine.last_input_sequence();
     let mut replay = host.begin(&engine);
     append(&mut replay, SOURCE_B, 6, EngineInput::ValidateWorkspace);
-    assert_eq!(
+    assert!(matches!(
         support::append_host_input(
             &mut replay,
             SOURCE_A,
             SourceSequence::new(5),
             EngineInput::ValidateWorkspace,
         ),
-        Err(CoreHostFrameError::InputPrefixReductionFailed)
-    );
+        Err(CoreHostFrameError::InputPrefixReductionFailed { .. })
+    ));
     assert!(matches!(
         replay.finish(&mut engine),
         Err(EngineError::SourceSequenceNotIncreasing {
@@ -373,15 +373,15 @@ fn duplicate_source_sequence_inside_one_host_frame_is_atomic() {
     let mut host = TestPresentationHost::new(&mut engine);
     let mut frame = host.begin(&engine);
     append(&mut frame, SOURCE_A, 1, EngineInput::ValidateWorkspace);
-    assert_eq!(
+    assert!(matches!(
         support::append_host_input(
             &mut frame,
             SOURCE_A,
             SourceSequence::new(1),
             EngineInput::ValidateWorkspace,
         ),
-        Err(CoreHostFrameError::InputPrefixReductionFailed)
-    );
+        Err(CoreHostFrameError::InputPrefixReductionFailed { .. })
+    ));
     assert!(matches!(
         frame.finish(&mut engine),
         Err(EngineError::SourceSequenceNotIncreasing {

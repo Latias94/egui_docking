@@ -718,10 +718,10 @@ fn pointer_stream_end_rejects_delayed_scroll_tail_without_harming_successor() {
     let retention_before_delayed_tail = fixture.engine.runtime_retention_manifest();
     for phase in [ScrollPhase::Update, ScrollPhase::End] {
         let delta = matches!(phase, ScrollPhase::Update).then(|| line_delta(1.0, 0.0));
-        assert_eq!(
+        assert!(matches!(
             fixture.try_submit_known(phase, Some(token), delta),
-            Err(CoreHostFrameError::InputPrefixReductionFailed)
-        );
+            Err(CoreHostFrameError::InputPrefixReductionFailed { .. })
+        ));
         assert_eq!(fixture.engine.version(), version_before_delayed_tail);
         assert_eq!(
             fixture.engine.runtime_retention_manifest(),

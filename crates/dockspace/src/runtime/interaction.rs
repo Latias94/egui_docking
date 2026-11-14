@@ -1510,12 +1510,7 @@ impl DockspaceHostFrame<'_> {
             let observation = self.pointer_observation(candidate, input.receivers)?;
             let receipts = PointerReceiverReceiptBatch::new([candidate.receipt(observation)])
                 .map_err(|_| DockspaceInteractionError::PointerProtocolInvariant)?;
-            if let Err(error) = self.frame.submit_pointer_receiver_receipts(receipts) {
-                return Err(self
-                    .frame
-                    .take_input_prefix_error()
-                    .map_or_else(|| error.into(), Into::into));
-            }
+            self.frame.submit_pointer_receiver_receipts(receipts)?;
         }
         self.next_pointer_sequence = Some(sequence);
         self.pointer_input_submitted = true;

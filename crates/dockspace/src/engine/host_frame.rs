@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[cfg(test)]
+mod error_tests;
+
 /// Derived encoding state retained while one host run tries its actual passes.
 /// The semantic workspace and input journals stay in their single candidate.
 #[derive(Debug)]
@@ -190,8 +193,8 @@ impl CoreHostFramePrelude {
         presentation_host: PresentationHostLease,
         observation: HostPresentationObservation,
     ) -> Result<(), CoreHostFrameError> {
-        if let Some(error) = self.poison {
-            return Err(error);
+        if let Some(error) = &self.poison {
+            return Err(error.clone());
         }
         if self
             .presentation_observations
@@ -260,7 +263,7 @@ impl CoreHostFramePrelude {
     }
 
     fn reject(&mut self, error: CoreHostFrameError) -> Result<(), CoreHostFrameError> {
-        let retained = *self.poison.get_or_insert(error);
+        let retained = self.poison.get_or_insert(error).clone();
         Err(retained)
     }
 }
@@ -1013,8 +1016,8 @@ impl CoreHostFrame {
         &mut self,
         checkpoint: &CoreEncodingCheckpoint,
     ) -> Result<(), CoreHostFrameError> {
-        if let Some(error) = self.poison {
-            return Err(error);
+        if let Some(error) = &self.poison {
+            return Err(error.clone());
         }
         let mut presentation = checkpoint.presentation.clone();
         presentation
@@ -1184,7 +1187,6 @@ impl CoreHostFrame {
             input_terminated_for_overload: false,
             next_causal_ordinal: 0,
             poison: None,
-            input_prefix_error: None,
         };
         frame.refresh_presented_interaction_authority();
         Ok(frame)
@@ -1209,8 +1211,8 @@ impl CoreHostFrame {
         &mut self,
         freshly_measured: Option<SurfaceId>,
     ) -> Result<(), CoreHostFrameError> {
-        if let Some(error) = self.poison {
-            return Err(error);
+        if let Some(error) = &self.poison {
+            return Err(error.clone());
         }
         if self.presentation_phase_started {
             return Ok(());
@@ -1222,15 +1224,9 @@ impl CoreHostFrame {
             Ok(false) => Ok(()),
             Ok(true) => match self.refresh_presentation_snapshot() {
                 Ok(()) => Ok(()),
-                Err(error) => {
-                    self.input_prefix_error = Some(error);
-                    self.reject(CoreHostFrameError::InputPrefixReductionFailed)
-                }
+                Err(error) => self.reject_input_prefix(error),
             },
-            Err(error) => {
-                self.input_prefix_error = Some(error);
-                self.reject(CoreHostFrameError::InputPrefixReductionFailed)
-            }
+            Err(error) => self.reject_input_prefix(error),
         }
     }
 
@@ -1414,8 +1410,8 @@ impl CoreHostFrame {
         source_scope: &BTreeSet<ItemId>,
         target_scope: Arc<BTreeSet<ItemId>>,
     ) -> Result<(), CoreHostFrameError> {
-        if let Some(error) = self.poison {
-            return Err(error);
+        if let Some(error) = &self.poison {
+            return Err(error.clone());
         }
         self.ensure_input_prefix_complete()?;
         if self.configuration_phase_started {
@@ -1470,8 +1466,11 @@ impl CoreHostFrame {
     /// be dropped or finished through its normal rollback path.
     #[must_use]
     #[cfg(test)]
-    pub const fn input_prefix_error(&self) -> Option<&EngineError> {
-        self.input_prefix_error.as_ref()
+    pub fn input_prefix_error(&self) -> Option<&EngineError> {
+        match &self.poison {
+            Some(CoreHostFrameError::InputPrefixReductionFailed { source }) => Some(source),
+            _ => None,
+        }
     }
 
     pub(crate) fn proposed_workspace_root_rebounds(
@@ -1491,10 +1490,6 @@ impl CoreHostFrame {
                 _ => None,
             })
             .flat_map(|pairs| pairs.iter().copied())
-    }
-
-    pub(crate) fn take_input_prefix_error(&mut self) -> Option<EngineError> {
-        self.input_prefix_error.take()
     }
 
     pub(crate) fn has_native_placement_submission(&self) -> bool {
@@ -1535,8 +1530,8 @@ impl CoreHostFrame {
         &mut self,
         batch: BackendIngressBatch,
     ) -> Result<(), CoreHostFrameError> {
-        if let Some(error) = self.poison {
-            return Err(error);
+        if let Some(error) = &self.poison {
+            return Err(error.clone());
         }
         if self.backend_ingress.is_none() {
             return self.reject_value(CoreHostFrameError::BackendIngressUnexpected);
@@ -1612,8 +1607,8 @@ impl CoreHostFrame {
     }
 
     fn ensure_backend_ingress_boundary(&mut self) -> Result<(), CoreHostFrameError> {
-        if let Some(error) = self.poison {
-            return Err(error);
+        if let Some(error) = &self.poison {
+            return Err(error.clone());
         }
         if self.pending_pointer_segment.is_some()
             || !self
@@ -1836,8 +1831,7 @@ impl CoreHostFrame {
         let (mut outcomes, changed_surfaces, mut lifecycle_events) = match reduction {
             Ok(reduction) => reduction,
             Err(error) => {
-                self.input_prefix_error = Some(error);
-                return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
+                return self.reject_input_prefix(error);
             }
         };
 
@@ -1848,8 +1842,7 @@ impl CoreHostFrame {
         {
             Ok(settled) => settled,
             Err(error) => {
-                self.input_prefix_error = Some(error);
-                return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
+                return self.reject_input_prefix(error);
             }
         };
         if pending_settled
@@ -1857,8 +1850,7 @@ impl CoreHostFrame {
                 .candidate
                 .rebuild_presentation_requirements(self.candidate.last_input)
         {
-            self.input_prefix_error = Some(error);
-            return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
+            return self.reject_input_prefix(error);
         }
         if let Err(error) = self
             .candidate
@@ -1868,14 +1860,12 @@ impl CoreHostFrame {
                 &mut self.interaction_events,
             )
         {
-            self.input_prefix_error = Some(error);
-            return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
+            return self.reject_input_prefix(error);
         }
         self.presentation_observation_outcomes.append(&mut outcomes);
         self.last_causal_cause = Some(cause);
         if let Err(error) = self.refresh_presentation_snapshot() {
-            self.input_prefix_error = Some(error);
-            return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
+            return self.reject_input_prefix(error);
         }
         self.refresh_presented_interaction_authority();
         self.application_base = self.candidate.version;
@@ -1951,8 +1941,8 @@ impl CoreHostFrame {
         authority: PointerJournalSubmissionAuthority,
         surface_provider: Option<&SurfaceLocalPointerProvider>,
     ) -> Result<(), CoreHostFrameError> {
-        if let Some(error) = self.poison {
-            return Err(error);
+        if let Some(error) = &self.poison {
+            return Err(error.clone());
         }
         if self.input_terminated_for_overload {
             return self.reject(CoreHostFrameError::InputAfterOverloadCancellation);
@@ -2117,8 +2107,8 @@ impl CoreHostFrame {
         receipts: PointerReceiverReceiptBatch,
         from_backend_ingress: bool,
     ) -> Result<(), CoreHostFrameError> {
-        if let Some(error) = self.poison {
-            return Err(error);
+        if let Some(error) = &self.poison {
+            return Err(error.clone());
         }
         if self.backend_ingress.is_some() && !from_backend_ingress {
             return self.reject(CoreHostFrameError::BackendIngressRequired);
@@ -2146,8 +2136,7 @@ impl CoreHostFrame {
         let reduced = match reduction {
             Ok(reduced) => reduced,
             Err(error) => {
-                self.input_prefix_error = Some(error);
-                return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
+                return self.reject_input_prefix(error);
             }
         };
         let segment_cause = reduced
@@ -2158,16 +2147,14 @@ impl CoreHostFrame {
                 .candidate
                 .reconcile_pointer_provider_scope(cause, &mut self.interaction_events)
         {
-            self.input_prefix_error = Some(error);
-            return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
+            return self.reject_input_prefix(error);
         }
         self.last_causal_cause = segment_cause.or(self.last_causal_cause);
         self.vacancy_ledger.observe_bindings(&self.candidate);
         if let Err(error) =
             self.refresh_presentation_after_pointer_segment(presentation_before, &reduced)
         {
-            self.input_prefix_error = Some(error);
-            return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
+            return self.reject_input_prefix(error);
         }
         self.reduced_pointer_edges.extend(reduced);
         Ok(())
@@ -2253,8 +2240,8 @@ impl CoreHostFrame {
     /// configuration itself remains speculative until the complete host frame
     /// commits.
     pub fn begin_configuration_phase(&mut self) -> Result<(), CoreHostFrameError> {
-        if let Some(error) = self.poison {
-            return Err(error);
+        if let Some(error) = &self.poison {
+            return Err(error.clone());
         }
         if self.input_terminated_for_overload {
             return self.reject(CoreHostFrameError::InputAfterOverloadCancellation);
@@ -2306,8 +2293,8 @@ impl CoreHostFrame {
         input: EngineInput,
         from_backend_ingress: bool,
     ) -> Result<(), CoreHostFrameError> {
-        if let Some(error) = self.poison {
-            return Err(error);
+        if let Some(error) = &self.poison {
+            return Err(error.clone());
         }
         if let EngineInput::PublishHostFocusObservation { observation, .. } = &input
             && observation.host() != self.presentation_host
@@ -2389,12 +2376,10 @@ impl CoreHostFrame {
                 .candidate
                 .validate_and_advance_semantic_input_watermark([(source, source_sequence)])
         {
-            self.input_prefix_error = Some(error);
-            return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
+            return self.reject_input_prefix(error);
         }
         let Some(sequence) = self.candidate.last_input.checked_next() else {
-            self.input_prefix_error = Some(EngineError::InputSequenceExhausted);
-            return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
+            return self.reject_input_prefix(EngineError::InputSequenceExhausted);
         };
         self.candidate.last_input = sequence;
         let refresh_presented_interaction_authority = matches!(
@@ -2437,16 +2422,14 @@ impl CoreHostFrame {
         let outcome = match outcome {
             Ok(outcome) => outcome,
             Err(error) => {
-                self.input_prefix_error = Some(error);
-                return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
+                return self.reject_input_prefix(error);
             }
         };
         if let Err(error) = self
             .candidate
             .reconcile_pointer_provider_scope(cause, &mut self.interaction_events)
         {
-            self.input_prefix_error = Some(error);
-            return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
+            return self.reject_input_prefix(error);
         }
         if configuration {
             // Configuration may cancel an existing resize, but cannot edit its
@@ -2478,8 +2461,7 @@ impl CoreHostFrame {
                         .cancel_revoked_presentation_caused(cause, &mut self.interaction_events)
                 });
             if let Err(error) = result {
-                self.input_prefix_error = Some(error);
-                return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
+                return self.reject_input_prefix(error);
             }
         }
         self.vacancy_ledger
@@ -2489,12 +2471,10 @@ impl CoreHostFrame {
         self.last_causal_cause = Some(cause);
         self.reduced_inputs.push(outcome);
         if let Err(error) = self.candidate.rebuild_presentation_requirements(sequence) {
-            self.input_prefix_error = Some(error);
-            return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
+            return self.reject_input_prefix(error);
         }
         if let Err(error) = self.refresh_presentation_snapshot() {
-            self.input_prefix_error = Some(error);
-            return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
+            return self.reject_input_prefix(error);
         }
         if refresh_presented_interaction_authority {
             self.refresh_presented_interaction_authority();
@@ -2530,12 +2510,18 @@ impl CoreHostFrame {
     }
 
     fn reject(&mut self, error: CoreHostFrameError) -> Result<(), CoreHostFrameError> {
-        let retained = *self.poison.get_or_insert(error);
+        let retained = self.poison.get_or_insert(error).clone();
         Err(retained)
     }
 
+    fn reject_input_prefix(&mut self, source: EngineError) -> Result<(), CoreHostFrameError> {
+        self.reject(CoreHostFrameError::InputPrefixReductionFailed {
+            source: Box::new(source),
+        })
+    }
+
     fn reject_value<T>(&mut self, error: CoreHostFrameError) -> Result<T, CoreHostFrameError> {
-        let retained = *self.poison.get_or_insert(error);
+        let retained = self.poison.get_or_insert(error).clone();
         Err(retained)
     }
 
@@ -2547,8 +2533,8 @@ impl CoreHostFrame {
     pub(super) fn issue_presentation_obligations(
         &mut self,
     ) -> Result<Vec<HostPresentationObligation>, CoreHostFrameError> {
-        if let Some(error) = self.poison {
-            return Err(error);
+        if let Some(error) = &self.poison {
+            return Err(error.clone());
         }
         self.ensure_backend_ingress_complete()?;
         self.presentation_phase_started = true;
@@ -2573,8 +2559,8 @@ impl CoreHostFrame {
         obligation: HostPresentationObligation,
         disposition: HostPresentationDisposition,
     ) -> Result<Option<HostPresentationEmissionRequest>, CoreHostFrameError> {
-        if let Some(error) = self.poison {
-            return Err(error);
+        if let Some(error) = &self.poison {
+            return Err(error.clone());
         }
         let request = match disposition {
             HostPresentationDisposition::Painted(submitted) => {
@@ -2687,8 +2673,8 @@ impl CoreHostFrame {
         token: SurfaceContributionToken,
         interaction: HostInteractionPresentation,
     ) -> Result<HostPresentationEmissionRequest, CoreHostFrameError> {
-        if let Some(error) = self.poison {
-            return Err(error);
+        if let Some(error) = &self.poison {
+            return Err(error.clone());
         }
         let surface = token.surface();
         if obligation.slot() != (HostPresentationSlot::Surface { surface }) {
@@ -2762,8 +2748,8 @@ impl CoreHostFrame {
         &mut self,
         contribution: PreparedSurfaceContribution,
     ) -> Result<(), CoreHostFrameError> {
-        if let Some(error) = self.poison {
-            return Err(error);
+        if let Some(error) = &self.poison {
+            return Err(error.clone());
         }
         self.ensure_backend_ingress_complete()?;
         let surface = contribution.surface();
@@ -2781,7 +2767,7 @@ impl CoreHostFrame {
             self.surface_contributions.entry(surface)
         else {
             let error = CoreHostFrameError::DuplicateSurfaceContribution { surface };
-            let retained = *self.poison.get_or_insert(error);
+            let retained = self.poison.get_or_insert(error).clone();
             return Err(retained);
         };
         slot.insert(contribution);
@@ -2809,14 +2795,12 @@ impl CoreHostFrame {
         ) {
             Ok(outcome) => outcome,
             Err(error) => {
-                self.input_prefix_error = Some(error);
-                return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
+                return self.reject_input_prefix(error);
             }
         };
         self.compiled_surface_outcomes.insert(surface, outcome);
         if let Err(error) = self.refresh_presentation_snapshot() {
-            self.input_prefix_error = Some(error);
-            return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
+            return self.reject_input_prefix(error);
         }
         Ok(())
     }
@@ -3006,8 +2990,8 @@ impl CoreHostPresentationFrame {
         &mut self,
         reason: HostPresentationUnavailableReason,
     ) -> Result<(), CoreHostFrameError> {
-        if let Some(error) = self.frame.poison {
-            return Err(error);
+        if let Some(error) = &self.frame.poison {
+            return Err(error.clone());
         }
         match self
             .frame

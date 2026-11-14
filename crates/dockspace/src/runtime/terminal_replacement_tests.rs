@@ -104,7 +104,7 @@ fn duplicate_sequence_after_scope_expansion_poison_rolls_back_and_restore_retrie
         incoming.engine.workspace().clone(),
         incoming.engine.presentation_identity_frontier(),
     );
-    assert_eq!(
+    assert!(matches!(
         candidate.append_document_replacement(
             APPLICATION_INPUT_SOURCE,
             sequence,
@@ -112,8 +112,8 @@ fn duplicate_sequence_after_scope_expansion_poison_rolls_back_and_restore_retrie
             source_scope.as_ref(),
             Arc::clone(&target_scope),
         ),
-        Err(CoreHostFrameError::InputPrefixReductionFailed)
-    );
+        Err(CoreHostFrameError::InputPrefixReductionFailed { .. })
+    ));
     // This exact diagnostic proves append ran after the scope checks and expansion.
     assert!(matches!(
         candidate.input_prefix_error(),
@@ -125,17 +125,19 @@ fn duplicate_sequence_after_scope_expansion_poison_rolls_back_and_restore_retrie
             && *previous == sequence
             && *submitted == sequence
     ));
-    assert_eq!(
-        candidate.append_input(
-            APPLICATION_INPUT_SOURCE,
-            SourceSequence::new(sequence.get() + 1),
-            EngineInput::OpenItem {
-                expected: prefix_version,
-                item: INCOMING,
-                placement: DockPlacement::After(FIRST),
-            },
+    assert!(
+        matches!(
+            candidate.append_input(
+                APPLICATION_INPUT_SOURCE,
+                SourceSequence::new(sequence.get() + 1),
+                EngineInput::OpenItem {
+                    expected: prefix_version,
+                    item: INCOMING,
+                    placement: DockPlacement::After(FIRST),
+                },
+            ),
+            Err(CoreHostFrameError::InputPrefixReductionFailed { .. })
         ),
-        Err(CoreHostFrameError::InputPrefixReductionFailed),
         "expanded scope must not authorize further input after a failed append"
     );
     assert!(matches!(

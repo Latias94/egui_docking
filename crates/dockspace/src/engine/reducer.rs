@@ -258,14 +258,13 @@ impl DockEngine {
             input_terminated_for_overload: _,
             next_causal_ordinal: _,
             poison,
-            input_prefix_error,
         } = frame;
         let presentation_surface_scope = frozen_presentation_roster.surface_scope();
-        if let Some(source) = input_prefix_error {
-            return Err(source);
-        }
         if let Some(source) = poison {
-            return Err(EngineError::HostFramePoisoned { source });
+            return Err(match source {
+                CoreHostFrameError::InputPrefixReductionFailed { source } => *source,
+                source => EngineError::HostFramePoisoned { source },
+            });
         }
         if let Some(scope) = &item_identity_scope
             && let Some(item) = candidate

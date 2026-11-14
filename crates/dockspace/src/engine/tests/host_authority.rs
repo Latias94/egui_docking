@@ -3132,16 +3132,18 @@ fn foreign_engine_viewport_observation_is_rejected_atomically() {
     let expected_epoch = second.version().epoch();
     let mut frame = begin_test_host_frame(&second, second_host);
     let mut stream = TestInputStream::resume(&second, ENGINE_TEST_INPUT_SOURCE);
-    assert_eq!(
-        stream.append(
-            &mut frame,
-            EngineInput::PublishPlatformSnapshot {
-                provider,
-                expected_epoch,
-                snapshot: platform_snapshot_for_binding(first_binding),
-            },
+    assert!(
+        matches!(
+            stream.append(
+                &mut frame,
+                EngineInput::PublishPlatformSnapshot {
+                    provider,
+                    expected_epoch,
+                    snapshot: platform_snapshot_for_binding(first_binding),
+                },
+            ),
+            Err(CoreHostFrameError::InputPrefixReductionFailed { .. })
         ),
-        Err(CoreHostFrameError::InputPrefixReductionFailed),
         "a foreign viewport binding fails while reducing the input prefix",
     );
     let result = frame.finish(&mut second);
@@ -3218,16 +3220,18 @@ fn stale_inventory_envelope_rolls_back_the_complete_host_frame() {
 
     let mut frame = begin_test_host_frame(&engine, host);
     let mut stream = TestInputStream::resume(&engine, ENGINE_TEST_INPUT_SOURCE);
-    assert_eq!(
-        stream.append(
-            &mut frame,
-            EngineInput::PublishPlatformSnapshot {
-                provider,
-                expected_epoch,
-                snapshot: stale,
-            },
+    assert!(
+        matches!(
+            stream.append(
+                &mut frame,
+                EngineInput::PublishPlatformSnapshot {
+                    provider,
+                    expected_epoch,
+                    snapshot: stale,
+                },
+            ),
+            Err(CoreHostFrameError::InputPrefixReductionFailed { .. })
         ),
-        Err(CoreHostFrameError::InputPrefixReductionFailed),
         "a stale inventory envelope fails while reducing the input prefix",
     );
     let result = frame.finish(&mut engine);
@@ -3575,10 +3579,10 @@ fn arrangement_lock_rejects_private_workspace_replacement_without_advancing_auth
     let before = engine.candidate();
     let mut frame = begin_test_host_frame(&engine, host);
     let mut stream = TestInputStream::resume(&engine, ENGINE_TEST_INPUT_SOURCE);
-    assert_eq!(
+    assert!(matches!(
         stream.append(&mut frame, EngineInput::ReplaceWorkspace(replacement)),
-        Err(CoreHostFrameError::InputPrefixReductionFailed),
-    );
+        Err(CoreHostFrameError::InputPrefixReductionFailed { .. })
+    ));
     assert!(matches!(
         frame.finish(&mut engine),
         Err(EngineError::WorkspaceReplacementPolicyDenied {

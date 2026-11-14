@@ -138,9 +138,11 @@ fn submit_test_inputs(
 fn submit_test_input_expect_error(fixture: &mut Fixture, input: EngineInput) -> EngineError {
     let mut frame = fixture.presentation_host.begin(&fixture.engine);
     let mut input_stream = support::TestInputStream::resume(&fixture.engine, TEST_INPUT_SOURCE);
-    assert_eq!(
-        input_stream.append(&mut frame, input),
-        Err(CoreHostFrameError::InputPrefixReductionFailed),
+    assert!(
+        matches!(
+            input_stream.append(&mut frame, input),
+            Err(CoreHostFrameError::InputPrefixReductionFailed { .. })
+        ),
         "rejected test input must poison the host frame at the input prefix"
     );
     frame

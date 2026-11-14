@@ -224,9 +224,8 @@ proptest! {
                 index + 1 == segments.len(),
             );
             if index + 1 == segments.len() {
-                prop_assert_eq!(
-                    result,
-                    Err(CoreHostFrameError::InputPrefixReductionFailed),
+                prop_assert!(
+                    matches!(result, Err(CoreHostFrameError::InputPrefixReductionFailed { .. })),
                     "the deliberately invalid terminal receipt must poison the frame"
                 );
             } else {

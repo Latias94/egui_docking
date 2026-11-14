@@ -21,7 +21,6 @@ pub(super) const fn host_frame_error_kind(error: &CoreHostFrameError) -> Dockspa
         | Error::PresentationAttemptSpaceExhausted
         | Error::PresentationOutputRequestExhausted
         | Error::PointerReceiverRoster { .. }
-        | Error::InputPrefixReductionFailed
         | Error::PresentationObligationsAlreadyIssued
         | Error::PresentationObligationsNotIssued
         | Error::PresentationObligationsPartiallyResolved
@@ -38,6 +37,7 @@ pub(super) const fn host_frame_error_kind(error: &CoreHostFrameError) -> Dockspa
             DockspaceRuntimeErrorKind::Internal
         }
         Error::BackendIngressRejected { source } => backend_ingress_error_kind(source),
+        Error::InputPrefixReductionFailed { source } => engine_error_kind(source),
         Error::PointerJournalRejected { source } => pointer_journal_error_kind(source),
         Error::SurfaceLocalPointerProducerRejected { source } => {
             surface_pointer_provider_error_kind(*source)
@@ -542,8 +542,18 @@ mod tests {
                 DockspaceRuntimeErrorKind::Internal,
             ),
             (
-                CoreHostFrameError::InputPrefixReductionFailed,
+                CoreHostFrameError::InputPrefixReductionFailed {
+                    source: Box::new(crate::engine::EngineError::InputSequenceExhausted),
+                },
                 DockspaceRuntimeErrorKind::Internal,
+            ),
+            (
+                CoreHostFrameError::InputPrefixReductionFailed {
+                    source: Box::new(crate::engine::EngineError::BackendIngress {
+                        source: BackendIngressError::ProviderUnavailable,
+                    }),
+                },
+                DockspaceRuntimeErrorKind::Unsupported,
             ),
             (
                 CoreHostFrameError::BackendIngressRejected {
