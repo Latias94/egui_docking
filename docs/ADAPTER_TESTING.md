@@ -90,6 +90,13 @@ fresh press after each case. Check that the terminal is emitted at most once and
 the next interaction succeeds. Random seeds cannot cover a callback sequence
 which the generator's grammar excludes.
 
+For pointer resizing, check pane and handle geometry in the move frame before
+release, while the durable workspace version remains unchanged. Also send a
+release at a new position without a preceding move, and a complete gesture in
+one input batch. A dropped preview must not add a structural transition after
+release. Cancellation must restore the committed partition and accept a fresh
+press. Run these checks with default motion and without the motion feature.
+
 Compose these checks across the adapter's real seams as well. A callback test
 which supplies its own receiver answers cannot detect disagreement between a
 framework's completed hit graph and the core geometry. The native editor

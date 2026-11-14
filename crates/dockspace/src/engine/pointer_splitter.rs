@@ -315,6 +315,10 @@ impl DockEngine {
                     ));
                 }
             };
+        #[cfg(feature = "motion")]
+        if changed {
+            self.settle_resize_motion(resize.surface);
+        }
         interaction_events.push(InteractionEvent::new_caused(
             cause,
             self.version,
@@ -595,7 +599,7 @@ impl DockEngine {
                         interaction_events,
                     )?;
                     #[cfg(feature = "motion")]
-                    self.settle_semantic_resize_motion(surface);
+                    self.settle_resize_motion(surface);
                 }
                 Ok(InteractionOutcome::SplitterAdjusted { outcome, changed })
             }
@@ -739,7 +743,7 @@ impl DockEngine {
                         interaction_events,
                     )?;
                     #[cfg(feature = "motion")]
-                    self.settle_semantic_resize_motion(painted.stamp().surface());
+                    self.settle_resize_motion(painted.stamp().surface());
                 }
                 Ok(InteractionOutcome::SplitterAdjusted { outcome, changed })
             }

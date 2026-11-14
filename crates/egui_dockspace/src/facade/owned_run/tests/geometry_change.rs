@@ -10,6 +10,10 @@ use egui::{Key, Modifiers};
 
 use super::*;
 
+#[cfg(feature = "motion")]
+mod motion_recovery;
+mod resize_samples;
+
 const THIRD: ItemId = ItemId::new(3);
 
 #[derive(Default)]
@@ -61,7 +65,11 @@ struct Harness {
 }
 
 impl Harness {
-    fn frame(&mut self, time: f64, events: Vec<Event>) -> Frame {
+    fn run(
+        &mut self,
+        time: f64,
+        events: Vec<Event>,
+    ) -> (crate::DockspaceOutput, Vec<DockspaceManipulationStatus>) {
         let Self {
             entry,
             context,
@@ -98,6 +106,20 @@ impl Harness {
                 observe(response);
             }),
         };
+        (output, feedback)
+    }
+
+    fn frame(&mut self, time: f64, events: Vec<Event>) -> Frame {
+        self.frame_with_result(time, events, SurfacePresentationResult::Presented)
+    }
+
+    fn frame_with_result(
+        &mut self,
+        time: f64,
+        events: Vec<Event>,
+        result: SurfacePresentationResult,
+    ) -> Frame {
+        let (output, feedback) = self.run(time, events);
         let (mut output, receipt) = output.into_parts();
         output.textures_delta.clear();
         let nodes = &output
@@ -128,15 +150,15 @@ impl Harness {
             1,
             "the layout retains one ordinary divider at {time}"
         );
-        let result = Frame {
+        let frame = Frame {
             tabs,
             splitter: splitters[0],
             passes: output.platform_output.num_completed_passes,
             feedback,
         };
         output.drop_without_applying_deltas();
-        receipt.report(SurfacePresentationResult::Presented);
-        result
+        receipt.report(result);
+        frame
     }
 }
 

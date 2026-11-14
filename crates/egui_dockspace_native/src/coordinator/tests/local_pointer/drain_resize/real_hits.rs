@@ -128,7 +128,19 @@ fn drain_and_resize_with_completed_hits(
         editor.pointer(start, Some(ElementState::Pressed));
         assert!(editor.native.session.has_active_gesture());
         editor.pointer(target, None);
-        editor.present();
+        let preview = editor.present();
+        assert_ne!(
+            preview
+                .dividers
+                .iter()
+                .find(|other| other.visual == divider.visual)
+                .unwrap()
+                .draw,
+            divider.draw,
+            "the current native move must already resize the painted divider"
+        );
+        assert_eq!(editor.native.session.version(), before);
+        assert!(editor.native.session.has_active_gesture());
         let released = editor.pointer(target, Some(ElementState::Released));
         terminal(&released, Delivery::SplitterResize);
         assert_ne!(editor.native.session.version(), before);

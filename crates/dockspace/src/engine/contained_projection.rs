@@ -5,7 +5,7 @@ mod tests;
 
 use super::contained_geometry::{contained_manipulation_point, contained_move_geometry};
 use super::*;
-use crate::interaction::DragSessionId;
+use crate::interaction::{ActiveResizeView, DragSessionId};
 use crate::presentation::scene::{ContainedLayoutOwner, ContainedLayoutProjection};
 use std::sync::Arc;
 
@@ -181,7 +181,16 @@ impl DockEngine {
                     false
                 }
             };
-            if candidate.plan().contained_projection() == projection && !motion_changed {
+            let resize_updates = self
+                .interaction
+                .active_resize_view()
+                .filter(|resize| resize.surface() == surface)
+                .map(ActiveResizeView::updates)
+                .unwrap_or_default();
+            if candidate.plan().contained_projection() == projection
+                && candidate.plan().resize_projection() == resize_updates
+                && !motion_changed
+            {
                 continue;
             }
             let Some(layout) = candidate.plan().layout_facts() else {

@@ -32,7 +32,7 @@ struct PaneMotion {
 }
 
 impl DockEngine {
-    pub(super) fn settle_semantic_resize_motion(&mut self, surface: SurfaceId) {
+    pub(super) fn settle_resize_motion(&mut self, surface: SurfaceId) {
         if let Some(requirements) = self.presentation_requirements().surface(surface) {
             let ticket = requirements.ticket();
             // Keep the target immediate across dropped outputs and preparation
