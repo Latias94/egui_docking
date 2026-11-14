@@ -848,7 +848,7 @@ fn semantic_termination_waits_for_the_provider_terminal_without_reopening() {
         ScrollPhase::Update,
         Some(token),
         Some(line_delta(1.0, 0.0)),
-        PointerReceiverDeliveryDisposition::NoReceiver,
+        PointerReceiverDeliveryDisposition::EmptyLane,
     );
     assert!(matches!(
         terminated.reduced_pointer_edges()[0].interaction_outcomes(),

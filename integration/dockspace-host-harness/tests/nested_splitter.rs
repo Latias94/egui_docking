@@ -408,11 +408,11 @@ impl PointerSample {
 
     fn input(&self, event: Event) -> HostPointerInput<'_> {
         let facts = self.click.as_ref().map_or_else(
-            || SurfacePointerReceiverFacts::unknown().with_no_delivery(&self.surface),
+            || SurfacePointerReceiverFacts::unknown().with_empty_delivery_lane(&self.surface),
             SurfacePointerReceiverFacts::delivery,
         );
         let facts = self.drag.as_ref().map_or_else(
-            || facts.with_no_drag_delivery(&self.surface),
+            || facts.with_empty_drag_delivery_lane(&self.surface),
             |receiver| facts.with_drag_delivery(receiver),
         );
         let route = HostPointerRoute::new(self.surface, self.position);

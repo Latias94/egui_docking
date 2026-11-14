@@ -75,6 +75,21 @@ density separately. Unknown widgets or overlays cannot assert a clear hover lane
 At a continuation deadline, observe the current pointer, capture and hit facts;
 do not replay an old event or synthesize motion to satisfy a timer.
 
+Keep an empty semantic lane distinct from framework delivery being suppressed.
+`NativeReceiverAnswer::EmptyLane` proves that the queried point has no semantic
+winner for that lane in the exact presented output. `Blocked` reports framework
+occlusion, including a drag-only docking control suppressing a click over a pane.
+`Unknown` reports missing or ambiguous evidence. A framework's missing click
+receiver does not by itself prove an empty core Click lane. Resolve click and
+drag independently and test their translation through the framework's actual
+completed hit graph.
+
+Exercise tails after terminal input, not only well-paired gestures: duplicate
+release, cancelled input followed by stale window events, provider reset, and a
+fresh press after each case. Check that the terminal is emitted at most once and
+the next interaction succeeds. Random seeds cannot cover a callback sequence
+which the generator's grammar excludes.
+
 ## Reusable automatic tests
 
 | Layer | Existing asset | What passing proves |

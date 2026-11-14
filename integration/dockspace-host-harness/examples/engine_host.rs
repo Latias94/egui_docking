@@ -239,11 +239,11 @@ fn cancel_logical_press(
     let facts = SurfacePointerReceiverFacts::delivery(&delivery);
     let facts = match drag.as_ref() {
         Some(receiver) => facts.with_drag_delivery(receiver),
-        None => facts.with_no_drag_delivery(&surface),
+        None => facts.with_empty_drag_delivery_lane(&surface),
     };
     let facts = match hover.as_ref() {
         Some(receiver) => facts.with_hover(receiver),
-        None => facts.with_no_hover(&surface),
+        None => facts.with_empty_hover_lane(&surface),
     };
     let route = HostPointerRoute::new(surface, point);
     let mut frame = session.begin_host_frame().unwrap();

@@ -758,7 +758,7 @@ fn pointer_interaction_uses_tick_start_policy_before_configuration_phase() {
             press,
             PointerCaptureOwner::None,
         ),
-        Some(PointerReceiverDeliveryDisposition::NoReceiver),
+        Some(PointerReceiverDeliveryDisposition::EmptyLane),
     );
     complete_host_frame(&engine, &mut rejected_frame);
     let rejected = host.finish(rejected_frame, &mut engine);

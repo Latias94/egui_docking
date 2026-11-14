@@ -760,17 +760,30 @@ pub enum NativeReceiverAnswer {
     WindowHit(super::window_hit::NativeWindowHit),
     /// A concrete docking receiver accepted the edge.
     Dock(super::super::PresentedDockReceiver),
-    /// The current surface proved that no docking receiver accepted the edge.
-    NoReceiver(super::super::PresentedDockspaceSurface),
+    /// The queried semantic receiver lane is authoritatively empty in this exact output.
+    ///
+    /// For spatial queries, this asserts that no eligible core receiver wins at
+    /// the query point under the edge's device hit rules and, for HoverDrop,
+    /// source suppression. Missing framework delivery alone does not prove an
+    /// empty lane: framework occlusion must report [`Self::Blocked`], while
+    /// unavailable or ambiguous evidence must report [`Self::Unknown`].
+    EmptyLane(super::super::PresentedDockspaceSurface),
     /// The exact output proves no framework receiver blocks HoverDrop.
     ///
     /// This is not a semantic winner or known-empty assertion. Core resolves
     /// the winner at the edge's exact point after preceding edges have reduced.
     /// It is valid only for hover queries; unknown widgets must not clear a lane.
     ClearHoverLane(super::super::PresentedDockspaceSurface),
-    /// A higher framework receiver blocked docking.
+    /// The framework blocked delivery or hover in the queried lane.
+    ///
+    /// This includes external widgets and cross-lane occlusion by a registered
+    /// docking widget, such as a drag-only splitter suppressing click delivery.
+    /// It makes no claim that the core's semantic receiver lane is empty.
     Blocked(super::super::PresentedDockspaceSurface),
-    /// Receiver authority was unavailable and the edge must fail closed.
+    /// Evidence is insufficient to establish receiver delivery, emptiness, or blocking.
+    ///
+    /// Missing, stale, or ambiguous authority must remain unknown; it must not
+    /// be promoted to an empty-lane assertion. The edge fails closed.
     Unknown,
 }
 

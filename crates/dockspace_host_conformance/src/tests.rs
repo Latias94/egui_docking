@@ -743,7 +743,7 @@ impl MagneticJourneyFixture {
                     SurfacePointerEvent::Moved,
                     SurfacePointerPosition::Known(moved),
                     SurfacePointerCapture::ProviderEndpoint,
-                    SurfacePointerReceiverFacts::no_hover(&surface),
+                    SurfacePointerReceiverFacts::empty_hover_lane(&surface),
                 ))
                 .expect("the shared L03 threshold move starts one drag");
         });
@@ -758,7 +758,7 @@ impl MagneticJourneyFixture {
                     SurfacePointerEvent::Moved,
                     SurfacePointerPosition::Known(point),
                     SurfacePointerCapture::ProviderEndpoint,
-                    SurfacePointerReceiverFacts::no_hover(&surface),
+                    SurfacePointerReceiverFacts::empty_hover_lane(&surface),
                 ))
                 .expect("the ordinary L03 pane point reports a known-empty hover result");
         });
@@ -773,7 +773,7 @@ impl MagneticJourneyFixture {
                     SurfacePointerEvent::ButtonReleased(SurfacePointerButton::Primary),
                     SurfacePointerPosition::Known(point),
                     SurfacePointerCapture::None,
-                    SurfacePointerReceiverFacts::no_hover(&surface),
+                    SurfacePointerReceiverFacts::empty_hover_lane(&surface),
                 ))
                 .expect("the shared L03 release uses the current pane observation");
         })
@@ -800,21 +800,21 @@ impl MagneticJourneyFixture {
                         SurfacePointerEvent::Moved,
                         SurfacePointerPosition::Known(moved),
                         SurfacePointerCapture::ProviderEndpoint,
-                        SurfacePointerReceiverFacts::no_hover(&surface),
+                        SurfacePointerReceiverFacts::empty_hover_lane(&surface),
                     ),
                     SurfacePointerInput::new(
                         SurfacePointerId::new(1),
                         SurfacePointerEvent::Moved,
                         SurfacePointerPosition::Known(point),
                         SurfacePointerCapture::ProviderEndpoint,
-                        SurfacePointerReceiverFacts::no_hover(&surface),
+                        SurfacePointerReceiverFacts::empty_hover_lane(&surface),
                     ),
                     SurfacePointerInput::new(
                         SurfacePointerId::new(1),
                         SurfacePointerEvent::ButtonReleased(SurfacePointerButton::Primary),
                         SurfacePointerPosition::Known(point),
                         SurfacePointerCapture::None,
-                        SurfacePointerReceiverFacts::no_hover(&surface),
+                        SurfacePointerReceiverFacts::empty_hover_lane(&surface),
                     ),
                 ])
                 .expect("the shared L03 burst preserves press, motion, and release order");
@@ -831,14 +831,14 @@ impl MagneticJourneyFixture {
                         SurfacePointerEvent::Moved,
                         SurfacePointerPosition::Known(point),
                         SurfacePointerCapture::ProviderEndpoint,
-                        SurfacePointerReceiverFacts::no_hover(&surface),
+                        SurfacePointerReceiverFacts::empty_hover_lane(&surface),
                     ),
                     SurfacePointerInput::new(
                         SurfacePointerId::new(1),
                         SurfacePointerEvent::ButtonReleased(SurfacePointerButton::Primary),
                         SurfacePointerPosition::Known(point),
                         SurfacePointerCapture::None,
-                        SurfacePointerReceiverFacts::no_hover(&surface),
+                        SurfacePointerReceiverFacts::empty_hover_lane(&surface),
                     ),
                 ])
                 .expect("the final L03 move and release share one public input batch");
@@ -2570,7 +2570,7 @@ fn submit_pointer_close_release(
             SurfacePointerEvent::ButtonReleased(SurfacePointerButton::Primary),
             SurfacePointerPosition::Known(point),
             SurfacePointerCapture::None,
-            SurfacePointerReceiverFacts::delivery(&receiver).with_no_hover(&surface),
+            SurfacePointerReceiverFacts::delivery(&receiver).with_empty_hover_lane(&surface),
         ))
         .expect("one release supplies delivery and hover facts together");
 }
@@ -2587,7 +2587,7 @@ fn submit_pointer_close_contact_end(
             SurfacePointerEvent::ContactEnded(SurfacePointerButton::Primary),
             SurfacePointerPosition::Known(point),
             SurfacePointerCapture::None,
-            SurfacePointerReceiverFacts::delivery(&receiver).with_no_hover(&surface),
+            SurfacePointerReceiverFacts::delivery(&receiver).with_empty_hover_lane(&surface),
         ))
         .expect("one contact end supplies delivery and hover facts together");
 }
@@ -3466,7 +3466,7 @@ impl InteractionFixture {
                     SurfacePointerEvent::Moved,
                     SurfacePointerPosition::Known(moved),
                     SurfacePointerCapture::ProviderEndpoint,
-                    SurfacePointerReceiverFacts::no_hover(&surface),
+                    SurfacePointerReceiverFacts::empty_hover_lane(&surface),
                 ))
                 .expect("the threshold move has an exact known-empty hover result");
         });
@@ -3599,7 +3599,7 @@ fn runtime_pointer_batch_preserves_order_and_explicit_cancellation() {
                     SurfacePointerEvent::Moved,
                     SurfacePointerPosition::Known(moved),
                     SurfacePointerCapture::ProviderEndpoint,
-                    SurfacePointerReceiverFacts::no_hover(&surface),
+                    SurfacePointerReceiverFacts::empty_hover_lane(&surface),
                 ),
                 SurfacePointerInput::new(
                     SurfacePointerId::new(7),

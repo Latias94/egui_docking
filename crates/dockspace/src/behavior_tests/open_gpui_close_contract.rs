@@ -330,7 +330,7 @@ impl Harness {
         let hover = PointerReceiverHoverHit::new(
             projection,
             point,
-            PointerReceiverHoverHitDisposition::NoReceiver,
+            PointerReceiverHoverHitDisposition::EmptyLane,
         )
         .expect("the release hover fact belongs to the current output");
         release_frame

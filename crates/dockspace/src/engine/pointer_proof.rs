@@ -1011,13 +1011,13 @@ impl DockEngine {
                                 )
                             );
                             let explicit_absence = requested
-                                && disposition == PointerReceiverDeliveryDisposition::NoReceiver;
+                                && disposition == PointerReceiverDeliveryDisposition::EmptyLane;
                             let scroll_absence = lane == PresentationPointerLane::Scroll
                                 && matches!(edge.kind(), PointerEdgeKind::Scrolled(scroll)
                                     if matches!(scroll.phase(), crate::pointer_journal::ScrollPhase::Discrete | crate::pointer_journal::ScrollPhase::Begin))
                                 && matches!(
                                     disposition,
-                                    PointerReceiverDeliveryDisposition::NoReceiver
+                                    PointerReceiverDeliveryDisposition::EmptyLane
                                         | PointerReceiverDeliveryDisposition::DockCanvas
                                 );
                             if explicit_absence || scroll_absence {
@@ -1083,7 +1083,7 @@ impl DockEngine {
                                 });
                             }
                         }
-                        if hover.disposition() == PointerReceiverHoverHitDisposition::NoReceiver {
+                        if hover.disposition() == PointerReceiverHoverHitDisposition::EmptyLane {
                             self.validate_pointer_receiver_absence(
                                 provider,
                                 edge,
@@ -1734,7 +1734,7 @@ impl DockEngine {
             PointerReceiverDeliveryDisposition::DockCanvas => {
                 Ok(JournalClickDelivery::KnownMismatch)
             }
-            PointerReceiverDeliveryDisposition::NoReceiver => match edge.location() {
+            PointerReceiverDeliveryDisposition::EmptyLane => match edge.location() {
                 PointerEdgeLocation::Desktop { .. } => match desktop_route {
                     Some(DesktopRouteValidation::Known(ValidatedDesktopRoute::Foreign {
                         ..
@@ -1954,7 +1954,7 @@ mod tests {
                 PointerReceiverPresentedOutput::from_interaction(current.projection()),
             )]);
             for disposition in [
-                PointerReceiverHoverHitDisposition::NoReceiver,
+                PointerReceiverHoverHitDisposition::EmptyLane,
                 PointerReceiverHoverHitDisposition::Blocked,
             ] {
                 for receipt_presentation in [&previous, &current] {
@@ -2013,7 +2013,7 @@ mod tests {
                             expected, actual, ..
                         },
                     }) if expected == current.authority() && actual == previous.authority()));
-                    } else if disposition == PointerReceiverHoverHitDisposition::NoReceiver
+                    } else if disposition == PointerReceiverHoverHitDisposition::EmptyLane
                         && expected_winner.is_some()
                     {
                         assert!(matches!(result, Err(EngineError::PointerReceiverGeometry {

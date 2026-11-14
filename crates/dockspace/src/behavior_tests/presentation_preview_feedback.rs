@@ -189,7 +189,7 @@ fn dragging_fixture() -> (DockspaceSession, LogicalPoint, DockspacePreviewVisual
     // An ordinary magnetic basin may have known-empty hover, not an exclusive receiver.
     let target_receivers = match target_hover.as_ref() {
         Some(receiver) => SurfacePointerReceiverFacts::hover(receiver),
-        None => SurfacePointerReceiverFacts::no_hover(&target_surface),
+        None => SurfacePointerReceiverFacts::empty_hover_lane(&target_surface),
     };
     let source_route = HostPointerRoute::new(source_hit.surface(), initial);
     let target_route = HostPointerRoute::new(target_surface, target);
@@ -246,7 +246,7 @@ fn release(session: &mut DockspaceSession, target: LogicalPoint) -> HostFrameRep
     });
     let receivers = match (surface.as_ref(), hover.as_ref()) {
         (_, Some(receiver)) => SurfacePointerReceiverFacts::hover(receiver),
-        (Some(surface), None) => SurfacePointerReceiverFacts::no_hover(surface),
+        (Some(surface), None) => SurfacePointerReceiverFacts::empty_hover_lane(surface),
         (None, None) => SurfacePointerReceiverFacts::unknown(),
     };
     let mut frame = session.begin_host_frame().expect("release begins");

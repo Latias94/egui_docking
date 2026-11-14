@@ -1238,7 +1238,7 @@ fn wrong_winner_suffix_rolls_back_handoff_and_retries_the_original_batch_once() 
                     if hover_queries == 2 {
                         // This is the correct exact output, but its real tab
                         // receiver contradicts a claim that there is no winner.
-                        return NativeReceiverAnswer::NoReceiver(query.presented_surface());
+                        return NativeReceiverAnswer::EmptyLane(query.presented_surface());
                     }
                 }
                 scene.answer(query)

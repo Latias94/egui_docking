@@ -367,11 +367,11 @@ fn edge(
     let click = hit.and_then(|hit| hit.delivery());
     let drag = hit.and_then(|hit| hit.drag_delivery());
     let facts = click.as_ref().map_or_else(
-        || SurfacePointerReceiverFacts::unknown().with_no_delivery(&surface),
+        || SurfacePointerReceiverFacts::unknown().with_empty_delivery_lane(&surface),
         SurfacePointerReceiverFacts::delivery,
     );
     let facts = drag.as_ref().map_or_else(
-        || facts.with_no_drag_delivery(&surface),
+        || facts.with_empty_drag_delivery_lane(&surface),
         |receiver| facts.with_drag_delivery(receiver),
     );
     let route = HostPointerRoute::new(surface, point);
@@ -627,11 +627,12 @@ fn false_touch_drag_absence_rejects_atomically_and_corrected_press_retries_once(
                 route,
                 route,
                 SurfacePointerCapture::ProviderEndpoint,
-                SurfacePointerReceiverFacts::delivery(&click).with_no_drag_delivery(&surface),
+                SurfacePointerReceiverFacts::delivery(&click)
+                    .with_empty_drag_delivery_lane(&surface),
             )
             .with_metadata(PointerEventMetadata::new(Device::Touch, Duration::ZERO)),
         )
-        .expect_err("Drag NoReceiver cannot conceal the expanded touch resize winner");
+        .expect_err("Drag EmptyLane cannot conceal the expanded touch resize winner");
     assert_eq!(error.kind(), DockspaceRuntimeErrorKind::HostProtocol);
     drop(rejected);
     assert_eq!(durable(&session), before);

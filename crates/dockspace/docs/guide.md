@@ -132,7 +132,7 @@ When the host proves that no framework widget blocks docking at an edge, use
 `SurfacePointerReceiverFacts::with_clear_hover_lane` with that exact presented
 surface. Core resolves the semantic hover winner after earlier edges have
 reduced, so a single batch can suppress its complete moving source without
-guessing a target in advance. `with_hover` and `with_no_hover` assert an exact
+guessing a target in advance. `with_hover` and `with_empty_hover_lane` assert an exact
 semantic winner or absence instead; they are not framework-clearance fallbacks.
 Unknown widgets and overlays must remain blocked or unknown.
 

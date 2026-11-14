@@ -502,15 +502,15 @@ fn submit_host_edges(
         let mut facts = SurfacePointerReceiverFacts::unknown();
         let route = if let (Some((surface, click, drag, hover)), Some(point)) = (hit, point) {
             facts = click.as_ref().map_or_else(
-                || facts.with_no_delivery(surface),
+                || facts.with_empty_delivery_lane(surface),
                 |receiver| facts.with_delivery(receiver),
             );
             facts = drag.as_ref().map_or_else(
-                || facts.with_no_drag_delivery(surface),
+                || facts.with_empty_drag_delivery_lane(surface),
                 |receiver| facts.with_drag_delivery(receiver),
             );
             facts = hover.as_ref().map_or_else(
-                || facts.with_no_hover(surface),
+                || facts.with_empty_hover_lane(surface),
                 |receiver| facts.with_hover(receiver),
             );
             HostPointerRoute::new(*surface, *point)

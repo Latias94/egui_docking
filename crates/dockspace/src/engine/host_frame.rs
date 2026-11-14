@@ -709,7 +709,7 @@ impl<'frame> HostFrameView<'frame> {
 
     /// Resolves the unique core-owned HoverDrop receiver at one logical point.
     ///
-    /// The returned receipt fact owns its winner or `NoReceiver` disposition
+    /// The returned receipt fact owns its winner or `EmptyLane` disposition
     /// and is atomically bound to this sealed frame's exact output, presented
     /// authority, and point. Framework occlusion remains an adapter fact: call
     /// this only after the framework authoritatively proves that no foreign
@@ -730,7 +730,7 @@ impl<'frame> HostFrameView<'frame> {
                 self.engine.hover_drop_suppression(),
             ) {
             Ok(Some(region)) => PointerReceiverHoverHitDisposition::Dock(region.id()),
-            Ok(None) => PointerReceiverHoverHitDisposition::NoReceiver,
+            Ok(None) => PointerReceiverHoverHitDisposition::EmptyLane,
             Err(PresentationHitResolutionError::Ambiguous { first, second, .. }) => {
                 return Err(HostFrameHoverDropResolutionError::Ambiguous { first, second });
             }

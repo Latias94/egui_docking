@@ -1284,7 +1284,7 @@ fn retained_changed_tab_press(activate_drag: bool) {
                 moved,
             )
             .unwrap()
-            .map_or(PointerReceiverHoverHitDisposition::NoReceiver, |region| {
+            .map_or(PointerReceiverHoverHitDisposition::EmptyLane, |region| {
                 PointerReceiverHoverHitDisposition::Dock(region.id())
             });
         let hover = PointerReceiverHoverHit::new(projection, moved, hit).unwrap();

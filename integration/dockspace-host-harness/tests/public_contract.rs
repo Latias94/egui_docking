@@ -2474,7 +2474,7 @@ fn host_pointer_current_route_cannot_refresh_stale_hover_facts() {
                     SurfacePointerReceiverFacts::unknown().with_clear_hover_lane(&stale_surface)
                 }
                 "candidate" => SurfacePointerReceiverFacts::hover(&stale_receiver),
-                "no_receiver" => SurfacePointerReceiverFacts::no_hover(&stale_surface),
+                "no_receiver" => SurfacePointerReceiverFacts::empty_hover_lane(&stale_surface),
                 "blocked" => SurfacePointerReceiverFacts::blocked_hover(&stale_surface),
                 _ => unreachable!(),
             };
@@ -2547,7 +2547,7 @@ fn host_pointer_wrong_winner_suffix_rolls_back_its_valid_prefix_and_retries_once
                     HostPointerRoute::new(scene.a, scene.moved),
                     HostPointerRoute::new(scene.b, scene.target.center()),
                     SurfacePointerCapture::ProviderEndpoint,
-                    SurfacePointerReceiverFacts::no_hover(&scene.b),
+                    SurfacePointerReceiverFacts::empty_hover_lane(&scene.b),
                 ),
             ])
             .is_err(),

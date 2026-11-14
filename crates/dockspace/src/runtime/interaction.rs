@@ -466,13 +466,19 @@ pub enum SurfacePointerEvent {
 #[derive(Debug, Clone, Copy)]
 enum ReceiverFact<'receiver> {
     Dock(&'receiver PresentedDockReceiver),
-    NoReceiver(&'receiver PresentedDockspaceSurface),
+    EmptyLane(&'receiver PresentedDockspaceSurface),
     ClearHoverLane(&'receiver PresentedDockspaceSurface),
     Blocked(&'receiver PresentedDockspaceSurface),
     Unknown,
 }
 
 /// Independent framework delivery and hover facts for one pointer edge.
+///
+/// The `empty_*_lane` constructors assert that the exact presented output has
+/// no semantic receiver at this edge's point in that lane. Framework suppression
+/// is blocking evidence, even when it prevents every widget from accepting the
+/// edge; it does not prove an empty semantic lane. Keep unavailable evidence
+/// unknown and resolve click, drag, and hover independently.
 #[derive(Debug, Clone, Copy)]
 pub struct SurfacePointerReceiverFacts<'receiver> {
     delivery: ReceiverFact<'receiver>,
@@ -614,11 +620,11 @@ impl<'receiver> SurfacePointerReceiverFacts<'receiver> {
 
     /// Reports known-empty drag delivery independently from click delivery.
     #[must_use]
-    pub const fn with_no_drag_delivery(
+    pub const fn with_empty_drag_delivery_lane(
         mut self,
         surface: &'receiver PresentedDockspaceSurface,
     ) -> Self {
-        self.drag_delivery = Some(ReceiverFact::NoReceiver(surface));
+        self.drag_delivery = Some(ReceiverFact::EmptyLane(surface));
         self
     }
 
@@ -654,11 +660,11 @@ impl<'receiver> SurfacePointerReceiverFacts<'receiver> {
 
     /// Reports an authoritative known-empty hover result for the current output.
     #[must_use]
-    pub const fn no_hover(surface: &'receiver PresentedDockspaceSurface) -> Self {
+    pub const fn empty_hover_lane(surface: &'receiver PresentedDockspaceSurface) -> Self {
         Self {
             delivery: ReceiverFact::Unknown,
             drag_delivery: None,
-            hover: ReceiverFact::NoReceiver(surface),
+            hover: ReceiverFact::EmptyLane(surface),
         }
     }
 
@@ -674,8 +680,8 @@ impl<'receiver> SurfacePointerReceiverFacts<'receiver> {
 
     /// Adds the exact framework receiver which accepted delivery.
     ///
-    /// Delivery and hover remain independent event-time facts even though one
-    /// physical edge asks at most one receiver question.
+    /// Click, drag, and hover remain independent event-time facts; one physical
+    /// edge may ask more than one receiver question.
     #[must_use]
     pub const fn with_delivery(mut self, receiver: &'receiver PresentedDockReceiver) -> Self {
         self.delivery = ReceiverFact::Dock(receiver);
@@ -684,8 +690,11 @@ impl<'receiver> SurfacePointerReceiverFacts<'receiver> {
 
     /// Adds an authoritative known-empty delivery result.
     #[must_use]
-    pub const fn with_no_delivery(mut self, surface: &'receiver PresentedDockspaceSurface) -> Self {
-        self.delivery = ReceiverFact::NoReceiver(surface);
+    pub const fn with_empty_delivery_lane(
+        mut self,
+        surface: &'receiver PresentedDockspaceSurface,
+    ) -> Self {
+        self.delivery = ReceiverFact::EmptyLane(surface);
         self
     }
 
@@ -708,14 +717,17 @@ impl<'receiver> SurfacePointerReceiverFacts<'receiver> {
 
     /// Adds an authoritative known-empty hover result.
     #[must_use]
-    pub const fn with_no_hover(mut self, surface: &'receiver PresentedDockspaceSurface) -> Self {
-        self.hover = ReceiverFact::NoReceiver(surface);
+    pub const fn with_empty_hover_lane(
+        mut self,
+        surface: &'receiver PresentedDockspaceSurface,
+    ) -> Self {
+        self.hover = ReceiverFact::EmptyLane(surface);
         self
     }
 
     /// Proves that no framework receiver blocks HoverDrop in this exact output.
     ///
-    /// Unlike [`Self::with_hover`] and [`Self::with_no_hover`], this does not
+    /// Unlike [`Self::with_hover`] and [`Self::with_empty_hover_lane`], this does not
     /// assert a semantic winner. Core resolves it at the edge's exact point
     /// after preceding edges have reduced, including complete-source suppression.
     /// Unknown widgets, overlays and unavailable framework hit facts must not
@@ -1835,14 +1847,14 @@ fn delivery_fact(
         ReceiverFact::Dock(receiver) if receiver_matches(receiver, projection) => {
             PointerReceiverDeliveryDisposition::Dock(receiver.descriptor.region)
         }
-        ReceiverFact::NoReceiver(surface) if surface_matches(surface, projection) => {
-            PointerReceiverDeliveryDisposition::NoReceiver
+        ReceiverFact::EmptyLane(surface) if surface_matches(surface, projection) => {
+            PointerReceiverDeliveryDisposition::EmptyLane
         }
         ReceiverFact::Blocked(surface) if surface_matches(surface, projection) => {
             PointerReceiverDeliveryDisposition::Blocked
         }
         ReceiverFact::Dock(_)
-        | ReceiverFact::NoReceiver(_)
+        | ReceiverFact::EmptyLane(_)
         | ReceiverFact::ClearHoverLane(_)
         | ReceiverFact::Blocked(_)
         | ReceiverFact::Unknown => {
@@ -1875,8 +1887,8 @@ fn hover_fact(
         ReceiverFact::Dock(receiver) if receiver_matches(receiver, &projection) => {
             PointerReceiverHoverHitDisposition::Dock(receiver.descriptor.region)
         }
-        ReceiverFact::NoReceiver(surface) if surface_matches(surface, &projection) => {
-            PointerReceiverHoverHitDisposition::NoReceiver
+        ReceiverFact::EmptyLane(surface) if surface_matches(surface, &projection) => {
+            PointerReceiverHoverHitDisposition::EmptyLane
         }
         ReceiverFact::ClearHoverLane(surface) if surface_matches(surface, &projection) => {
             return view
@@ -1887,7 +1899,7 @@ fn hover_fact(
             PointerReceiverHoverHitDisposition::Blocked
         }
         ReceiverFact::Dock(_)
-        | ReceiverFact::NoReceiver(_)
+        | ReceiverFact::EmptyLane(_)
         | ReceiverFact::ClearHoverLane(_)
         | ReceiverFact::Blocked(_)
         | ReceiverFact::Unknown => {
@@ -1981,8 +1993,8 @@ mod tests {
                 PointerReceiverHoverHitDisposition::Dock(target.id()),
             ),
             (
-                SurfacePointerReceiverFacts::unknown().with_no_hover(&current),
-                PointerReceiverHoverHitDisposition::NoReceiver,
+                SurfacePointerReceiverFacts::unknown().with_empty_hover_lane(&current),
+                PointerReceiverHoverHitDisposition::EmptyLane,
             ),
             (
                 SurfacePointerReceiverFacts::blocked_hover(&current),
@@ -2016,7 +2028,7 @@ mod tests {
             hover_fact(frame.view(), Some(surface), Some(empty_point), clear.hover)
                 .unwrap()
                 .disposition(),
-            PointerReceiverHoverHitDisposition::NoReceiver,
+            PointerReceiverHoverHitDisposition::EmptyLane,
         );
         for (surface, point) in [(None, Some(point)), (Some(surface), None)] {
             assert!(matches!(

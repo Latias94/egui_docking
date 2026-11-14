@@ -2124,7 +2124,7 @@ impl DockEngine {
                 ));
             }
             PointerReceiverHoverHitDisposition::Dock(_)
-            | PointerReceiverHoverHitDisposition::NoReceiver => {}
+            | PointerReceiverHoverHitDisposition::EmptyLane => {}
         }
         let (Some(output), Some(authority), Some(point)) =
             (hover.output(), hover.authority(), hover.point())
@@ -2180,7 +2180,7 @@ impl DockEngine {
             .map(|region| region.id());
         let claimed = match hover.disposition() {
             PointerReceiverHoverHitDisposition::Dock(region) => Some(region),
-            PointerReceiverHoverHitDisposition::NoReceiver => None,
+            PointerReceiverHoverHitDisposition::EmptyLane => None,
             PointerReceiverHoverHitDisposition::Blocked
             | PointerReceiverHoverHitDisposition::Unknown(_) => {
                 unreachable!("blocked and unknown hover receipts return before winner validation")

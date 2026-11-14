@@ -1241,7 +1241,7 @@ fn wrong_native_receiver_winner_rolls_back_the_due_input_and_retries_with_curren
                     };
 
                     assert_eq!(query.point(), Some(target));
-                    NativeReceiverAnswer::NoReceiver(query.presented_surface())
+                    NativeReceiverAnswer::EmptyLane(query.presented_surface())
                 })
                 .is_err()
         );

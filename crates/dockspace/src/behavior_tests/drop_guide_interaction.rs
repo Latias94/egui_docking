@@ -328,7 +328,7 @@ fn submit_edge(
             PointerReceiverDelivery::new(
                 projection,
                 delivery_region.map_or(
-                    PointerReceiverDeliveryDisposition::NoReceiver,
+                    PointerReceiverDeliveryDisposition::EmptyLane,
                     PointerReceiverDeliveryDisposition::Dock,
                 ),
             )

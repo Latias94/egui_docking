@@ -927,11 +927,11 @@ fn pointer_input(edge: &Edge, observed_at: Option<Duration>) -> HostPointerInput
                 .with_blocked_hover(surface);
         } else {
             facts = edge.delivery.as_ref().map_or_else(
-                || facts.with_no_delivery(surface),
+                || facts.with_empty_delivery_lane(surface),
                 |receiver| facts.with_delivery(receiver),
             );
             facts = edge.drag_delivery.as_ref().map_or_else(
-                || facts.with_no_drag_delivery(surface),
+                || facts.with_empty_drag_delivery_lane(surface),
                 |receiver| facts.with_drag_delivery(receiver),
             );
             facts = facts.with_clear_hover_lane(surface);

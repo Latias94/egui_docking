@@ -490,7 +490,7 @@ impl NativeReceiverStore {
                     };
                 }
             }
-            return NativeReceiverAnswer::NoReceiver(query.presented_surface());
+            return NativeReceiverAnswer::EmptyLane(query.presented_surface());
         };
         let receiver = match receiver_for(identity) {
             Ok(receiver) => receiver,
@@ -587,7 +587,7 @@ fn resolve_scroll(
     match hit.hit() {
         egui::WidgetScrollHit::Blocked => NativeReceiverAnswer::Blocked(query.presented_surface()),
         egui::WidgetScrollHit::NoReceiver => {
-            NativeReceiverAnswer::NoReceiver(query.presented_surface())
+            NativeReceiverAnswer::EmptyLane(query.presented_surface())
         }
         egui::WidgetScrollHit::Candidate(identity) => {
             let mut matches = presented

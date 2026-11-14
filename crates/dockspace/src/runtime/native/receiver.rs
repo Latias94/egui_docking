@@ -205,10 +205,10 @@ fn resolve_hover_observation(
         {
             PointerReceiverHoverHitDisposition::Dock(receiver.region())
         }
-        NativeReceiverAnswer::NoReceiver(surface)
+        NativeReceiverAnswer::EmptyLane(surface)
             if interaction::surface_matches(&surface, &projection) =>
         {
-            PointerReceiverHoverHitDisposition::NoReceiver
+            PointerReceiverHoverHitDisposition::EmptyLane
         }
         NativeReceiverAnswer::ClearHoverLane(surface)
             if interaction::surface_matches(&surface, &projection) =>
@@ -226,7 +226,7 @@ fn resolve_hover_observation(
         }
         NativeReceiverAnswer::WindowHit(_)
         | NativeReceiverAnswer::Dock(_)
-        | NativeReceiverAnswer::NoReceiver(_)
+        | NativeReceiverAnswer::EmptyLane(_)
         | NativeReceiverAnswer::ClearHoverLane(_)
         | NativeReceiverAnswer::Blocked(_)
         | NativeReceiverAnswer::Unknown => {
@@ -276,10 +276,10 @@ fn resolve_delivery_lane(
         {
             PointerReceiverDeliveryDisposition::Dock(receiver.region())
         }
-        NativeReceiverAnswer::NoReceiver(surface)
+        NativeReceiverAnswer::EmptyLane(surface)
             if interaction::surface_matches(&surface, &projection) =>
         {
-            PointerReceiverDeliveryDisposition::NoReceiver
+            PointerReceiverDeliveryDisposition::EmptyLane
         }
         NativeReceiverAnswer::Blocked(surface)
             if interaction::surface_matches(&surface, &projection) =>
@@ -288,7 +288,7 @@ fn resolve_delivery_lane(
         }
         NativeReceiverAnswer::WindowHit(_)
         | NativeReceiverAnswer::Dock(_)
-        | NativeReceiverAnswer::NoReceiver(_)
+        | NativeReceiverAnswer::EmptyLane(_)
         | NativeReceiverAnswer::ClearHoverLane(_)
         | NativeReceiverAnswer::Blocked(_)
         | NativeReceiverAnswer::Unknown => {

@@ -286,11 +286,11 @@ fn edge_with_routes(
     let click = delivery_hit.delivery();
     let drag = delivery_hit.drag_delivery();
     let facts = click.as_ref().map_or_else(
-        || SurfacePointerReceiverFacts::unknown().with_no_delivery(&source),
+        || SurfacePointerReceiverFacts::unknown().with_empty_delivery_lane(&source),
         SurfacePointerReceiverFacts::delivery,
     );
     let facts = drag.as_ref().map_or_else(
-        || facts.with_no_drag_delivery(&source),
+        || facts.with_empty_drag_delivery_lane(&source),
         |receiver| facts.with_drag_delivery(receiver),
     );
     let mut frame = session.begin_host_frame().unwrap();
@@ -439,15 +439,15 @@ fn edge(
     let hover = hit.hover();
     let facts = match click.as_ref() {
         Some(receiver) => SurfacePointerReceiverFacts::delivery(receiver),
-        None => SurfacePointerReceiverFacts::unknown().with_no_delivery(&surface),
+        None => SurfacePointerReceiverFacts::unknown().with_empty_delivery_lane(&surface),
     };
     let facts = match drag.as_ref() {
         Some(receiver) => facts.with_drag_delivery(receiver),
-        None => facts.with_no_drag_delivery(&surface),
+        None => facts.with_empty_drag_delivery_lane(&surface),
     };
     let facts = match hover.as_ref() {
         Some(receiver) => facts.with_hover(receiver),
-        None => facts.with_no_hover(&surface),
+        None => facts.with_empty_hover_lane(&surface),
     };
     let route = HostPointerRoute::new(surface, position);
     let mut frame = session.begin_host_frame().unwrap();

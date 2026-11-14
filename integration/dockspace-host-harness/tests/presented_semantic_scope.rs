@@ -294,7 +294,7 @@ fn late_presented_output_cannot_restore_old_layering_or_revoke_exact_source_cont
     let click = session.host_pointer_hit(SURFACE, press).unwrap().delivery();
     let edge = |event, point| {
         let facts = click.as_ref().map_or_else(
-            || SurfacePointerReceiverFacts::unknown().with_no_delivery(&surface),
+            || SurfacePointerReceiverFacts::unknown().with_empty_delivery_lane(&surface),
             SurfacePointerReceiverFacts::delivery,
         );
         HostPointerInput::new(

@@ -2961,7 +2961,7 @@ fn active_surface_local_drag_rejects_programmatic_native_tear_off_atomically() {
             moved,
         )
         .expect("the drag move hover lookup is unambiguous")
-        .map_or(PointerReceiverHoverHitDisposition::NoReceiver, |region| {
+        .map_or(PointerReceiverHoverHitDisposition::EmptyLane, |region| {
             PointerReceiverHoverHitDisposition::Dock(region.id())
         });
     let hover = PointerReceiverHoverHit::new(projection, moved, hover)

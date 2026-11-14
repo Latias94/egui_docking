@@ -1139,7 +1139,7 @@ fn desktop_close_release_uses_delivery_receiver_independently_from_hover_route()
         let source_projection = interaction(&engine, SOURCE_SURFACE);
         let delivery = PointerReceiverDelivery::new(
             source_projection,
-            PointerReceiverDeliveryDisposition::NoReceiver,
+            PointerReceiverDeliveryDisposition::EmptyLane,
         )
         .expect("captured release proves no dock receiver on its delivery surface");
         frame

@@ -433,7 +433,7 @@ impl DockEngine {
         if !matches!(
             hover.disposition(),
             PointerReceiverHoverHitDisposition::Dock(_)
-                | PointerReceiverHoverHitDisposition::NoReceiver
+                | PointerReceiverHoverHitDisposition::EmptyLane
         ) {
             return None;
         }

@@ -375,11 +375,11 @@ impl Harness {
             let click = hit.delivery();
             let drag = hit.drag_delivery();
             let facts = click.as_ref().map_or_else(
-                || SurfacePointerReceiverFacts::unknown().with_no_delivery(&surface),
+                || SurfacePointerReceiverFacts::unknown().with_empty_delivery_lane(&surface),
                 SurfacePointerReceiverFacts::delivery,
             );
             let facts = drag.as_ref().map_or_else(
-                || facts.with_no_drag_delivery(&surface),
+                || facts.with_empty_drag_delivery_lane(&surface),
                 |receiver| facts.with_drag_delivery(receiver),
             );
             let route = HostPointerRoute::new(surface, point);

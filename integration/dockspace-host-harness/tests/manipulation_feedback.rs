@@ -146,15 +146,15 @@ fn edge(
     let hover = hit.hover();
     let facts = match click.as_ref() {
         Some(receiver) => SurfacePointerReceiverFacts::delivery(receiver),
-        None => SurfacePointerReceiverFacts::unknown().with_no_delivery(&surface),
+        None => SurfacePointerReceiverFacts::unknown().with_empty_delivery_lane(&surface),
     };
     let facts = match drag.as_ref() {
         Some(receiver) => facts.with_drag_delivery(receiver),
-        None => facts.with_no_drag_delivery(&surface),
+        None => facts.with_empty_drag_delivery_lane(&surface),
     };
     let facts = match hover.as_ref() {
         Some(receiver) => facts.with_hover(receiver),
-        None => facts.with_no_hover(&surface),
+        None => facts.with_empty_hover_lane(&surface),
     };
     let route = HostPointerRoute::new(surface, point);
     let mut frame = session.begin_host_frame().unwrap();

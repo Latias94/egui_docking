@@ -929,7 +929,7 @@ impl DockEngine {
             PointerReceiverDeliveryDisposition::Blocked => {
                 Ok(Err(ScrollSuppressionReason::FrameworkBlocked))
             }
-            PointerReceiverDeliveryDisposition::NoReceiver => {
+            PointerReceiverDeliveryDisposition::EmptyLane => {
                 Ok(Err(ScrollSuppressionReason::NoReceiver))
             }
             PointerReceiverDeliveryDisposition::Unknown(_) => {

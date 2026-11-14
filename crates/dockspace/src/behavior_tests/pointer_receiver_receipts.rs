@@ -101,7 +101,7 @@ fn delivery_dock_claims_are_validated_against_their_exact_lane() {
 
     let result = PointerReceiverDelivery::from_lanes(
         interaction,
-        PointerReceiverDeliveryDisposition::NoReceiver,
+        PointerReceiverDeliveryDisposition::EmptyLane,
         PointerReceiverDeliveryDisposition::Dock(close),
     );
 

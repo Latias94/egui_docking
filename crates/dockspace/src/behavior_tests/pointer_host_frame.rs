@@ -811,7 +811,7 @@ fn release_journal_click(
     let hover = PointerReceiverHoverHit::new(
         projection,
         point,
-        PointerReceiverHoverHitDisposition::NoReceiver,
+        PointerReceiverHoverHitDisposition::EmptyLane,
     )
     .expect("click release hover is current-output-bound");
     frame
@@ -1656,7 +1656,7 @@ fn sealed_view_resolves_output_bound_hover_drop_receipts_without_adapter_ranking
         .expect("core proves the exact no-receiver result");
     assert_eq!(
         empty.disposition(),
-        PointerReceiverHoverHitDisposition::NoReceiver
+        PointerReceiverHoverHitDisposition::EmptyLane
     );
     assert_eq!(empty.output(), Some(projection.output_ticket()));
     assert_eq!(empty.authority(), Some(projection.authority()));
@@ -2741,7 +2741,7 @@ fn surface_local_tab_close_requires_a_matching_release() {
     let release_hover = PointerReceiverHoverHit::new(
         release_projection,
         point,
-        PointerReceiverHoverHitDisposition::NoReceiver,
+        PointerReceiverHoverHitDisposition::EmptyLane,
     )
     .expect("matching close hover is output-bound");
     release_frame
@@ -2885,7 +2885,7 @@ fn journal_close_move_out_and_back_release_inside_still_activates() {
     let hover = PointerReceiverHoverHit::new(
         move_projection,
         outside,
-        PointerReceiverHoverHitDisposition::NoReceiver,
+        PointerReceiverHoverHitDisposition::EmptyLane,
     )
     .expect("move hover is current-output-bound");
     move_frame
@@ -3157,7 +3157,7 @@ fn invalid_close_release_receipt_rolls_back_session_and_watermark_before_exact_r
     let unexpected_hover = PointerReceiverHoverHit::new(
         release_projection,
         point,
-        PointerReceiverHoverHitDisposition::NoReceiver,
+        PointerReceiverHoverHitDisposition::EmptyLane,
     )
     .expect("unexpected hover is structurally valid");
     let incomplete =
@@ -3212,7 +3212,7 @@ fn invalid_close_release_receipt_rolls_back_session_and_watermark_before_exact_r
     let retry_hover = PointerReceiverHoverHit::new(
         retry_projection,
         point,
-        PointerReceiverHoverHitDisposition::NoReceiver,
+        PointerReceiverHoverHitDisposition::EmptyLane,
     )
     .expect("retry hover is current-output-bound");
     retry
@@ -3922,7 +3922,7 @@ fn journal_partial_subtree_known_none_uses_core_reserved_contained_identity() {
     let target_hover = PointerReceiverHoverHit::new(
         projection,
         target,
-        PointerReceiverHoverHitDisposition::NoReceiver,
+        PointerReceiverHoverHitDisposition::EmptyLane,
     )
     .expect("known absence is bound to the frozen output");
     submit_pointer_edge_with_observation(
@@ -4022,7 +4022,7 @@ fn journal_partial_subtree_known_none_uses_core_reserved_contained_identity() {
     let release_hover = PointerReceiverHoverHit::new(
         release_projection,
         target,
-        PointerReceiverHoverHitDisposition::NoReceiver,
+        PointerReceiverHoverHitDisposition::EmptyLane,
     )
     .expect("release absence is bound to the current output");
     release_frame
@@ -4100,7 +4100,7 @@ fn journal_known_none_contained_fallback_is_rejected_by_core_policy() {
         source_group,
         press,
         target,
-        PointerReceiverHoverHitDisposition::NoReceiver,
+        PointerReceiverHoverHitDisposition::EmptyLane,
     );
 
     assert!(matches!(
@@ -4144,7 +4144,7 @@ fn journal_complete_root_known_none_reuses_root_and_mints_only_floating_identity
         source_group,
         press,
         target,
-        PointerReceiverHoverHitDisposition::NoReceiver,
+        PointerReceiverHoverHitDisposition::EmptyLane,
     );
     assert!(matches!(
         transition.reduced_pointer_edges()[1].interaction_outcomes(),
@@ -4173,7 +4173,7 @@ fn journal_complete_root_known_none_reuses_root_and_mints_only_floating_identity
         &mut host,
         provider,
         target,
-        PointerReceiverHoverHitDisposition::NoReceiver,
+        PointerReceiverHoverHitDisposition::EmptyLane,
     );
     assert!(matches!(
         release.reduced_pointer_edges()[0].interaction_outcomes(),
@@ -4309,7 +4309,7 @@ fn journal_contained_release_commits_the_release_edge_preview_immediately() {
         source_group,
         press,
         first_target,
-        PointerReceiverHoverHitDisposition::NoReceiver,
+        PointerReceiverHoverHitDisposition::EmptyLane,
     );
     paint_active_journal_drag(&mut engine, &mut host, provider);
     let release_projection = interaction(&engine);
@@ -4348,7 +4348,7 @@ fn journal_contained_release_commits_the_release_edge_preview_immediately() {
         provider,
         2,
         final_target,
-        PointerReceiverHoverHitDisposition::NoReceiver,
+        PointerReceiverHoverHitDisposition::EmptyLane,
     );
     let work = structural_work::snapshot();
     assert_eq!(work.workspace_deep_clones.transaction_candidates.calls, 1);
@@ -4727,7 +4727,7 @@ fn journal_contained_close_requires_a_matching_release() {
     let release_hover = PointerReceiverHoverHit::new(
         release_projection,
         point,
-        PointerReceiverHoverHitDisposition::NoReceiver,
+        PointerReceiverHoverHitDisposition::EmptyLane,
     )
     .expect("contained close hover is output-bound");
     release_frame
@@ -5915,7 +5915,7 @@ fn same_frame_menu_open_does_not_authorize_an_unpresented_popup_backdrop() {
         .expect("sealed core projection resolves hover authority");
     assert_eq!(
         hover.disposition(),
-        PointerReceiverHoverHitDisposition::NoReceiver,
+        PointerReceiverHoverHitDisposition::EmptyLane,
         "the closed-menu output cannot contain the future popup backdrop"
     );
     frame
@@ -6377,7 +6377,7 @@ fn known_hover_must_echo_the_exact_edge_point() {
         source,
         press,
         edge_point,
-        PointerReceiverHoverHitDisposition::NoReceiver,
+        PointerReceiverHoverHitDisposition::EmptyLane,
     );
     republish_surface_with_active_provider(&mut engine, &mut host, provider, 2);
     let mut frame = host.begin(&engine);
@@ -6434,7 +6434,7 @@ fn unknown_local_point_requests_typed_hover_and_clears_target_authority() {
         source,
         press,
         target,
-        PointerReceiverHoverHitDisposition::NoReceiver,
+        PointerReceiverHoverHitDisposition::EmptyLane,
     );
     republish_surface_with_active_provider(&mut engine, &mut host, provider, 2);
 
@@ -7251,7 +7251,7 @@ fn dragging_move_requests_hover_and_release_consumes_the_latched_target() {
         source,
         press,
         target,
-        PointerReceiverHoverHitDisposition::NoReceiver,
+        PointerReceiverHoverHitDisposition::EmptyLane,
     );
     republish_surface_with_active_provider(&mut engine, &mut host, provider, 2);
     assert!(matches!(
@@ -7340,7 +7340,7 @@ fn committed_drag_release_fixture() -> CommittedDragReleaseFixture {
         source,
         press,
         first_target,
-        PointerReceiverHoverHitDisposition::NoReceiver,
+        PointerReceiverHoverHitDisposition::EmptyLane,
     );
     paint_active_journal_drag(&mut engine, &mut host, &provider);
     let before = engine.workspace().clone();

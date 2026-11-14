@@ -145,7 +145,7 @@ impl PopupScene {
             .filter(|receiver| receiver.bounds().contains(point))
             .find_map(|receiver| query.bind_receiver(&receiver))
             .map_or(
-                NativeReceiverAnswer::NoReceiver(query.presented_surface()),
+                NativeReceiverAnswer::EmptyLane(query.presented_surface()),
                 NativeReceiverAnswer::Dock,
             )
     }

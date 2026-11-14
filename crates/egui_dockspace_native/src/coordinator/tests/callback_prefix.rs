@@ -495,7 +495,7 @@ fn active_drag_replays_every_cursor_point_identically_after_a_dropped_frame() {
                 assert_eq!(query.purpose(), &NativeReceiverPurpose::HoverHit);
                 assert_eq!(query.surface(), FIRST_SURFACE);
                 observed.push((query.point().unwrap(), query.metadata()));
-                NativeReceiverAnswer::NoReceiver(query.presented_surface())
+                NativeReceiverAnswer::EmptyLane(query.presented_surface())
             })
             .unwrap();
         let expected_samples: Vec<_> = expected

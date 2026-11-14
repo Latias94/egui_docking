@@ -1149,8 +1149,11 @@ pub enum PointerReceiverDeliveryDisposition {
     DockCanvas,
     /// A higher framework receiver blocked docking delivery.
     Blocked,
-    /// The framework authoritatively proved no receiver accepted delivery.
-    NoReceiver,
+    /// The exact point has no semantic hit in this delivery lane.
+    ///
+    /// A framework-suppressed delivery is `Blocked`, even when an underlying
+    /// docking region remains in the core hit manifest.
+    EmptyLane,
     /// Framework delivery could not be authoritatively determined.
     Unknown(PointerReceiverUnknownReason),
 }
@@ -1163,7 +1166,7 @@ pub enum PointerReceiverHoverHitDisposition {
     /// A higher framework receiver blocks hover-drop interaction.
     Blocked,
     /// No hover-drop receiver exists at the exact point.
-    NoReceiver,
+    EmptyLane,
     /// The framework could not authoritatively determine the hover hit.
     Unknown(PointerReceiverUnknownReason),
 }
@@ -1188,7 +1191,7 @@ impl PointerReceiverDelivery {
     ///
     /// This is a strict shorthand for frameworks which report one receiver for
     /// both lanes. A lane absent from the region remains typed `Unknown`, never
-    /// an inferred `NoReceiver`. Use [`Self::from_lanes`] when routing differs.
+    /// an inferred `EmptyLane`. Use [`Self::from_lanes`] when routing differs.
     pub fn new(
         projection: SurfaceInteractionProjection<'_>,
         disposition: PointerReceiverDeliveryDisposition,
@@ -2181,7 +2184,7 @@ mod tests {
                     output: Some(ticket),
                     authority: Some(authority(ticket, 1)),
                     point: Some(LogicalPoint::new(10.0, 20.0).expect("finite test point")),
-                    disposition: PointerReceiverHoverHitDisposition::NoReceiver,
+                    disposition: PointerReceiverHoverHitDisposition::EmptyLane,
                 },
             )])
             .expect("known hover is structurally valid");
@@ -2253,9 +2256,9 @@ mod tests {
                 PointerReceiverDelivery {
                     output: Some(ticket),
                     authority: Some(current),
-                    click: PointerReceiverDeliveryDisposition::NoReceiver,
-                    drag: PointerReceiverDeliveryDisposition::NoReceiver,
-                    scroll: PointerReceiverDeliveryDisposition::NoReceiver,
+                    click: PointerReceiverDeliveryDisposition::EmptyLane,
+                    drag: PointerReceiverDeliveryDisposition::EmptyLane,
+                    scroll: PointerReceiverDeliveryDisposition::EmptyLane,
                 },
             )])
             .expect("known no-receiver is structurally valid");
