@@ -12,6 +12,15 @@ a subsequent successful frame admits its result before granting receiver
 authority. This prevents discarded, stale or superseded output from authorizing
 input while allowing asynchronous rendering and bounded backpressure.
 
+Native transfers which retire their source may retain a released drag as one
+pending mutation until its exact preview is presented. Pointer Idle does not
+mean that this transaction has finished. The presentation ledger owns output
+terminals; the mutation references matching emissions, including those emitted
+before release. Source or target authority loss must terminate the pending
+mutation as well as invalidate active feedback. Late output results still settle
+their ledger entries but cannot revive a cancelled mutation or authorize a newer
+gesture.
+
 A draw traversal or GPU submission alone cannot prove presentation. Coalescing
 hosts must settle every discarded handle and preserve per-stream terminal order.
 See [retained UI publication](../ADAPTER_TESTING.md#retained-ui-publication).

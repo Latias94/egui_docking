@@ -578,3 +578,6 @@ fn dropping_earlier_preview_copies_keeps_the_last_pane_release_waiting_for_later
         held_last_pane_drop(result, true);
     }
 }
+
+mod presentation_admission;
+mod presentation_order;

@@ -1293,6 +1293,18 @@ impl DockEngine {
         end_routing: bool,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<(), EngineError> {
+        // An active drag can acquire fresh feedback after authority loss. A
+        // released drag has frozen its decision and returned its pointer to Idle,
+        // so the same invalidation must terminate its presentation obligation.
+        self.cancel_pending_release_obligations_input(
+            input,
+            if workspace_changed {
+                InteractionCancelReason::WorkspaceChanged
+            } else {
+                InteractionCancelReason::SceneUnavailable
+            },
+            interaction_events,
+        );
         let InteractionStatus::Dragging { session } = self.interaction.status() else {
             if workspace_changed {
                 self.invalidate_transient(

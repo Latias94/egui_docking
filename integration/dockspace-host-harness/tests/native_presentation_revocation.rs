@@ -5,14 +5,15 @@ use dockspace::model::{
 };
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
-    DockspaceManipulationRejection, DockspaceManipulationStatus, DockspaceSession, HostFrameReport,
-    HostWindowToken, HostWorkAreaToken, NativeCloseState, NativeDesktopPointerLocation,
-    NativeDesktopPosition, NativeHostCapabilities, NativeHostCapability, NativePointerButton,
-    NativePointerEvent, NativePointerHover, NativePointerId, NativePointerInput,
-    NativePointerOwner, NativePointerRoster, NativeReceiverAnswer, NativeReceiverQuery,
-    NativeSurfaceBinding, NativeWindowFacts, NativeWindowHit, NativeWindowInputState,
-    NativeWindowPresentationState, NativeWorkAreaFacts, NativeWorkAreaRoster, PaintedSurfaceOutput,
-    SurfacePresentationArtifact, SurfacePresentationResult, UniformSurfaceMetrics,
+    DockspaceManipulationCancelReason, DockspaceManipulationStatus, DockspaceSession,
+    HostFrameReport, HostWindowToken, HostWorkAreaToken, NativeCloseState,
+    NativeDesktopPointerLocation, NativeDesktopPosition, NativeHostCapabilities,
+    NativeHostCapability, NativePointerButton, NativePointerEvent, NativePointerHover,
+    NativePointerId, NativePointerInput, NativePointerOwner, NativePointerRoster,
+    NativeReceiverAnswer, NativeReceiverQuery, NativeSurfaceBinding, NativeWindowFacts,
+    NativeWindowHit, NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaFacts,
+    NativeWorkAreaRoster, PaintedSurfaceOutput, SurfacePresentationArtifact,
+    SurfacePresentationResult, UniformSurfaceMetrics,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -145,7 +146,7 @@ fn session() -> (
 }
 
 #[test]
-fn revoked_native_release_consumes_presented_output_as_terminal_rejection() {
+fn revoked_native_release_settles_its_output_without_reviving_the_cancelled_mutation() {
     let (mut session, binding, artifact) = session();
     let work_area = session
         .native_work_area(HostWorkAreaToken::new(1))
@@ -288,10 +289,12 @@ fn revoked_native_release_consumes_presented_output_as_terminal_rejection() {
     let terminal = terminal[0];
     assert!(matches!(
         terminal.status(),
-        DockspaceManipulationStatus::Rejected(DockspaceManipulationRejection::TargetUnavailable)
+        DockspaceManipulationStatus::Cancelled(DockspaceManipulationCancelReason::SceneUnavailable)
     ));
     assert_eq!(terminal.manipulation_id(), manipulation_id);
     assert!(!session.has_pending_native_create());
+    assert!(!session.has_pending_presentation());
+    assert!(!session.has_active_gesture());
     assert!(!session.has_pending_native_input());
 
     session
@@ -303,5 +306,6 @@ fn revoked_native_release_consumes_presented_output_as_terminal_rejection() {
         dockspace::runtime::HostInputOutcome::NativePlatformSnapshotApplied { .. }
     )));
     assert!(next.native_bindings().contains(&binding));
+    assert!(next.manipulation_feedback().is_empty());
     assert!(!session.has_pending_native_input());
 }
