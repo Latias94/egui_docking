@@ -26,6 +26,25 @@ Rust editor UIs, with egui adapters." Suggested topics are `rust`, `docking`,
 `egui`, `gui` and `editor`. Point the homepage at a maintained user guide or demo
 once one is hosted; avoid linking an internal plan as the product homepage.
 
+## Source modules
+
+Keep state and the operations which advance it together. A file's length alone
+does not justify another layer: inspect production code separately from tests.
+Use Rust's ordinary `module.rs` and `module/` layout so source navigation follows
+module ownership without `#[path]` aliases.
+
+| Area | Owner | Responsibilities |
+| --- | --- | --- |
+| Frozen mutations | `dockspace/src/engine/pending_mutation/` | Release obligations, cancellation and presentation progress for commands waiting to commit |
+| Renderer observations | `dockspace/src/presentation_observation.rs` | Exact output identities, stream ordering and renderer terminal facts |
+| Native pointer normalization | `egui_dockspace_native/src/pointer_event/` | Device enrollment, mouse button tails and scroll phases before core ingress |
+| Framework hit translation | `egui_dockspace_native/src/receiver.rs` | Match exact presented egui artifacts and independently resolve delivery/hover lanes |
+
+Keep private tests in the matching `module/tests.rs` or narrowly named child
+modules. Test helpers stay private to their module unless multiple production
+consumers justify a shared interface. Moving a test must preserve its behavior
+and must not widen production visibility just to keep it compiling.
+
 ## Documentation ownership
 
 - The root README answers what the project does, how to try it and which host
