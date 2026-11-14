@@ -1,15 +1,39 @@
-//! Device-independent explicit gesture cancellation.
+//! Device-independent gesture cancellation and immediate resize recovery.
 
 use crate::engine::transition::{InputOutcome, WorkspaceVersion};
 use crate::ids::{InputSequence, SurfaceId};
+#[cfg(feature = "motion")]
+use crate::interaction::ActiveResizeView;
 use crate::interaction::{
-    GestureCancelDelivery, InteractionCancelReason, InteractionEvent, InteractionOutcome,
-    InteractionRejection, InteractionStatus,
+    GestureCancelDelivery, GestureOwner, InteractionCancelReason, InteractionEvent,
+    InteractionOutcome, InteractionRejection, InteractionStatus,
 };
 
 use super::{DockEngine, EngineError};
 
 impl DockEngine {
+    /// Cancels state after the caller has qualified its delivery or owner.
+    /// Resize rollback remains immediate even if the last preview was never presented.
+    pub(super) fn cancel_interaction_state(
+        &mut self,
+        owner: Option<GestureOwner>,
+    ) -> Option<InteractionStatus> {
+        #[cfg(feature = "motion")]
+        let resize_surface = self
+            .interaction
+            .active_resize_view()
+            .map(ActiveResizeView::surface);
+        let status = match owner {
+            Some(owner) => self.interaction.cancel_owner(owner),
+            None => self.interaction.cancel_active(),
+        }?;
+        #[cfg(feature = "motion")]
+        if let Some(surface) = resize_surface {
+            self.settle_resize_motion(surface);
+        }
+        Some(status)
+    }
+
     pub(super) fn reduce_gesture_cancel_input(
         &mut self,
         input: InputSequence,

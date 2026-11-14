@@ -96,6 +96,11 @@ release at a new position without a preceding move, and a complete gesture in
 one input batch. A dropped preview must not add a structural transition after
 release. Cancellation must restore the committed partition and accept a fresh
 press. Run these checks with default motion and without the motion feature.
+Exercise junctions through actual hits as well: both axes must update together,
+clamp independently and return to the press geometry without accumulating drift.
+Cancellation after chrome or viewport changes must restore current committed
+geometry even when the preview was not presented or the recovery output is
+dropped. Later structural changes must retain their normal motion policy.
 
 Compose these checks across the adapter's real seams as well. A callback test
 which supplies its own receiver answers cannot detect disagreement between a

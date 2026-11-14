@@ -760,16 +760,18 @@ impl DockEngine {
         reason: InteractionCancelReason,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> InteractionOutcome {
-        match self.interaction.cancel_resize(session) {
-            Ok(status) => {
-                interaction_events.push(InteractionEvent::new(
-                    input,
-                    self.version,
-                    InteractionEventKind::Cancelled { status, reason },
-                ));
-                InteractionOutcome::Cancelled { status, reason }
-            }
-            Err(error) => InteractionOutcome::Rejected(error),
-        }
+        let owner = match self.interaction.active_resize(session) {
+            Ok(resize) => resize.owner,
+            Err(error) => return InteractionOutcome::Rejected(error),
+        };
+        let Some(status) = self.cancel_interaction_state(Some(owner)) else {
+            return InteractionOutcome::Rejected(InteractionRejection::NoActiveGesture);
+        };
+        interaction_events.push(InteractionEvent::new(
+            input,
+            self.version,
+            InteractionEventKind::Cancelled { status, reason },
+        ));
+        InteractionOutcome::Cancelled { status, reason }
     }
 }

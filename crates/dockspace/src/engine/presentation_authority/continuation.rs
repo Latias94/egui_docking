@@ -302,7 +302,7 @@ impl DockEngine {
                 input: input_for_error,
                 source,
             })?;
-        Ok(self.interaction.cancel_active())
+        Ok(self.cancel_interaction_state(None))
     }
 
     pub(in crate::engine) fn cancel_revoked_presentation_caused(

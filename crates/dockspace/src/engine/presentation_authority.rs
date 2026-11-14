@@ -1011,7 +1011,7 @@ impl DockEngine {
         self.viewport
             .end_all_drag_routing()
             .map_err(|source| EngineError::Viewport { input, source })?;
-        if let Some(status) = self.interaction.cancel_active() {
+        if let Some(status) = self.cancel_interaction_state(None) {
             interaction_events.push(InteractionEvent::new(
                 input,
                 self.version,
@@ -1031,7 +1031,7 @@ impl DockEngine {
         self.viewport
             .end_all_drag_routing()
             .map_err(|source| EngineError::Viewport { input, source })?;
-        if let Some(status) = self.interaction.cancel_active() {
+        if let Some(status) = self.cancel_interaction_state(None) {
             interaction_events.push(InteractionEvent::new(
                 input,
                 self.version,
@@ -1736,7 +1736,7 @@ impl DockEngine {
                         input: self.last_input,
                         source,
                     })?;
-                if let Some(status) = self.interaction.cancel_active() {
+                if let Some(status) = self.cancel_interaction_state(None) {
                     interaction_events.push(InteractionEvent::new_caused(
                         cause,
                         self.version,

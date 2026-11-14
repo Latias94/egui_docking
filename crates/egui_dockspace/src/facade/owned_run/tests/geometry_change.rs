@@ -10,6 +10,7 @@ use egui::{Key, Modifiers};
 
 use super::*;
 
+mod junction_samples;
 #[cfg(feature = "motion")]
 mod motion_recovery;
 mod resize_samples;

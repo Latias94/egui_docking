@@ -359,12 +359,11 @@ impl DockEngine {
                     source,
                 })?;
         }
-        let status =
-            self.interaction
-                .cancel_owner(owner)
-                .ok_or(EngineError::ReductionCauseInvariant {
-                    detail: "active gesture could not cancel its exact owner",
-                })?;
+        let status = self.cancel_interaction_state(Some(owner)).ok_or(
+            EngineError::ReductionCauseInvariant {
+                detail: "active gesture could not cancel its exact owner",
+            },
+        )?;
         interaction_events.push(InteractionEvent::new_caused(
             cause,
             self.version,
@@ -407,7 +406,7 @@ impl DockEngine {
                     source,
                 })?;
         }
-        if let Some(status) = self.interaction.cancel_owner(owner) {
+        if let Some(status) = self.cancel_interaction_state(Some(owner)) {
             interaction_events.push(InteractionEvent::new_caused(
                 cause,
                 self.version,
