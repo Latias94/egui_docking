@@ -26,6 +26,7 @@ use crate::{NativeActionRequestError, NativeActionStatus, NativeWindowClosePolic
 
 use super::NativeRuntimeState;
 
+mod deferred_move;
 mod policy;
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -199,13 +200,11 @@ fn host_protection_follows_contained_root_lifecycle_through_empty_central_and_ne
     )
     .unwrap();
     let layout = DockspaceLayout::new([
-        DockspaceSurfaceLayout::rootless(SURFACE).with_contained(
-            DockspaceContainedLayout::new(
-                FloatingPresentationId::new(7),
-                DockspaceRootLayout::new(contained_root, contained),
-                dockspace::geometry::LogicalRect::new(80.0, 80.0, 320.0, 240.0).unwrap(),
-            ),
-        ),
+        DockspaceSurfaceLayout::rootless(SURFACE).with_contained(DockspaceContainedLayout::new(
+            FloatingPresentationId::new(7),
+            DockspaceRootLayout::new(contained_root, contained),
+            dockspace::geometry::LogicalRect::new(80.0, 80.0, 320.0, 240.0).unwrap(),
+        )),
         DockspaceSurfaceLayout::new(
             target_surface,
             DockspaceRootLayout::new(RootId::new(9), DockspaceNode::central_tabs([target_item])),
@@ -242,12 +241,14 @@ fn host_protection_follows_contained_root_lifecycle_through_empty_central_and_ne
         assert_eq!(error.into_command(), command);
         assert!(!state.application_actions.is_occupied());
         assert_eq!(state.coordinator.session().version(), before);
-        assert!(state
-            .coordinator
-            .session()
-            .view()
-            .root(contained_root)
-            .is_some());
+        assert!(
+            state
+                .coordinator
+                .session()
+                .view()
+                .root(contained_root)
+                .is_some()
+        );
     }
 }
 

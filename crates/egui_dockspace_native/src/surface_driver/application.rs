@@ -453,9 +453,8 @@ impl<P: PaneView> NativeRuntimeState<P> {
         };
         let may_retire = self.host_root_may_retire(root);
         let complete_item = |item| root.contains_only_item(item) && may_retire;
-        let complete_tabs = |group: &PreparedTabsGroup| {
-            root.contains_only_tabs_group(group) && may_retire
-        };
+        let complete_tabs =
+            |group: &PreparedTabsGroup| root.contains_only_tabs_group(group) && may_retire;
         let view = self.coordinator.session().view();
         let target = match command {
             NativeCommand::DockItem { item, placement } if complete_item(*item) => {

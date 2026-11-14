@@ -7,10 +7,13 @@ use crate::close_plan::{
 use crate::geometry::{LogicalRect, LogicalSize};
 use crate::ids::{ItemId, WorkspaceRevision};
 use crate::model::{
-    DockAnchor, DockPlacement, DockspaceAxis, DockspaceContainedLayout, DockspaceLayout,
-    DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, FloatingPresentationId,
+    DockAnchor, DockPlacement, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
+    DockspaceSurfaceLayout,
 };
 use crate::policy::{CloseCapability, DockPolicy};
+
+mod deferred_move;
+mod multiview;
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const OTHER_SURFACE: SurfaceId = SurfaceId::new(2);
@@ -20,9 +23,6 @@ const FIRST: ItemId = ItemId::new(1);
 const SECOND: ItemId = ItemId::new(2);
 const THIRD: ItemId = ItemId::new(3);
 const FOURTH: ItemId = ItemId::new(4);
-const FIFTH: ItemId = ItemId::new(5);
-const CONTAINED_ROOT: RootId = RootId::new(3);
-const CONTAINED_FLOATING: FloatingPresentationId = FloatingPresentationId::new(1);
 
 fn session() -> DockspaceSession {
     let layout = DockspaceLayout::new([
@@ -39,128 +39,6 @@ fn session() -> DockspaceSession {
     let mut policy = DockPolicy::default();
     policy.set_close_capability(CloseCapability::DeferredAllowed);
     DockspaceSession::from_layout(layout, policy).unwrap()
-}
-
-fn multiview_session() -> DockspaceSession {
-    DockspaceSession::from_layout(
-        DockspaceLayout::new([
-            DockspaceSurfaceLayout::new(
-                SURFACE,
-                DockspaceRootLayout::new(ROOT, DockspaceNode::central_tabs([FIRST, SECOND])),
-            )
-            .with_contained(DockspaceContainedLayout::new(
-                CONTAINED_FLOATING,
-                DockspaceRootLayout::new(CONTAINED_ROOT, DockspaceNode::tabs([FIFTH])),
-                LogicalRect::new(80.0, 80.0, 320.0, 240.0).unwrap(),
-            )),
-            DockspaceSurfaceLayout::new(
-                OTHER_SURFACE,
-                DockspaceRootLayout::new(OTHER_ROOT, DockspaceNode::central_tabs([THIRD, FOURTH])),
-            ),
-        ])
-        .unwrap(),
-        DockPolicy::default(),
-    )
-    .unwrap()
-}
-
-struct ActionRng(u64);
-
-impl ActionRng {
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        self.0
-    }
-
-    fn index(&mut self, len: usize) -> usize {
-        let len = u64::try_from(len).expect("generated collection length fits u64");
-        usize::try_from(self.next() % len).expect("generated index fits usize")
-    }
-}
-
-fn assert_multiview_invariants(session: &DockspaceSession, items: &[ItemId]) {
-    let view = session.view();
-    let surfaces = view.surfaces().collect::<Vec<_>>();
-    assert!(!surfaces.is_empty());
-    for item in items {
-        let location = view
-            .item(*item)
-            .expect("random actions must preserve every item");
-        let surface = view
-            .surface(location.surface())
-            .expect("item surface must remain published");
-        let root = view
-            .root(location.root())
-            .expect("item root must remain published");
-        if let Some(floating) = location.contained() {
-            assert!(surface.contained().any(|window| window.id() == floating));
-            assert_eq!(
-                view.contained(floating)
-                    .and_then(|window| window.root().map(|root| root.id())),
-                Some(root.id())
-            );
-        } else {
-            assert_eq!(surface.main_root().map(|main| main.id()), Some(root.id()));
-        }
-    }
-    for surface in surfaces {
-        if surface.is_rootless() {
-            assert!(surface.contained_count() > 0);
-        }
-    }
-}
-
-#[test]
-fn seeded_multiview_actions_preserve_item_ownership_and_surface_liveness() {
-    let mut session = multiview_session();
-    let items = [FIRST, SECOND, THIRD, FOURTH, FIFTH];
-    let mut rng = ActionRng(0x4d55_4c54_4956_4945);
-
-    for _ in 0..512 {
-        let source = items[rng.index(items.len())];
-        let target = items[rng.index(items.len())];
-        let placement = DockPlacement::Center(DockAnchor::Item(target));
-        let prepared = match rng.next() % 7 {
-            0 => session.prepare_select_item(source),
-            1 => session.prepare_dock_item(source, placement),
-            2 => session.prepare_open_item(source, placement),
-            3 => session.prepare_dock_root(
-                session
-                    .view()
-                    .item(source)
-                    .expect("source item is open")
-                    .root(),
-                placement,
-            ),
-            4 => match session.capture_tabs_group(DockAnchor::Item(source)) {
-                Ok(group) => session.prepare_dock_tabs(group, placement),
-                Err(_) => session.prepare_select_item(source),
-            },
-            5 => session.prepare_raise_contained(source),
-            _ => session.prepare_bring_contained_into_view(source),
-        };
-
-        let before = session.workspace().clone();
-        let mut frame = session.begin_host_frame().unwrap();
-        let submitted = frame.submit_prepared_action(prepared).unwrap();
-        let report = commit(frame);
-        let outcome = report
-            .submitted_action_outcome(submitted)
-            .expect("every random application action needs one exact terminal outcome");
-        if matches!(
-            outcome,
-            HostInputOutcome::ProductActionRejected(_) | HostInputOutcome::StaleRejected { .. }
-        ) {
-            assert_eq!(
-                session.workspace(),
-                &before,
-                "rejected random actions must preserve the published workspace"
-            );
-        }
-        assert_multiview_invariants(&session, &items);
-    }
 }
 
 fn commit(mut frame: DockspaceHostFrame<'_>) -> HostFrameReport {
@@ -181,110 +59,6 @@ fn apply_action(session: &mut DockspaceSession, prepared: PreparedDockAction) ->
         HostInputOutcome::ProductActionApplied(_)
             | HostInputOutcome::ProductPresentationActionRequested { .. }
     )
-}
-
-#[test]
-fn multiview_root_lifecycle_boundaries_are_explicit_and_atomic() {
-    let layout = DockspaceLayout::new([
-        DockspaceSurfaceLayout::new(
-            SURFACE,
-            DockspaceRootLayout::new(ROOT, DockspaceNode::central_tabs([FIRST])),
-        ),
-        DockspaceSurfaceLayout::new(
-            OTHER_SURFACE,
-            DockspaceRootLayout::new(OTHER_ROOT, DockspaceNode::central_tabs([SECOND])),
-        ),
-    ])
-    .unwrap();
-    let mut main_central = DockspaceSession::from_layout(layout, DockPolicy::default()).unwrap();
-    let prepared =
-        main_central.prepare_dock_item(FIRST, DockPlacement::Center(DockAnchor::Item(SECOND)));
-    assert!(apply_action(&mut main_central, prepared));
-    let view = main_central.view();
-    let main_root = view.surface(SURFACE).unwrap().main_root().unwrap();
-    assert!(main_root.retains_empty_central_root());
-    assert!(
-        main_root
-            .central()
-            .and_then(|node| node.tabs())
-            .is_some_and(|tabs| tabs.items().is_empty())
-    );
-    assert!(view.root(ROOT).is_some());
-
-    let nested_source = DockspaceNode::equal_split(
-        DockspaceAxis::Horizontal,
-        [
-            DockspaceNode::central_tabs([]),
-            DockspaceNode::tabs([THIRD]),
-        ],
-    )
-    .unwrap();
-    let nested_layout = DockspaceLayout::new([
-        DockspaceSurfaceLayout::new(
-            SURFACE,
-            DockspaceRootLayout::new(ROOT, DockspaceNode::central_tabs([FIRST])),
-        ),
-        DockspaceSurfaceLayout::rootless(OTHER_SURFACE).with_contained(
-            DockspaceContainedLayout::new(
-                CONTAINED_FLOATING,
-                DockspaceRootLayout::new(CONTAINED_ROOT, nested_source),
-                LogicalRect::new(80.0, 80.0, 320.0, 240.0).unwrap(),
-            ),
-        ),
-    ])
-    .unwrap();
-    let mut contained_nested =
-        DockspaceSession::from_layout(nested_layout, DockPolicy::default()).unwrap();
-    let prepared =
-        contained_nested.prepare_dock_item(THIRD, DockPlacement::Center(DockAnchor::Item(FIRST)));
-    assert!(apply_action(&mut contained_nested, prepared));
-    let view = contained_nested.view();
-    assert!(view.root(CONTAINED_ROOT).is_none());
-    assert!(view.surface(OTHER_SURFACE).is_none());
-    assert!(view.item(THIRD).is_some());
-
-    let close_layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
-        SURFACE,
-        DockspaceRootLayout::new(ROOT, DockspaceNode::central_tabs([FIRST])),
-    )])
-    .unwrap();
-    let mut close_session =
-        DockspaceSession::from_layout(close_layout, DockPolicy::default()).unwrap();
-    let prepared = close_session.prepare_close_item(FIRST);
-    let mut request_frame = close_session.begin_host_frame().unwrap();
-    let request = request_frame
-        .submit_prepared_close_request(prepared)
-        .unwrap();
-    let report = commit(request_frame);
-    let plan = match report.submitted_action_outcome(request) {
-        Some(HostInputOutcome::CloseRequested { plan, .. }) => plan.clone(),
-        outcome => panic!("expected a close plan, got {outcome:?}"),
-    };
-    let mut decision_frame = close_session.begin_host_frame().unwrap();
-    let decision = decision_frame
-        .resolve_close(
-            plan.request(),
-            plan.items()[0].token(),
-            CloseDecision::Allow,
-        )
-        .unwrap();
-    let report = commit(decision_frame);
-    assert!(matches!(
-        report.submitted_action_outcome(decision),
-        Some(HostInputOutcome::CloseDecisionProcessed {
-            application: Some(Ok(DockspaceCloseOutcome::ItemClosed { item: FIRST, .. })),
-            changed: true,
-            ..
-        })
-    ));
-    let view = close_session.view();
-    assert!(view.root(ROOT).is_some());
-    assert!(
-        view.root(ROOT)
-            .and_then(|root| root.central())
-            .and_then(|node| node.tabs())
-            .is_some_and(|tabs| tabs.items().is_empty())
-    );
 }
 
 fn requested_plan(
