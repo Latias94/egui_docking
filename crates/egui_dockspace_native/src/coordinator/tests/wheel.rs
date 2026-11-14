@@ -20,6 +20,8 @@ use crate::mailbox::HostRecord;
 use crate::pointer_event::{NativePointerTranslation, NativePointerTranslator};
 use crate::viewport_map::NativeViewportMap;
 
+mod device_removal;
+
 #[test]
 fn wheel_translation_preserves_event_time_routes_position_and_modifiers() {
     let mut native = coordinator();

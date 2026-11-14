@@ -157,15 +157,23 @@ impl NativePointerTranslator {
         }
     }
 
-    /// Retains each removed identity's existing slot as a tail gate.
+    /// Retains active identities as tail gates and releases idle scroll lanes.
     ///
     /// Winit raw-device identifiers cannot select a subset of the virtual
     /// identities carried by window input. An explicit start allocates a fresh
-    /// identity in the same slot; late tails cannot revive the previous one.
+    /// identity in a retained slot; late tails cannot revive the previous one.
+    /// Ordinary wheels emit only Moved, so an idle scroll lane has no tail to
+    /// quarantine and must allow its next sample to enroll a fresh identity.
     pub(crate) fn forget_removed_devices(&mut self) {
-        for entry in self.devices.values_mut() {
+        self.devices.retain(|key, entry| {
+            if matches!(key, NativeInputDeviceKey::Scroll(_))
+                && matches!(entry, NativePointerDeviceEntry::Live(device) if matches!(device.scroll, NativeScrollState::Idle))
+            {
+                return false;
+            }
             *entry = NativePointerDeviceEntry::Removed;
-        }
+            true
+        });
     }
 
     pub(crate) fn references_binding(&self, binding: NativeWindowBinding) -> bool {
