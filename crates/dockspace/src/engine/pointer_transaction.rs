@@ -1507,6 +1507,14 @@ impl DockEngine {
             .expect("deferred release has an exact matching preview")
             .public()
             .token();
+        let presentation = PendingPresentationTracker {
+            outputs: self
+                .presentation_authority
+                .presentation
+                .pending_drag_preview_output_keys(preview)
+                .collect(),
+            ..PendingPresentationTracker::default()
+        };
         self.pending_mutation = Some(PendingMutation::DragRelease(PendingDragRelease {
             source_version: self.version,
             policy_revision: policy.revision(),
@@ -1517,7 +1525,7 @@ impl DockEngine {
             physical_route,
             release_decision,
             preview,
-            presentation: PendingPresentationTracker::default(),
+            presentation,
         }));
         Ok(InteractionOutcome::ReleasePending { session, preview })
     }

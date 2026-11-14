@@ -1435,6 +1435,28 @@ impl PresentationLedger {
             .flat_map(|stream| stream.pending.keys().copied())
     }
 
+    /// Finds already emitted copies of this exact preview in its current stream.
+    /// A later release inherits their terminal obligations without treating any
+    /// unobserved output as presented or admitting a superseded endpoint.
+    pub(crate) fn pending_drag_preview_output_keys(
+        &self,
+        preview: PreviewToken,
+    ) -> impl Iterator<Item = HostFrameKey> + '_ {
+        self.active_streams
+            .get(&preview.scene().surface())
+            .and_then(|stream| self.streams.get(stream))
+            .filter(|stream| stream.lifecycle == PresentationStreamLifecycle::Active)
+            .into_iter()
+            .flat_map(|stream| stream.pending.iter())
+            .filter_map(move |(key, output)| {
+                output
+                    .payload
+                    .interaction()
+                    .is_some_and(|interaction| interaction.drag_preview() == Some(preview))
+                    .then_some(*key)
+            })
+    }
+
     /// Iterates the exact stream incarnations still represented by detailed core state.
     pub(crate) fn retained_stream_ids(
         &self,
