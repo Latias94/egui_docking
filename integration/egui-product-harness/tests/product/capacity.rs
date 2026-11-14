@@ -455,6 +455,41 @@ fn oversized_content_remains_scrollable_and_clipped_through_continuous_docking()
 }
 
 #[test]
+fn compression_reveals_constrained_panes_and_preserves_real_content_interaction() {
+    let ctx = Context::default();
+    ctx.enable_accesskit();
+    let size = vec2(640.0, 300.0);
+    let mut style = DockStyle {
+        minimum_pane_size: vec2(900.0, 180.0),
+        ..Default::default()
+    };
+    let mut dock = Dockspace::builder("compressed-content", capacity_layout(2))
+        .style(style.clone())
+        .build()
+        .unwrap();
+    let mut panes = ContentPanes::new(true);
+    frame(&ctx, &mut dock, &mut panes, size, Vec::new());
+    frame(&ctx, &mut dock, &mut panes, size, Vec::new());
+    assert!(!panes.current.contains_key(&SECOND));
+    style.pane_overflow_policy = egui_dockspace::PaneOverflowPolicy::Compress;
+    dock.set_style(style).unwrap();
+    frame(&ctx, &mut dock, &mut panes, size, Vec::new());
+    frame(&ctx, &mut dock, &mut panes, size, Vec::new());
+    for item in [FIRST, SECOND] {
+        let clip = panes.current[&item].clip;
+        assert!(clip.width() > 0.0 && clip.width() < 900.0);
+        assert!(clip.height() > 0.0);
+    }
+    scroll_to_document_end(&ctx, &mut dock, &mut panes, size);
+    let retained = panes.current[&FIRST];
+    merge_tab(&ctx, &mut dock, &mut panes, size, SECOND, FIRST);
+    reveal_first(&ctx, &mut dock, &mut panes, size);
+    conserve_items(&dock, 2);
+    assert_eq!(panes.current[&FIRST].scroll, retained.scroll);
+    assert_eq!(panes.clicks.get(&FIRST), Some(&1));
+}
+
+#[test]
 fn tiny_and_zero_surfaces_recover_scrolled_content_and_new_float_redock_gestures() {
     let ctx = Context::default();
     ctx.enable_accesskit();

@@ -12,6 +12,7 @@ use crate::geometry::{Constraints, GeometryError, LogicalRect, LogicalSize};
 use crate::graph::WorkspaceData;
 use crate::graph::{Axis, NORMALIZED_WEIGHT_TOLERANCE, Node, SplitWeight, Workspace};
 use crate::ids::{NodeId, RootId};
+use crate::presentation_config::PaneOverflowPolicy;
 use crate::transition::WorkspaceVersion;
 use crate::workspace::WorkspaceIndex;
 
@@ -103,6 +104,7 @@ pub struct AxisLayout {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LayoutMetrics {
     splitter_thickness: f64,
+    pane_overflow_policy: PaneOverflowPolicy,
 }
 
 impl LayoutMetrics {
@@ -123,7 +125,15 @@ impl LayoutMetrics {
             });
         }
 
-        Ok(Self { splitter_thickness })
+        Ok(Self {
+            splitter_thickness,
+            pane_overflow_policy: PaneOverflowPolicy::default(),
+        })
+    }
+
+    pub(crate) const fn with_pane_overflow_policy(mut self, policy: PaneOverflowPolicy) -> Self {
+        self.pane_overflow_policy = policy;
+        self
     }
 
     /// Returns the preferred extent reserved for every boundary between split children.
@@ -332,6 +342,7 @@ pub fn solve_axis(
         central_index,
         &mut sizes,
         &mut eligible,
+        PaneOverflowPolicy::Clip,
     )?;
     Ok(AxisLayout {
         sizes,
@@ -353,9 +364,18 @@ fn solve_axis_into(
     central_index: Option<usize>,
     sizes: &mut [f64],
     eligible: &mut Vec<usize>,
+    overflow_policy: PaneOverflowPolicy,
 ) -> Result<AxisOutcome, LayoutError> {
     validate_inputs(extent, weights, constraints, central_index)?;
-    solve_validated_axis_into(extent, weights, constraints, central_index, sizes, eligible)
+    solve_validated_axis_into(
+        extent,
+        weights,
+        constraints,
+        central_index,
+        sizes,
+        eligible,
+        overflow_policy,
+    )
 }
 
 fn solve_validated_axis_into(
@@ -365,6 +385,7 @@ fn solve_validated_axis_into(
     central_index: Option<usize>,
     sizes: &mut [f64],
     eligible: &mut Vec<usize>,
+    overflow_policy: PaneOverflowPolicy,
 ) -> Result<AxisOutcome, LayoutError> {
     debug_assert_eq!(sizes.len(), weights.len());
     if weights.is_empty() {
@@ -384,8 +405,22 @@ fn solve_validated_axis_into(
     )?;
 
     if min_total > extent {
-        for (size, constraint) in sizes.iter_mut().zip(constraints) {
-            *size = constraint.min;
+        match overflow_policy {
+            PaneOverflowPolicy::Clip => {
+                for (size, constraint) in sizes.iter_mut().zip(constraints) {
+                    *size = constraint.min;
+                }
+            }
+            PaneOverflowPolicy::Compress => {
+                let mut prefix = 0.0;
+                let mut previous = 0.0;
+                for (size, constraint) in sizes.iter_mut().zip(constraints) {
+                    prefix += constraint.min;
+                    let boundary = (extent * (prefix / min_total)).clamp(previous, extent);
+                    *size = boundary - previous;
+                    previous = boundary;
+                }
+            }
         }
         return Ok(AxisOutcome {
             overflow: min_total - extent,
@@ -1159,6 +1194,7 @@ fn prepare_split_projection(
         central_index,
         sizes,
         &mut scratch.eligible,
+        metrics.pane_overflow_policy,
     )?;
     for (child, &extent) in projection.splits.children[child_range.clone()]
         .iter_mut()
@@ -1488,6 +1524,9 @@ fn allocation_tolerance(a: f64, b: f64, c: f64) -> f64 {
 
 #[cfg(test)]
 mod override_tests;
+
+#[cfg(test)]
+mod overflow_tests;
 
 #[cfg(test)]
 mod reference;

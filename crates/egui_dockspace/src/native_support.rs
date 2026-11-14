@@ -192,6 +192,10 @@ pub fn style_presentation_mismatch(
             mapped.minimum_pane_size() != accepted.minimum_pane_size(),
         ),
         (
+            "pane_overflow_policy",
+            mapped.pane_overflow_policy() != accepted.pane_overflow_policy(),
+        ),
+        (
             "minimum_floating_size",
             mapped.minimum_floating_size() != accepted.minimum_floating_size(),
         ),

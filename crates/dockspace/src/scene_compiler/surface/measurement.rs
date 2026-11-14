@@ -43,7 +43,8 @@ pub(super) fn measure_root_layout<'workspace>(
         workspace,
         root,
         &minimums,
-        LayoutMetrics::new(config.splitter_thickness())?,
+        LayoutMetrics::new(config.splitter_thickness())?
+            .with_pane_overflow_policy(config.pane_overflow_policy()),
     )
     .map_err(|error| match error {
         LayoutError::MissingRoot { root } => SceneCompilationError::MissingRoot { surface, root },

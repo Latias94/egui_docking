@@ -50,7 +50,6 @@ pub use dockspace::model::{
 };
 #[cfg(feature = "motion")]
 pub use dockspace::motion;
-pub use dockspace::runtime::SurfacePresentationResult;
 pub use dockspace::runtime::{
     DockspaceCloseInertReason, DockspaceCloseOutcome as DockspaceAppliedClose, DockspaceClosePhase,
     DockspaceCloseRejection as DockspaceCloseApplicationRejection, DockspaceCloseRequestRejection,
@@ -66,6 +65,7 @@ pub use dockspace::runtime::{
     DockspaceDocumentBootstrap, DockspaceDocumentId, DockspacePersistenceError,
     DockspacePersistenceErrorKind,
 };
+pub use dockspace::runtime::{PaneOverflowPolicy, SurfacePresentationResult};
 pub use drag_preview::{DockspaceDragSourceKind, DragPreview};
 pub use drop_guide::{
     DockspaceDropDirection, DockspaceDropEligibility, DockspaceGuideScope, DropGuide,

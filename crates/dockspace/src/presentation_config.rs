@@ -6,6 +6,20 @@ use thiserror::Error;
 
 use crate::geometry::{GeometryError, LogicalSize};
 
+/// Layout behavior when pane minima exceed the available split extent.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PaneOverflowPolicy {
+    /// Preserve pane minima and clip the layout to the surface.
+    #[default]
+    Clip,
+    /// Fit children by proportionally reducing their minimum extents.
+    ///
+    /// Original constraints and persistent split weights remain unchanged.
+    /// Splitter adjustment stays unavailable while its minima cannot fit.
+    /// Very small surfaces can still leave no room for pane content or chrome.
+    Compress,
+}
+
 /// Monotonic revision of the core-owned presentation configuration.
 ///
 /// Revisions are advanced explicitly. They are never derived from hashes, so a
@@ -57,6 +71,7 @@ pub struct DockPresentationConfig {
     splitter_thickness: f64,
     splitter_hit_extent: f64,
     splitter_keyboard_step: f64,
+    pane_overflow_policy: PaneOverflowPolicy,
     pointer_drag_start_distance: f64,
     hover_selection_delay: Option<Duration>,
     touch_long_press_delay: Duration,
@@ -110,6 +125,7 @@ impl DockPresentationConfig {
             splitter_thickness: self.splitter_thickness,
             splitter_hit_extent: self.splitter_hit_extent,
             splitter_keyboard_step: self.splitter_keyboard_step,
+            pane_overflow_policy: self.pane_overflow_policy,
             pointer_drag_start_distance: self.pointer_drag_start_distance,
             hover_selection_delay: self.hover_selection_delay,
             touch_long_press_delay: self.touch_long_press_delay,
@@ -205,6 +221,12 @@ impl DockPresentationConfig {
     #[must_use]
     pub const fn splitter_keyboard_step(&self) -> f64 {
         self.splitter_keyboard_step
+    }
+
+    /// Returns how split layouts respond when pane minima cannot fit.
+    #[must_use]
+    pub const fn pane_overflow_policy(&self) -> PaneOverflowPolicy {
+        self.pane_overflow_policy
     }
 
     /// Returns the logical source-surface distance required to begin a pointer drag.
@@ -361,6 +383,7 @@ pub struct DockPresentationConfigBuilder {
     splitter_thickness: f64,
     splitter_hit_extent: f64,
     splitter_keyboard_step: f64,
+    pane_overflow_policy: PaneOverflowPolicy,
     pointer_drag_start_distance: f64,
     hover_selection_delay: Option<Duration>,
     touch_long_press_delay: Duration,
@@ -400,6 +423,7 @@ impl Default for DockPresentationConfigBuilder {
             splitter_thickness: 1.0,
             splitter_hit_extent: 6.0,
             splitter_keyboard_step: 16.0,
+            pane_overflow_policy: PaneOverflowPolicy::default(),
             pointer_drag_start_distance: 6.0,
             hover_selection_delay: Some(Duration::from_millis(150)),
             touch_long_press_delay: Duration::from_millis(350),
@@ -511,6 +535,16 @@ impl DockPresentationConfigBuilder {
     #[must_use]
     pub const fn splitter_keyboard_step(mut self, value: f64) -> Self {
         self.splitter_keyboard_step = value;
+        self
+    }
+
+    /// Sets how split layouts respond when pane minima cannot fit.
+    ///
+    /// Compression changes only the constrained projection. Enlarging the
+    /// surface restores ordinary allocation from the original split weights.
+    #[must_use]
+    pub const fn pane_overflow_policy(mut self, value: PaneOverflowPolicy) -> Self {
+        self.pane_overflow_policy = value;
         self
     }
 
@@ -818,6 +852,7 @@ impl DockPresentationConfigBuilder {
             splitter_thickness: self.splitter_thickness,
             splitter_hit_extent: self.splitter_hit_extent,
             splitter_keyboard_step: self.splitter_keyboard_step,
+            pane_overflow_policy: self.pane_overflow_policy,
             pointer_drag_start_distance: self.pointer_drag_start_distance,
             hover_selection_delay: self.hover_selection_delay,
             touch_long_press_delay: self.touch_long_press_delay,

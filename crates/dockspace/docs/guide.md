@@ -213,11 +213,21 @@ weights, including a gesture which moves away and returns to its starting point.
 An overflowing, underallocated or compressed separator projection cannot begin
 a resize; clipped hit geometry is never substituted for complete layout facts.
 
-Pane minima describe useful content viewports, not full document sizes. When
-their sum exceeds the host's available space, the solver preserves the minima
-and clips the resulting layout to the surface; some panes may have no visible
-area. Hosts should offer a way to enlarge the surface or restore an accessible
-layout. Scrolling, text wrapping and canvas navigation remain content concerns.
+Pane minima describe useful content viewports, not full document sizes.
+`DockPresentationConfig::builder().pane_overflow_policy(...)` chooses what
+happens when their sum exceeds the available split extent:
+
+- `PaneOverflowPolicy::Clip` (default) preserves minima and clips the layout to
+  the surface; some panes may have no visible area.
+- `PaneOverflowPolicy::Compress` reduces child extents in proportion to their
+  minima so they fit. Compressed separators cannot be adjusted until their
+  original minima fit again. The constraints and persistent split weights stay
+  unchanged; enlarging the surface restores ordinary allocation.
+
+Both policies use the same solver for drop previews and committed layouts.
+Very small surfaces can still leave no room for content or tab chrome. Hosts
+should offer a way to enlarge the surface or restore an accessible layout.
+Scrolling, text wrapping and canvas navigation remain content concerns.
 
 Hosts can prepare `SurfaceSplitterAdjustment::Minimum` or `Maximum` for a
 separator or one junction axis, in addition to ordinary `Decrement`/`Increment`

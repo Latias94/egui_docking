@@ -17,6 +17,15 @@ fn compiled_split(children: u16) -> (DockEngine, PresentationPlan) {
 }
 
 fn compiled_split_with_tabs(children: u16, tabs: u16) -> (DockEngine, PresentationPlan) {
+    compiled_split_with_config(children, tabs, DockPresentationConfig::default(), 128.0)
+}
+
+fn compiled_split_with_config(
+    children: u16,
+    tabs: u16,
+    config: DockPresentationConfig,
+    pane_width: f64,
+) -> (DockEngine, PresentationPlan) {
     let content = DockspaceNode::equal_split(
         DockspaceAxis::Horizontal,
         (0..children).map(|pane| {
@@ -32,12 +41,9 @@ fn compiled_split_with_tabs(children: u16, tabs: u16) -> (DockEngine, Presentati
         DockspaceRootLayout::new(ROOT, content),
     )])
     .unwrap();
-    let engine = DockEngine::from_layout_with_presentation_config(
-        layout,
-        DockPolicy::default(),
-        DockPresentationConfig::default(),
-    )
-    .unwrap();
+    let engine =
+        DockEngine::from_layout_with_presentation_config(layout, DockPolicy::default(), config)
+            .unwrap();
     let requirements = engine.presentation_requirements().surface(SURFACE).unwrap();
     let mut measurements = SurfaceMeasurements::new(requirements.ticket());
     measurements
@@ -47,7 +53,7 @@ fn compiled_split_with_tabs(children: u16, tabs: u16) -> (DockEngine, Presentati
                 LogicalRect::new(
                     0.0,
                     0.0,
-                    f64::from(children) * f64::from(tabs) * 128.0,
+                    f64::from(children) * f64::from(tabs) * pane_width,
                     600.0,
                 )
                 .unwrap(),
@@ -121,6 +127,57 @@ fn with_resize_arrays(
         record.layer(),
         record.operable(),
     )
+}
+
+#[test]
+fn compressed_splitters_require_exact_layout_constraints_and_remain_inoperable() {
+    let config = DockPresentationConfig::builder()
+        .pane_overflow_policy(crate::presentation_config::PaneOverflowPolicy::Compress)
+        .build()
+        .unwrap();
+    let (engine, original) = compiled_split_with_config(4, 1, config, 40.0);
+    assert_eq!(original.splitter_records().len(), 3);
+    assert!(
+        original
+            .splitter_records()
+            .iter()
+            .all(|record| !record.operable())
+    );
+    assert_eq!(revalidate(&engine, original.clone()).unwrap(), original);
+
+    for defect in 0..4 {
+        let mut plan = original.clone();
+        let record = &original.splitter_records()[0];
+        let mut extents = record.child_extents().to_vec();
+        if defect == 0 {
+            extents[0] += 1.0;
+        }
+        plan.facts_mut().splitter_records[0] = SplitterRecord::new(
+            *record.id(),
+            record.draw_bounds(),
+            HitRegion::new(record.hit().rect()),
+            record.axis(),
+            record.before_bounds(),
+            record.after_bounds(),
+            record.before_minimum_extent() + if defect == 1 { 1.0 } else { 0.0 },
+            record.after_minimum_extent(),
+            if defect == 2 {
+                record.before_minimum_extent()
+            } else {
+                record.before_maximum_extent()
+            },
+            record.after_maximum_extent(),
+            extents,
+            record.central_index(),
+            Arc::from(record.weights()),
+            record.layer(),
+            defect == 3,
+        );
+        assert!(matches!(
+            revalidate(&engine, plan),
+            Err(SceneBuildError::InvalidSplitterRecord { id, .. }) if id == *record.id()
+        ));
+    }
 }
 
 #[test]

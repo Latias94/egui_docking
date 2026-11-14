@@ -153,7 +153,8 @@ pub(crate) fn project_future_root(
         workspace,
         root,
         &leaf_minimums,
-        LayoutMetrics::new(target_facts.config().splitter_thickness())?,
+        LayoutMetrics::new(target_facts.config().splitter_thickness())?
+            .with_pane_overflow_policy(target_facts.config().pane_overflow_policy()),
     )?;
     measured
         .project(target_root.bounds(), &[])

@@ -65,7 +65,7 @@ pub use crate::model::{
 pub use crate::pointer_journal::{PointerDeviceKind, PointerEventMetadata};
 pub use crate::presentation_config::{
     DockPresentationConfig, DockPresentationConfigBuilder, DockPresentationConfigError,
-    PresentationConfigRevision,
+    PaneOverflowPolicy, PresentationConfigRevision,
 };
 use close::PreparedCloseRequestAuthorityMismatch;
 pub use close::{

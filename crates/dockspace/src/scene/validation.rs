@@ -1866,6 +1866,11 @@ fn validate_splitter_geometry(
         }) || splitter_resize_arrays_are_valid(record, children.len());
         let before_extent = record.child_extents().get(id.index).copied();
         let after_extent = record.child_extents().get(id.index + 1).copied();
+        let compressed =
+            splitter_compression(ready, record).ok_or(SceneBuildError::InvalidSplitterRecord {
+                surface: ready.surface,
+                id,
+            })?;
         if !workspace_index.semantic_node_exists(ready.surface, id.root, id.split)
             || id.index >= children.len().saturating_sub(1)
             || record.axis() != *axis
@@ -1880,16 +1885,16 @@ fn validate_splitter_geometry(
             || record.before_minimum_extent() < 0.0
             || !record.after_minimum_extent().is_finite()
             || record.after_minimum_extent() < 0.0
-            || !splitter_extent_satisfies_constraints(
-                before_extent,
-                record.before_minimum_extent(),
-                record.before_maximum_extent(),
-            )
-            || !splitter_extent_satisfies_constraints(
-                after_extent,
-                record.after_minimum_extent(),
-                record.after_maximum_extent(),
-            )
+            || (!compressed
+                && (!splitter_extent_satisfies_constraints(
+                    before_extent,
+                    record.before_minimum_extent(),
+                    record.before_maximum_extent(),
+                ) || !splitter_extent_satisfies_constraints(
+                    after_extent,
+                    record.after_minimum_extent(),
+                    record.after_maximum_extent(),
+                )))
             || record
                 .central_index()
                 .is_some_and(|index| index >= children.len())
@@ -1902,6 +1907,7 @@ fn validate_splitter_geometry(
         validate_semantic_layer(ready.surface, id.root, record.layer(), workspace_index)?;
         if record.operable()
             != (policy.splitter_resize_is_allowed(record.axis(), ready.surface)
+                && !compressed
                 && region_has_authoritative_area(
                     record.hit().rect(),
                     record.layer(),
@@ -1917,6 +1923,32 @@ fn validate_splitter_geometry(
     }
 
     Ok(())
+}
+
+fn splitter_compression(ready: &PresentationPlan, record: &SplitterRecord) -> Option<bool> {
+    let Some(layout) = ready.layout_facts() else {
+        return Some(false);
+    };
+    if layout.config().pane_overflow_policy()
+        != crate::presentation_config::PaneOverflowPolicy::Compress
+    {
+        return Some(false);
+    }
+    let id = record.id();
+    let split = layout.root(id.root)?.projection().splits.get(&id.split)?;
+    if split.overflow == 0.0 {
+        return Some(false);
+    }
+    let before = split.children.get(id.index)?;
+    let after = split.children.get(id.index + 1)?;
+    (record.axis() == split.axis
+        && record.before_minimum_extent() == before.minimum
+        && record.before_maximum_extent() == before.maximum
+        && record.after_minimum_extent() == after.minimum
+        && record.after_maximum_extent() == after.maximum
+        && record.child_extents().get(id.index) == Some(&before.extent)
+        && record.child_extents().get(id.index + 1) == Some(&after.extent))
+    .then_some(true)
 }
 
 #[cfg(test)]

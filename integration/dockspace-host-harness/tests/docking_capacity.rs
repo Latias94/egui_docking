@@ -11,12 +11,13 @@ use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
     DockspaceDropDirection as Direction, DockspaceGuideScope as Scope, DockspaceHostFrame,
     DockspacePreviewVisual, DockspaceReceiverDescriptor, DockspaceSession, HostFrameReport,
-    HostPointerInput, HostPointerRoute, PointerDeviceKind, PointerEventMetadata,
-    SurfaceMeasurementAnswer as Answer, SurfaceMeasurementRequest as Question,
-    SurfacePaintProgramOperation as Operation, SurfacePaintProgramStep as Step,
-    SurfacePointerButton as Button, SurfacePointerCancelReason, SurfacePointerCapture,
-    SurfacePointerEvent as Event, SurfacePointerId, SurfacePointerReceiverFacts,
-    SurfacePresentationResult, SurfaceUnavailableReason, TabStripMetrics,
+    HostPointerInput, HostPointerRoute, PaneOverflowPolicy, PointerDeviceKind,
+    PointerEventMetadata, SurfaceMeasurementAnswer as Answer,
+    SurfaceMeasurementRequest as Question, SurfacePaintProgramOperation as Operation,
+    SurfacePaintProgramStep as Step, SurfacePointerButton as Button, SurfacePointerCancelReason,
+    SurfacePointerCapture, SurfacePointerEvent as Event, SurfacePointerId,
+    SurfacePointerReceiverFacts, SurfacePresentationResult, SurfaceUnavailableReason,
+    TabStripMetrics,
 };
 use dockspace_host_harness::{OwnedRecord, RecordingRenderer};
 
@@ -74,6 +75,18 @@ fn commit(mut frame: DockspaceHostFrame<'_>) -> HostFrameReport {
     frame.commit().unwrap()
 }
 
+fn overflow_policy(session: &mut DockspaceSession, policy: PaneOverflowPolicy) {
+    let config = session
+        .presentation_config()
+        .to_builder()
+        .pane_overflow_policy(policy)
+        .build()
+        .unwrap();
+    let mut frame = session.begin_host_frame().unwrap();
+    frame.replace_presentation_config(config).unwrap();
+    commit(frame);
+}
+
 #[track_caller]
 fn measure(
     session: &mut DockspaceSession,
@@ -112,6 +125,7 @@ struct Snapshot {
     centers: BTreeMap<ItemId, LogicalPoint>,
     panes: BTreeMap<ItemId, LogicalRect>,
     inner_guide_slots: Vec<usize>,
+    splitters: Vec<(bool, bool)>,
     outer: Vec<(Direction, LogicalRect)>,
     previews: Vec<LogicalRect>,
 }
@@ -171,6 +185,13 @@ fn paint_present(session: &mut DockspaceSession) -> BTreeMap<SurfaceId, Snapshot
                         snapshot.panes.insert(item, pane.bounds());
                     }
                 }
+                Step::Operation {
+                    operation: Operation::Splitter(splitter),
+                    ..
+                } => snapshot.splitters.push((
+                    splitter.operable(),
+                    plan.receiver_for_splitter(splitter).is_some(),
+                )),
                 Step::DropGuide { structural, .. } if structural.scope() == Scope::Outer => {
                     snapshot.outer.extend(
                         structural
@@ -296,6 +317,12 @@ fn target_edge(session: &mut DockspaceSession, event: Event, aim: LogicalPoint) 
 
 #[test]
 fn repeated_edge_splits_then_center_merges_survive_minimum_and_title_overflow() {
+    for policy in [PaneOverflowPolicy::Clip, PaneOverflowPolicy::Compress] {
+        repeated_splits_and_merges(policy);
+    }
+}
+
+fn repeated_splits_and_merges(policy: PaneOverflowPolicy) {
     let items = (1..=8).map(ItemId::new).collect::<Vec<_>>();
     let expected = items
         .iter()
@@ -304,6 +331,7 @@ fn repeated_edge_splits_then_center_merges_survive_minimum_and_title_overflow() 
         .collect::<Vec<_>>();
     let compact = bounds(180.0, 130.0);
     let mut session = session(&items, Node::central_tabs([TARGET_ANCHOR]));
+    overflow_policy(&mut session, policy);
     for (index, &item) in items.iter().enumerate() {
         let mut frame = session.begin_host_frame().unwrap();
         frame.select_item_current(item).unwrap();
@@ -355,12 +383,31 @@ fn repeated_edge_splits_then_center_merges_survive_minimum_and_title_overflow() 
         measure(&mut session, compact, minimum);
         let snapshots = paint_present(&mut session);
         assert_eq!(snapshots[&TARGET].panes.len(), items.len() - index);
-        assert!(
-            snapshots[&TARGET].tabs.contains_key(&item),
-            "the selected overflowing tab must remain reachable"
-        );
+        if policy == PaneOverflowPolicy::Clip {
+            assert!(
+                snapshots[&TARGET].tabs.contains_key(&item),
+                "the selected overflowing tab must remain reachable: merge={index}",
+            );
+        } else {
+            assert!(
+                snapshots[&TARGET]
+                    .panes
+                    .values()
+                    .all(|rect| { rect.width() > 0.0 && rect.height() > 0.0 })
+            );
+        }
         assert_items(&session, &expected);
+        // Nine compressed panes can be smaller than their tab chrome. Enlarging
+        // the host must restore the selected tab without changing the layout.
+        let version = session.version();
+        measure(&mut session, bounds(2400.0, 1800.0), minimum);
+        let recovered = paint_present(&mut session);
+        assert!(recovered[&TARGET].tabs.contains_key(&item));
+        assert_eq!(session.version(), version);
     }
+    measure(&mut session, compact, minimum);
+    let merged = paint_present(&mut session);
+    assert!(merged[&TARGET].tabs.contains_key(items.last().unwrap()));
     assert_eq!(
         session
             .view()
@@ -409,6 +456,71 @@ fn compact_two_leaf_root_keeps_complete_inner_guide_geometry() {
             assert_items(&session, &[SOURCE_ANCHOR, TARGET_ANCHOR, ordinary]);
         }
     }
+}
+
+#[test]
+fn constrained_layout_keeps_every_pane_reachable_and_restores_original_weights() {
+    let items = [ItemId::new(1), ItemId::new(2), TARGET_ANCHOR];
+    let target = Node::split(
+        Axis::Horizontal,
+        [
+            (Node::tabs([items[0]]), 0.2),
+            (Node::tabs([items[1]]), 0.3),
+            (Node::central_tabs([items[2]]), 0.5),
+        ],
+    )
+    .unwrap();
+    let mut session = session(&[], target);
+    overflow_policy(&mut session, PaneOverflowPolicy::Compress);
+    let original = session.version();
+    let weights = || {
+        session
+            .view()
+            .root(RootId::new(2))
+            .unwrap()
+            .content()
+            .unwrap()
+            .split()
+            .unwrap()
+            .weights()
+            .collect::<Vec<_>>()
+    };
+    let original_weights = weights();
+    let compact = bounds(240.0, 180.0);
+    measure(&mut session, compact, |_| {
+        LogicalSize::new(200.0, 90.0).unwrap()
+    });
+    let snapshot = paint_present(&mut session);
+    assert_eq!(snapshot[&TARGET].splitters, [(false, false); 2]);
+    for item in items {
+        let pane = snapshot[&TARGET].panes[&item];
+        assert!(
+            pane.width() > 0.0 && pane.height() > 0.0,
+            "a constrained pane must remain reachable: {item:?}, {pane:?}"
+        );
+        assert!(snapshot[&TARGET].tabs.contains_key(&item));
+    }
+    measure(&mut session, bounds(1200.0, 700.0), |_| {
+        LogicalSize::new(200.0, 90.0).unwrap()
+    });
+    let restored = paint_present(&mut session);
+    assert_eq!(restored[&TARGET].splitters, [(true, true); 2]);
+    assert_eq!(session.version(), original);
+    assert_eq!(
+        session
+            .view()
+            .root(RootId::new(2))
+            .unwrap()
+            .content()
+            .unwrap()
+            .split()
+            .unwrap()
+            .weights()
+            .collect::<Vec<_>>(),
+        original_weights
+    );
+    assert!(restored[&TARGET].panes[&items[2]].width() > 500.0);
+    assert_items(&session, &[SOURCE_ANCHOR, items[0], items[1], items[2]]);
 }
 
 #[test]

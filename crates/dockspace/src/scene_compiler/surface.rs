@@ -656,7 +656,10 @@ fn compile_root(
                     bounds,
                 )?;
                 let mut resize_facts = None;
-                let operable = policy.splitter_resize_is_allowed(*axis, surface);
+                let operable = policy.splitter_resize_is_allowed(*axis, surface)
+                    && !(config.pane_overflow_policy()
+                        == crate::presentation_config::PaneOverflowPolicy::Compress
+                        && split.overflow > 0.0);
                 for (index, (splitter, hit)) in split.splitter_rects().zip(hit_rects).enumerate() {
                     let id = SplitterSceneId {
                         root,

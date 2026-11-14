@@ -2,6 +2,7 @@
 
 use dockspace::runtime::{
     DockPresentationConfig, DockPresentationConfigBuilder, DockPresentationConfigError,
+    PaneOverflowPolicy,
 };
 use egui::{Color32, CornerRadius, Frame, Margin, Rgba, Stroke, Style as EguiStyle, Vec2, Visuals};
 
@@ -272,6 +273,8 @@ pub struct DockStyle {
     pub floating_resize_extent: f32,
     /// Global minimum pane content size.
     pub minimum_pane_size: Vec2,
+    /// Layout behavior when pane minima cannot fit the available split extent.
+    pub pane_overflow_policy: PaneOverflowPolicy,
     /// Global minimum outer size of a contained-floating surface.
     pub minimum_floating_size: Vec2,
     /// Pointer-relative offset used to paint a drag ghost.
@@ -446,6 +449,7 @@ impl DockStyle {
                 f64::from(self.minimum_pane_size.x),
                 f64::from(self.minimum_pane_size.y),
             )
+            .pane_overflow_policy(self.pane_overflow_policy)
             .minimum_floating_size(
                 f64::from(self.minimum_floating_size.x),
                 f64::from(self.minimum_floating_size.y),
@@ -524,6 +528,7 @@ impl Default for DockStyle {
                 geometry.minimum_pane_size().width() as f32,
                 geometry.minimum_pane_size().height() as f32,
             ),
+            pane_overflow_policy: geometry.pane_overflow_policy(),
             minimum_floating_size: Vec2::new(
                 geometry.minimum_floating_size().width() as f32,
                 geometry.minimum_floating_size().height() as f32,
@@ -609,6 +614,25 @@ mod tests {
             style.tab_strip_edge_scroll_interval,
             Some(std::time::Duration::from_millis(50))
         );
+    }
+
+    #[test]
+    fn overflow_policy_maps_through_creation_and_live_style_updates() {
+        let style = DockStyle {
+            pane_overflow_policy: PaneOverflowPolicy::Compress,
+            ..Default::default()
+        };
+        let config = style.presentation_config().unwrap();
+        assert_eq!(config.pane_overflow_policy(), PaneOverflowPolicy::Compress);
+        assert_eq!(config.to_builder().build().unwrap(), config);
+        let changed = config
+            .to_builder()
+            .pointer_drag_start_distance(11.0)
+            .build()
+            .unwrap();
+        let mapped = style.presentation_config_with(&changed).unwrap();
+        assert_eq!(mapped.pane_overflow_policy(), PaneOverflowPolicy::Compress);
+        assert_eq!(mapped.pointer_drag_start_distance(), 11.0);
     }
 
     #[test]

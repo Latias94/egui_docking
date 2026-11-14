@@ -484,6 +484,15 @@ The `basic` example has density and font controls. The workbench uses explicit
 pane share egui's panel fill, and inactive tabs blend into the tab bar. Enable
 **Custom tabs** to add icons, rounded corners, an accent outline and fixed controls.
 
+Pane minima describe useful viewports. If the available space is smaller than
+those minima, `DockStyle::pane_overflow_policy` defaults to
+`PaneOverflowPolicy::Clip`. Set it to `PaneOverflowPolicy::Compress` to fit split
+children by proportionally reducing their extents. Compression preserves the
+layout's weights and content identities. Dividers become unavailable while
+compressed and become operable again when their minima fit. A very small pane
+can still lose its content area or usable chrome; application content should
+choose wrapping, scrolling or canvas navigation as appropriate.
+
 Tab titles elide within their allocated text area. The full title remains
 available on hover, and the open-tab menu uses its own available width instead
 of reusing the shortened tab label. That menu inherits egui's popup frame,
