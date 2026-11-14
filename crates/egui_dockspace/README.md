@@ -190,6 +190,13 @@ Return the ordinary content responses created in that call. Composite panes can
 use `with_content` or `with_content_ids`. `title` returning `None` keeps an
 unloaded pane's place in the layout. `Box<dyn PaneView>` is supported.
 
+Pane content stays within its allocated clip. Use an egui `ScrollArea` for long
+forms or logs, wrapping for text, and pan/zoom for canvases as appropriate; the
+adapter leaves that choice to the pane. `PaneView::minimum_size` describes the
+smallest useful content viewport, not the size of the full document. A host
+window can still be smaller than the combined layout minimum, so a minimum does
+not guarantee that all content remains visible.
+
 Callbacks are synchronous and may repeat across egui passes. Run I/O in your
 application's background tasks, transfer completed data to the UI thread, and
 request a repaint. The [background-save example](examples/background_save.rs)

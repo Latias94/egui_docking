@@ -206,6 +206,11 @@ pub trait PaneView {
     /// geometry is current, ordinary content remains enabled even when docking
     /// interaction is unavailable.
     ///
+    /// The supplied Ui is clipped to the pane's allocated content area. Content
+    /// does not expand the docking allocation. Choose wrapping, an
+    /// [`egui::ScrollArea`], or canvas navigation here when content can exceed
+    /// that area; the adapter does not impose a scrolling container on panes.
+    ///
     /// # Painting
     ///
     /// Paint synchronously on the supplied Ui's layer, respecting its opacity
@@ -264,6 +269,11 @@ pub trait PaneView {
     /// This metadata is queried for every open tab, including inactive or
     /// unloaded content, so it must not depend on creating the pane UI. Core
     /// needs exact potential-layout minimums before a tab is dragged out.
+    ///
+    /// Report the smallest useful content viewport, not the full document or
+    /// scrollable content extent. A host window can still become smaller than
+    /// the combined layout minimum, so content must respect its clip and remain
+    /// usable through scrolling, wrapping, or an application-specific fallback.
     ///
     /// The default delegates the minimum floor entirely to
     /// [`DockStyle`](crate::style::DockStyle).

@@ -20,6 +20,8 @@ use run_support::{
 
 #[path = "product/arrangement_lock.rs"]
 mod arrangement_lock;
+#[path = "product/capacity.rs"]
+mod capacity;
 #[path = "product/close_commands.rs"]
 mod close_commands;
 #[path = "product/contained_redock.rs"]
