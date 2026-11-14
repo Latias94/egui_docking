@@ -5,6 +5,7 @@ use crate::graph::{Node, SplitWeight, SurfacePresentation, Workspace};
 use crate::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
 
 use super::DockspaceAxis;
+use crate::model::PreparedTabsGroup;
 
 /// Read-only product view of a validated docking workspace.
 #[derive(Clone, Copy)]
@@ -279,6 +280,72 @@ impl<'a> DockspaceRootView<'a> {
                 central: self.central,
             })
         })
+    }
+
+    /// Returns whether this complete root contains exactly `item` and no other
+    /// content.
+    ///
+    /// Empty central leaves do not affect the result. The query traverses the
+    /// complete root topology, so it also covers nested splits and a contained
+    /// root whose central leaf is empty. Native hosts use this semantic query
+    /// when deciding whether moving or closing the last item would retire the
+    /// root that backs a fixed host surface.
+    #[must_use]
+    pub fn contains_only_item(self, item: ItemId) -> bool {
+        let mut pending = vec![self.content];
+        let mut found = false;
+        while let Some(node) = pending.pop() {
+            match self.workspace.node(node) {
+                Some(Node::Tabs { items, .. }) => {
+                    for candidate in items {
+                        if *candidate != item || found {
+                            return false;
+                        }
+                        found = true;
+                    }
+                }
+                Some(Node::Split { children, .. }) => pending.extend(children.iter().copied()),
+                None => return false,
+            }
+        }
+        found
+    }
+
+    /// Returns whether this root contains no content outside one captured tabs
+    /// group.
+    ///
+    /// The captured group must still refer to a node in this root. Empty tabs
+    /// leaves are ignored, which keeps the query aligned with root retirement
+    /// after a nested split has been drained. The caller remains responsible
+    /// for checking the capture against the current workspace revision.
+    #[must_use]
+    pub fn contains_only_tabs_group(self, group: &PreparedTabsGroup) -> bool {
+        if group.source.root != self.id
+            || self.workspace.root_reference(self.id) != Some(&group.source.reference)
+        {
+            return false;
+        }
+        let target = group.source.node;
+        let mut pending = vec![self.content];
+        let mut found = false;
+        while let Some(node) = pending.pop() {
+            match self.workspace.node(node) {
+                Some(Node::Tabs { items, .. }) if node == target => {
+                    if items.is_empty() || found {
+                        return false;
+                    }
+                    found = true;
+                }
+                Some(Node::Tabs { items, .. }) => {
+                    if !items.is_empty() {
+                        return false;
+                    }
+                }
+                Some(Node::Split { children, .. }) => pending.extend(children.iter().copied()),
+                None => return false,
+            }
+        }
+        found
     }
 }
 

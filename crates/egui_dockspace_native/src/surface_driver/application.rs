@@ -447,25 +447,8 @@ impl<P: PaneView> NativeRuntimeState<P> {
         let Some(root) = self.sole_host_root() else {
             return false;
         };
-        let complete_item = |item| {
-            root.central().is_none()
-                && root
-                    .content()
-                    .and_then(|node| node.tabs())
-                    .is_some_and(|tabs| tabs.items() == [item])
-        };
-        let complete_tabs = |group: &PreparedTabsGroup| {
-            root.content()
-                .and_then(|node| node.tabs())
-                .and_then(|tabs| tabs.selected())
-                .and_then(|item| {
-                    self.coordinator
-                        .session()
-                        .capture_tabs_group(DockAnchor::Item(item))
-                        .ok()
-                })
-                .is_some_and(|current| current == *group)
-        };
+        let complete_item = |item| root.contains_only_item(item);
+        let complete_tabs = |group: &PreparedTabsGroup| root.contains_only_tabs_group(group);
         let view = self.coordinator.session().view();
         let target = match command {
             NativeCommand::DockItem { item, placement } if complete_item(*item) => {
@@ -594,13 +577,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         };
         match target {
             ClosePlanTarget::Root { root: target } => root.id() == target,
-            ClosePlanTarget::Item { item } => {
-                root.central().is_none()
-                    && root
-                        .content()
-                        .and_then(|node| node.tabs())
-                        .is_some_and(|tabs| tabs.items() == [item])
-            }
+            ClosePlanTarget::Item { item } => root.contains_only_item(item),
             ClosePlanTarget::Surface { .. } => false,
         }
     }

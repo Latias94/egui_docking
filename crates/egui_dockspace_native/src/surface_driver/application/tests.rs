@@ -186,6 +186,72 @@ fn moving_the_last_noncentral_host_item_to_another_surface_is_refused_before_adm
 }
 
 #[test]
+fn host_protection_follows_contained_root_lifecycle_through_empty_central_and_nested_split() {
+    let target_surface = SurfaceId::new(2);
+    let target_item = ItemId::new(9);
+    let contained_root = RootId::new(7);
+    let contained = DockspaceNode::equal_split(
+        DockspaceAxis::Horizontal,
+        [
+            DockspaceNode::central_tabs([]),
+            DockspaceNode::tabs([FIRST]),
+        ],
+    )
+    .unwrap();
+    let layout = DockspaceLayout::new([
+        DockspaceSurfaceLayout::rootless(SURFACE).with_contained(
+            DockspaceContainedLayout::new(
+                FloatingPresentationId::new(7),
+                DockspaceRootLayout::new(contained_root, contained),
+                dockspace::geometry::LogicalRect::new(80.0, 80.0, 320.0, 240.0).unwrap(),
+            ),
+        ),
+        DockspaceSurfaceLayout::new(
+            target_surface,
+            DockspaceRootLayout::new(RootId::new(9), DockspaceNode::central_tabs([target_item])),
+        ),
+    ])
+    .unwrap();
+    let mut state = state_with_layout(layout);
+    let before = state.coordinator.session().version();
+    let group = state.capture_tabs_group(DockAnchor::Item(FIRST)).unwrap();
+    for command in [
+        NativeCommand::DockItem {
+            item: FIRST,
+            placement: DockPlacement::Center(DockAnchor::Item(target_item)),
+        },
+        NativeCommand::FloatItem {
+            item: FIRST,
+            surface: target_surface,
+        },
+        NativeCommand::DockTabs {
+            group: group.clone(),
+            placement: DockPlacement::Center(DockAnchor::Item(target_item)),
+        },
+        NativeCommand::FloatTabs {
+            group,
+            surface: target_surface,
+        },
+        NativeCommand::CloseItem { item: FIRST },
+    ] {
+        let error = state.request_command(command.clone()).unwrap_err();
+        assert_eq!(
+            error.reason(),
+            NativeActionRequestError::HostSurfaceRequired { surface: SURFACE }
+        );
+        assert_eq!(error.into_command(), command);
+        assert!(!state.application_actions.is_occupied());
+        assert_eq!(state.coordinator.session().version(), before);
+        assert!(state
+            .coordinator
+            .session()
+            .view()
+            .root(contained_root)
+            .is_some());
+    }
+}
+
+#[test]
 fn host_protection_allows_surviving_presentations_and_keeps_invalid_targets_core_owned() {
     let target_item = ItemId::new(9);
     let target_surface = SurfaceId::new(2);
