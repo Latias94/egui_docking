@@ -166,6 +166,128 @@ fn separately_settled_dropped_output_preserves_the_last_actually_presented_outpu
 }
 
 #[test]
+fn every_three_output_terminal_order_preserves_the_exact_contiguous_prefix() {
+    let orders = [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ];
+    for order in orders {
+        for presented_mask in 0_u8..8 {
+            for drop_handle in [false, true] {
+                let trace = format!(
+                    "order={order:?}, presented={presented_mask:#05b}, drop_handle={drop_handle}"
+                );
+                let mut session = session();
+                let (original_receiver, original) = paint(&mut session);
+                let original_artifact = original.presentation_artifact();
+                session
+                    .report_surface_presentation(original, SurfacePresentationResult::Presented)
+                    .unwrap();
+                settle(&mut session);
+                let version = session.version();
+                let mut receivers = vec![original_receiver];
+                let mut artifacts = vec![original_artifact];
+                let mut outputs = Vec::new();
+                for width in [128.0, 192.0, 256.0] {
+                    let (receiver, output) = emit_after_measurement(&mut session, width);
+                    assert!(!receivers.contains(&receiver), "{trace}");
+                    receivers.push(receiver);
+                    artifacts.push(output.presentation_artifact());
+                    outputs.push(Some(output));
+                }
+                let mut received = [false; 3];
+                let mut settled = 0;
+                let mut visible = 0;
+                for index in order {
+                    let output = outputs[index].take().unwrap();
+                    let presented = presented_mask & (1 << index) != 0;
+                    if !presented && drop_handle {
+                        drop(output);
+                    } else {
+                        session
+                            .report_surface_presentation(
+                                output,
+                                if presented {
+                                    SurfacePresentationResult::Presented
+                                } else {
+                                    SurfacePresentationResult::Dropped
+                                },
+                            )
+                            .unwrap();
+                    }
+                    received[index] = true;
+                    let previous = session.presented_surface(SURFACE);
+                    let abandoned = session.begin_host_frame().unwrap();
+                    drop(abandoned);
+                    assert_eq!(session.presented_surface(SURFACE), previous, "{trace}");
+                    assert_eq!(session.version(), version, "{trace}");
+
+                    let before = settled;
+                    while settled < received.len() && received[settled] {
+                        if presented_mask & (1 << settled) != 0 {
+                            visible = settled + 1;
+                        }
+                        settled += 1;
+                    }
+                    let report = settle(&mut session);
+                    assert_eq!(
+                        report.surface_presentation_commits().len(),
+                        usize::from(before != settled),
+                        "{trace}, received={received:?}"
+                    );
+                    if let Some(commit) = report.surface_presentation_commits().first() {
+                        assert!(commit.presents(artifacts[visible]), "{trace}");
+                        for (ordinal, artifact) in artifacts.iter().enumerate().skip(1) {
+                            assert_eq!(commit.settles(*artifact), ordinal <= settled, "{trace}");
+                        }
+                    }
+                    // A visibly presented suffix revokes old hit geometry even
+                    // while its missing predecessor blocks prefix admission.
+                    let blocked = received.iter().enumerate().any(|(index, received)| {
+                        index >= settled && *received && presented_mask & (1 << index) != 0
+                    });
+                    assert_eq!(
+                        session.presented_surface(SURFACE).is_none(),
+                        blocked,
+                        "{trace}"
+                    );
+                    if !blocked {
+                        assert!(
+                            session
+                                .presented_surface(SURFACE)
+                                .unwrap()
+                                .matches_presentation_artifact(artifacts[visible]),
+                            "{trace}"
+                        );
+                    }
+                    for (ordinal, receiver) in receivers.iter().enumerate() {
+                        assert_eq!(
+                            session.bind_presented_receiver(receiver).is_some(),
+                            !blocked && ordinal == visible,
+                            "{trace}, received={received:?}, receiver={ordinal}"
+                        );
+                    }
+                    assert_eq!(session.version(), version, "{trace}");
+                    assert!(report.manipulation_feedback().is_empty(), "{trace}");
+                    assert!(!report.workspace_changed(), "{trace}");
+                }
+                assert_eq!(settled, 3, "{trace}");
+                assert!(
+                    settle(&mut session)
+                        .surface_presentation_commits()
+                        .is_empty(),
+                    "{trace}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn last_presented_output_is_kept_when_the_earlier_output_was_dropped() {
     let mut session = session();
     let (_, dropped) = paint(&mut session);

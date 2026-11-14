@@ -4,8 +4,9 @@ use std::collections::BTreeMap;
 
 use dockspace::geometry::{LogicalPoint, LogicalRect, LogicalSize};
 use dockspace::model::{
-    DockspaceAxis as Axis, DockspaceContainedLayout, DockspaceLayout, DockspaceNode as Node,
-    DockspaceRootLayout, DockspaceSurfaceLayout, FloatingPresentationId, ItemId, RootId, SurfaceId,
+    DockAnchor, DockEdge, DockFraction, DockPlacement, DockspaceAxis as Axis,
+    DockspaceContainedLayout, DockspaceLayout, DockspaceNode as Node, DockspaceRootLayout,
+    DockspaceSurfaceLayout, FloatingPresentationId, ItemId, RootId, SurfaceId,
 };
 use dockspace::policy::{
     DockPolicy, DockSurfaceRule, TabBarInteraction, TabBarPolicy, TabBarVisibility,
@@ -315,6 +316,7 @@ fn press(
     session: &mut DockspaceSession,
     surface: SurfaceId,
     descriptor: DockspaceReceiverDescriptor,
+    millis: u64,
 ) {
     let receiver = session.bind_presented_receiver(&descriptor).unwrap();
     let presented = session.presented_surface(surface).unwrap();
@@ -327,7 +329,7 @@ fn press(
             presented,
             receiver.center(),
             SurfacePointerReceiverFacts::delivery(&receiver).with_clear_hover_lane(&presented),
-            0,
+            millis,
         ))
         .unwrap();
     finish(frame);
@@ -397,7 +399,7 @@ fn hidden_draggable_source_requests_exact_intrinsic_and_reaches_visible_gap() {
         .find(|receiver| receiver.bounds().y() == 0.0 && receiver.bounds().height() == 28.0)
         .unwrap();
     let aim = gap.center();
-    press(&mut session, SOURCE, source);
+    press(&mut session, SOURCE, source, 0);
     let source_surface = session.presented_surface(SOURCE).unwrap();
     let target_surface = session.presented_surface(TARGET).unwrap();
     let mut frame = session.begin_host_frame().unwrap();
@@ -460,7 +462,7 @@ fn overflowing_edge_preview_matches_the_final_clipped_pane() {
             .unwrap()
             .3,
     );
-    press(&mut session, SOURCE, source);
+    press(&mut session, SOURCE, source, 0);
     let source_surface = session.presented_surface(SOURCE).unwrap();
     let target_surface = session.presented_surface(TARGET).unwrap();
     let mut frame = session.begin_host_frame().unwrap();
@@ -682,6 +684,141 @@ fn near_coincident_t_junctions_keep_mouse_and_touch_resize_receivers() {
                     resolved_resize_visual(&session, snapshot, position, device),
                     Some(vertical.visual_id),
                     "the vertical arm must remain reachable at {position:?} for {device:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn draining_both_contained_central_tabs_keeps_nested_splitter_gestures_operable() {
+    let main_root = RootId::new(1);
+    let contained_root = RootId::new(2);
+    for reverse in [false, true] {
+        for edge in [None, Some(DockEdge::Left), Some(DockEdge::Bottom)] {
+            let trace = format!("reverse={reverse}, edge={edge:?}");
+            let center = Node::split(
+                Axis::Vertical,
+                [(Node::central_tabs([A, Z]), 0.74), (Node::tabs([B]), 0.26)],
+            )
+            .unwrap();
+            let main =
+                Node::split(Axis::Horizontal, [(Node::tabs([C]), 0.2), (center, 0.8)]).unwrap();
+            let floating_items = [ItemId::new(20), ItemId::new(21)];
+            let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+                SOURCE,
+                DockspaceRootLayout::new(main_root, main),
+            )
+            .with_contained(DockspaceContainedLayout::new(
+                FLOATING,
+                DockspaceRootLayout::new(contained_root, Node::central_tabs(floating_items)),
+                rect(420.0, 80.0, 300.0, 320.0),
+            ))])
+            .unwrap();
+            let mut session = new_session(
+                layout,
+                DockPolicy::default(),
+                DockPresentationConfig::default(),
+            );
+            let bounds = [(SOURCE, rect(0.0, 0.0, 1000.0, 720.0))];
+            measure(&mut session, &bounds, |_| size(64.0, 48.0));
+            render_present(&mut session);
+            let moved = if reverse {
+                [floating_items[1], floating_items[0]]
+            } else {
+                floating_items
+            };
+            for (item, target) in moved.into_iter().zip([A, B]) {
+                let placement =
+                    edge.map_or(DockPlacement::Center(DockAnchor::Item(target)), |edge| {
+                        DockPlacement::InnerEdge {
+                            anchor: DockAnchor::Item(target),
+                            edge,
+                            fraction: DockFraction::new(0.35).unwrap(),
+                        }
+                    });
+                let mut frame = session.begin_host_frame().expect(&trace);
+                let action = frame.dock_item_current(item, placement).expect(&trace);
+                let report = finish(frame);
+                assert!(
+                    matches!(
+                        report.submitted_action_outcome(action),
+                        Some(HostInputOutcome::ProductActionApplied(
+                            dockspace::model::DockspaceActionOutcome::Docked { changed: true, .. }
+                        ))
+                    ),
+                    "{trace}: {report:?}"
+                );
+                measure(&mut session, &bounds, |_| size(64.0, 48.0));
+                render_present(&mut session);
+            }
+            assert!(session.view().contained(FLOATING).is_none(), "{trace}");
+            assert!(session.view().root(contained_root).is_none(), "{trace}");
+            let count = render_present(&mut session)[&SOURCE].splitters.len();
+            assert!(count >= 2, "{trace}");
+            for index in 0..count {
+                let before = render_present(&mut session);
+                let splitter = before[&SOURCE].splitters[index];
+                let source = splitter.receiver.center();
+                let horizontal = splitter.draw_bounds.height() > splitter.draw_bounds.width();
+                let destination = point(
+                    source.x() - if horizontal { 24.0 } else { 0.0 },
+                    source.y() - if horizontal { 0.0 } else { 24.0 },
+                );
+                let start = u64::try_from(index).unwrap() * 30;
+                press(&mut session, SOURCE, splitter.receiver, start);
+                for (millis, event) in [
+                    (10, SurfacePointerEvent::Moved),
+                    (
+                        20,
+                        SurfacePointerEvent::ButtonReleased(SurfacePointerButton::Primary),
+                    ),
+                ] {
+                    let surface = session.presented_surface(SOURCE).expect(&trace);
+                    let mut frame = session.begin_host_frame().expect(&trace);
+                    frame
+                        .submit_host_pointer(input(
+                            event,
+                            surface,
+                            destination,
+                            surface,
+                            destination,
+                            SurfacePointerReceiverFacts::unknown().with_clear_hover_lane(&surface),
+                            start + millis,
+                        ))
+                        .expect(&trace);
+                    let report = finish(frame);
+                    assert!(
+                        !report
+                            .manipulation_feedback()
+                            .iter()
+                            .any(|feedback| matches!(
+                                feedback.status(),
+                                DockspaceManipulationStatus::Rejected(_)
+                                    | DockspaceManipulationStatus::Cancelled(_)
+                            )),
+                        "{trace}, splitter={index}: {report:?}"
+                    );
+                    measure(&mut session, &bounds, |_| size(64.0, 48.0));
+                    render_present(&mut session);
+                }
+                assert!(!session.has_active_gesture(), "{trace}, splitter={index}");
+                let after = render_present(&mut session);
+                assert_ne!(
+                    before[&SOURCE].panes, after[&SOURCE].panes,
+                    "{trace}, splitter={index}"
+                );
+                for item in [A, Z, B, C, floating_items[0], floating_items[1]] {
+                    assert_eq!(
+                        session.view().item(item).unwrap().root(),
+                        main_root,
+                        "{trace}"
+                    );
+                }
+                assert_eq!(
+                    session.view().surface(SOURCE).unwrap().contained_count(),
+                    0,
+                    "{trace}"
                 );
             }
         }
