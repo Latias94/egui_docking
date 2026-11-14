@@ -358,7 +358,7 @@ impl DockspaceSurfaceLayout {
 /// A validated product layout backed by the core's canonical N-ary workspace.
 #[derive(Clone)]
 pub struct DockspaceLayout {
-    workspace: Workspace,
+    pub(super) workspace: Workspace,
 }
 
 impl fmt::Debug for DockspaceLayout {

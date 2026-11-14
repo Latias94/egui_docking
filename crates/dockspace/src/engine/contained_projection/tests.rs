@@ -17,6 +17,8 @@ use crate::runtime::{
 
 mod authority_tests;
 
+mod layout_checkpoint;
+
 mod measurement_tests;
 
 mod selection_cost_tests;

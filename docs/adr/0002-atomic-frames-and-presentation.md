@@ -24,3 +24,18 @@ gesture.
 A draw traversal or GPU submission alone cannot prove presentation. Coalescing
 hosts must settle every discarded handle and preserve per-stream terminal order.
 See [retained UI publication](../ADAPTER_TESTING.md#retained-ui-publication).
+
+Recovery follows the same separation. A coordinate change revokes transient
+input and presentation authority, then fresh measurement and presentation restore
+interaction. Discarding a candidate preserves its preceding committed workspace;
+dropping a committed output still requires that exact artifact's terminal report.
+Neither operation requires rebuilding the logical layout.
+
+`DockspaceView::to_layout()` copies the logical state represented by that view
+without carrying runtime authority. A session view captures committed state;
+a frame view captures its candidate. Applications can retain a committed copy
+through host failure and create a fresh session with their existing pane data,
+policy and presentation configuration. Document sidecars and native hosting
+preferences use their existing persistence flow. Native reconstruction requires
+settling the predecessor's outstanding window/output owners and enrolling fresh
+bindings; copying layout is not an in-place reset of the failed host.

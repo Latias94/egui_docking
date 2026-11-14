@@ -4,7 +4,7 @@ use crate::geometry::LogicalRect;
 use crate::graph::{Node, SplitWeight, SurfacePresentation, Workspace};
 use crate::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
 
-use super::DockspaceAxis;
+use super::{DockspaceAxis, DockspaceLayout};
 use crate::model::PreparedTabsGroup;
 
 /// Read-only product view of a validated docking workspace.
@@ -25,6 +25,30 @@ impl fmt::Debug for DockspaceView<'_> {
 impl<'a> DockspaceView<'a> {
     pub(crate) const fn new(workspace: &'a Workspace) -> Self {
         Self { workspace }
+    }
+
+    /// Copies this view into an independent, validated logical layout.
+    ///
+    /// Preserves surfaces, roots, tab order and selection, split weights, central
+    /// regions, contained bounds and stacking order. The copy has no pane data,
+    /// policy, presentation settings, document sidecars, native window bindings,
+    /// queued input, gestures or output authority. Copying allocates owned graph
+    /// storage and does not change the source workspace.
+    ///
+    /// For a recovery checkpoint of committed state, call this on
+    /// [`DockspaceSession::view`](crate::runtime::DockspaceSession::view).
+    /// A host frame's view instead copies that frame's current candidate. Start
+    /// a new session with [`DockspaceSession::from_layout`](crate::runtime::DockspaceSession::from_layout)
+    /// and supply its policy and presentation configuration separately. Native
+    /// hosts must also establish fresh window ownership and presentation.
+    ///
+    /// Use the document persistence interfaces when external item keys, document
+    /// generations or native hosting preferences must survive reconstruction.
+    #[must_use]
+    pub fn to_layout(self) -> DockspaceLayout {
+        DockspaceLayout {
+            workspace: self.workspace.clone(),
+        }
     }
 
     /// Returns a logical surface by stable identity.

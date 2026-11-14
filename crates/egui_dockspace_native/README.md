@@ -116,6 +116,47 @@ application results, pending presentations and native window retirement, while
 ordinary stable repaint outputs remain idle. The query consumes no work and
 retains no history. Inspect `output_backlog()` separately for output-owner counts.
 
+## Failure recovery
+
+Recover at the layer which lost authority:
+
+| Condition | Recovery |
+| --- | --- |
+| DPI, UI scale, window position or client size changes | Publish current window facts, cancel invalid interactions, then measure and present fresh controls. Returning to the same numeric geometry still requires fresh authority. |
+| Speculative UI pass is discarded before publication | Drop the candidate and retry against committed state. Preserve ordered input; do not replay application text or IME events. |
+| An exact committed output is discarded | Report that original output as `Dropped` and let its settlement advance. Receiver authority requires a later presented output. |
+| Fatal protocol or internal runtime error | Keep the diagnostic cause, quarantine semantic input and drain the old host's cleanup before reconnecting a new runtime. |
+
+The public view remains readable during a fatal stop. Capture an owned logical
+checkpoint without taking the application command slot or enabling `serde`:
+
+```rust,ignore
+let checkpoint = app.with_view(|view| view.to_layout());
+```
+
+This captures the current committed layout, including tab selection, split
+weights, central regions and contained-window order. Queued commands and live
+drag/resize previews are excluded. Cleanup can commit further content recovery,
+so capture at the boundary whose layout the application intends to retain.
+Pane data, policy, style, presentation settings and document sidecars remain
+application-owned or in their existing persistence interfaces.
+
+Before replacing a native host, keep driving cleanup until
+`is_shutdown_drained()` returns true, and settle the remaining `output_backlog()`
+owners. Reconstruct a `DockspaceSession` from the checkpoint and the application's
+configuration, then create a fresh
+`NativeDockspaceApp` and host handler. Old receivers, prepared actions, output
+handles and window bindings belong to the old runtime. An in-place restart
+which clears the error would leave those outstanding owners unresolved.
+
+A logical checkpoint preserves multiple surfaces, but `NativeDockspaceApp::new`
+registers only its designated Root. Supply Root composition placements and
+explicit Child hosting through the existing native APIs. OS-window ownership,
+placements and document keys require the separately saved hosting policy or
+document persistence flow; `to_layout()` does not recreate them automatically.
+
+## Window configuration
+
 `with_child_window_options` and `set_child_window_options` configure managed
 Child window decorations, Windows taskbar presence, stacking level and icon.
 Use `with_child_window_options_for(surface, options)` or
