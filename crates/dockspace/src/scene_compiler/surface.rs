@@ -1,4 +1,5 @@
 use super::*;
+use crate::geometry::LogicalPoint;
 use crate::graph::SplitWeight;
 use crate::layout::ChildProjection;
 
@@ -869,7 +870,12 @@ pub(super) fn clip_rect(
     let min_y = left.y().max(right.y()).min(right.max().y());
     let max_x = left.max().x().min(right.max().x()).max(min_x);
     let max_y = left.max().y().min(right.max().y()).max(min_y);
-    LogicalRect::new(min_x, min_y, max_x - min_x, max_y - min_y)
+    // Keep shared boundaries exact: rebuilding max from min + size can overlap
+    // adjacent hit cells by a rounding unit.
+    LogicalRect::from_min_max(
+        LogicalPoint::new(min_x, min_y)?,
+        LogicalPoint::new(max_x, max_y)?,
+    )
 }
 
 fn intersect_rect(
@@ -883,11 +889,9 @@ fn intersect_rect(
     if max_x <= min_x || max_y <= min_y {
         return Ok(None);
     }
-    Ok(Some(LogicalRect::new(
-        min_x,
-        min_y,
-        max_x - min_x,
-        max_y - min_y,
+    Ok(Some(LogicalRect::from_min_max(
+        LogicalPoint::new(min_x, min_y)?,
+        LogicalPoint::new(max_x, max_y)?,
     )?))
 }
 

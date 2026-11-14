@@ -213,6 +213,12 @@ weights, including a gesture which moves away and returns to its starting point.
 An overflowing, underallocated or compressed separator projection cannot begin
 a resize; clipped hit geometry is never substituted for complete layout facts.
 
+Pane minima describe useful content viewports, not full document sizes. When
+their sum exceeds the host's available space, the solver preserves the minima
+and clips the resulting layout to the surface; some panes may have no visible
+area. Hosts should offer a way to enlarge the surface or restore an accessible
+layout. Scrolling, text wrapping and canvas navigation remain content concerns.
+
 Hosts can prepare `SurfaceSplitterAdjustment::Minimum` or `Maximum` for a
 separator or one junction axis, in addition to ordinary `Decrement`/`Increment`
 steps. Endpoints use the same full-layout limits; they do not collapse panes.

@@ -22,6 +22,9 @@ use crate::presentation_config::DockPresentationConfig;
 use crate::scene::PresentationPlan;
 use crate::target_field::{pane_center_basin, root_edge_band};
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Clone, Copy)]
 struct GuideButtonGeometry {
     draw: LogicalRect,
@@ -233,20 +236,10 @@ fn guide_placement(
             // Keep maximal free rectangles, rather than disjoint strips. This
             // permits a full-size cluster to move beside an outer button.
             for free in [
-                LogicalRect::new(cell.x(), cell.y(), cut.x() - cell.x(), cell.height()),
-                LogicalRect::new(
-                    cut.max().x(),
-                    cell.y(),
-                    cell.max().x() - cut.max().x(),
-                    cell.height(),
-                ),
-                LogicalRect::new(cell.x(), cell.y(), cell.width(), cut.y() - cell.y()),
-                LogicalRect::new(
-                    cell.x(),
-                    cut.max().y(),
-                    cell.width(),
-                    cell.max().y() - cut.max().y(),
-                ),
+                LogicalRect::from_min_max(cell.min(), LogicalPoint::new(cut.x(), cell.max().y())?),
+                LogicalRect::from_min_max(LogicalPoint::new(cut.max().x(), cell.y())?, cell.max()),
+                LogicalRect::from_min_max(cell.min(), LogicalPoint::new(cell.max().x(), cut.y())?),
+                LogicalRect::from_min_max(LogicalPoint::new(cell.x(), cut.max().y())?, cell.max()),
             ] {
                 let free = free?;
                 if rect_has_area(free) && !remaining.contains(&free) {
@@ -751,29 +744,21 @@ fn separate_inner_cross_hits(
     center: GuideButtonGeometry,
     edges: &mut GuideEdgeGeometry,
 ) -> Result<(), GeometryError> {
-    let left_cell = LogicalRect::new(
-        bounds.x(),
-        bounds.y(),
-        (center.hit.x() - bounds.x()).max(0.0),
-        bounds.height(),
+    let left_cell = LogicalRect::from_min_max(
+        bounds.min(),
+        LogicalPoint::new(center.hit.x().max(bounds.x()), bounds.max().y())?,
     )?;
-    let right_cell = LogicalRect::new(
-        center.hit.max().x(),
-        bounds.y(),
-        (bounds.max().x() - center.hit.max().x()).max(0.0),
-        bounds.height(),
+    let right_cell = LogicalRect::from_min_max(
+        LogicalPoint::new(center.hit.max().x(), bounds.y())?,
+        LogicalPoint::new(bounds.max().x().max(center.hit.max().x()), bounds.max().y())?,
     )?;
-    let top_cell = LogicalRect::new(
-        bounds.x(),
-        bounds.y(),
-        bounds.width(),
-        (center.hit.y() - bounds.y()).max(0.0),
+    let top_cell = LogicalRect::from_min_max(
+        bounds.min(),
+        LogicalPoint::new(bounds.max().x(), center.hit.y().max(bounds.y()))?,
     )?;
-    let bottom_cell = LogicalRect::new(
-        bounds.x(),
-        center.hit.max().y(),
-        bounds.width(),
-        (bounds.max().y() - center.hit.max().y()).max(0.0),
+    let bottom_cell = LogicalRect::from_min_max(
+        LogicalPoint::new(bounds.x(), center.hit.max().y())?,
+        LogicalPoint::new(bounds.max().x(), bounds.max().y().max(center.hit.max().y()))?,
     )?;
     edges.left.clip_to_hit_cell(left_cell)?;
     edges.right.clip_to_hit_cell(right_cell)?;
@@ -789,29 +774,21 @@ fn separate_outer_cross_hits(
     let vertical_max_x = edges.top.hit.max().x().max(edges.bottom.hit.max().x());
     let horizontal_min_y = edges.left.hit.y().min(edges.right.hit.y());
     let horizontal_max_y = edges.left.hit.max().y().max(edges.right.hit.max().y());
-    let left_cell = LogicalRect::new(
-        bounds.x(),
-        bounds.y(),
-        (vertical_min_x - bounds.x()).max(0.0),
-        bounds.height(),
+    let left_cell = LogicalRect::from_min_max(
+        bounds.min(),
+        LogicalPoint::new(vertical_min_x.max(bounds.x()), bounds.max().y())?,
     )?;
-    let right_cell = LogicalRect::new(
-        vertical_max_x,
-        bounds.y(),
-        (bounds.max().x() - vertical_max_x).max(0.0),
-        bounds.height(),
+    let right_cell = LogicalRect::from_min_max(
+        LogicalPoint::new(vertical_max_x, bounds.y())?,
+        LogicalPoint::new(bounds.max().x().max(vertical_max_x), bounds.max().y())?,
     )?;
-    let top_cell = LogicalRect::new(
-        bounds.x(),
-        bounds.y(),
-        bounds.width(),
-        (horizontal_min_y - bounds.y()).max(0.0),
+    let top_cell = LogicalRect::from_min_max(
+        bounds.min(),
+        LogicalPoint::new(bounds.max().x(), horizontal_min_y.max(bounds.y()))?,
     )?;
-    let bottom_cell = LogicalRect::new(
-        bounds.x(),
-        horizontal_max_y,
-        bounds.width(),
-        (bounds.max().y() - horizontal_max_y).max(0.0),
+    let bottom_cell = LogicalRect::from_min_max(
+        LogicalPoint::new(bounds.x(), horizontal_max_y)?,
+        LogicalPoint::new(bounds.max().x(), bounds.max().y().max(horizontal_max_y))?,
     )?;
     edges.left.clip_to_hit_cell(left_cell)?;
     edges.right.clip_to_hit_cell(right_cell)?;

@@ -70,6 +70,10 @@ pub enum SurfaceMeasurementRequest {
         surface: SurfaceId,
     },
     /// Measure one pane content minimum.
+    ///
+    /// Report the smallest useful viewport, not the full document extent.
+    /// Hosts own content scrolling, wrapping and canvas navigation. A surface
+    /// smaller than the combined minima can still clip panes out of view.
     PaneMinimum {
         /// Stable renderer identity of the tabs leaf.
         visual: DockspaceVisualId,
