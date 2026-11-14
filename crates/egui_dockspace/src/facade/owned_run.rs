@@ -446,11 +446,9 @@ impl Dockspace {
                             .surface_work(surface)
                             .map_err(DockspaceError::from_detail)?
                         {
-                            SurfaceWork::Ready(plan) => (
-                                plan.measurement_refresh().is_allowed()
-                                    && !self.measurement_deferred,
-                                false,
-                            ),
+                            SurfaceWork::Ready(plan) => {
+                                (plan.measurement_refresh().is_allowed(), false)
+                            }
                             SurfaceWork::Deferred(SurfaceWorkDeferred::Unmeasured) => (true, false),
                             SurfaceWork::Deferred(SurfaceWorkDeferred::OutputCapacity) => {
                                 (false, true)
@@ -625,7 +623,6 @@ impl Dockspace {
             );
         }
         self.pointer = pointer;
-        self.measurement_deferred = pass.defer_measurement;
         self.pending_focus.settle(&accepted_focus, &report);
         crate::pointer::schedule_pointer_continuation(
             &self.session,

@@ -180,10 +180,7 @@ impl Dockspace {
                 .surface_work(surface)
                 .map_err(DockspaceError::from_detail)?
             {
-                SurfaceWork::Ready(plan) => (
-                    plan.measurement_refresh().is_allowed() && !self.measurement_deferred,
-                    false,
-                ),
+                SurfaceWork::Ready(plan) => (plan.measurement_refresh().is_allowed(), false),
                 SurfaceWork::Deferred(SurfaceWorkDeferred::Unmeasured) => (true, false),
                 SurfaceWork::Deferred(SurfaceWorkDeferred::OutputCapacity) => (false, true),
             };
@@ -312,7 +309,6 @@ impl Dockspace {
             ui.ctx().viewport_id(),
             observed_at,
         );
-        self.measurement_deferred = defer_measurement;
         let needs_presentation_settlement = defer_measurement || pane_focus_needs_repaint;
         let continuation_awaits_presentation = self
             .session

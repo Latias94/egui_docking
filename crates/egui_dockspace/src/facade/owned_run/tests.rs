@@ -28,6 +28,8 @@ use crate::DockspaceErrorKind;
 use crate::pane::PaneView;
 use crate::pass_settlement::{ProductPassSettlement, ReadyProductPassSettlementBatch};
 
+mod geometry_change;
+
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const FIRST: ItemId = ItemId::new(1);
 const SECOND: ItemId = ItemId::new(2);
@@ -228,7 +230,6 @@ fn presented_tabs(id: &'static str) -> (Context, Dockspace, RunPanes, Pos2) {
     assert!(dockspace.view().item(FIRST).unwrap().is_selected());
     assert!(!dockspace.view().item(SECOND).unwrap().is_selected());
     assert!(!dockspace.session.has_active_gesture());
-    assert!(!dockspace.measurement_deferred);
     panes.calls.clear();
     (context, dockspace, panes, position)
 }

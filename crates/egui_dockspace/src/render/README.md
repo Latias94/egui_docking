@@ -56,10 +56,13 @@ An emitted output becomes pointer-routing authority only after its matching
 presentation is accepted. Receiver declarations must remain associated with the
 exact artifact; matching geometry alone does not establish freshness.
 
-Both drag preview and contained-transform preview set `defer_measurement` after
-successful paint when `supports_preview_gestures()` is true. This includes
-`HostJournal`: preserving a ready target during pending release must not depend on
-local gesture emission. The host can still measure when no ready plan exists.
+`SurfacePaintPlan::measurement_refresh` owns measurement retention for active
+gestures and pending previews. Query it after reducing current input: cancellation
+can permit fresh measurements in the same frame. Do not carry a previous pass's
+retention decision into the next frame. The renderer's `defer_measurement` flag
+requests a settlement repaint after painting a drag or contained-transform
+preview; it does not override the current plan's measurement decision. The host
+can still measure when no ready plan exists.
 
 ## Receiver declarations and blockers
 
